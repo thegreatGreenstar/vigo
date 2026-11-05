@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Keep the SSH tunnel to the other device up, on macOS.
+
+  Install (replace user@pc with your user and host):
+
+    install -m 644 deploy/dev.vigo.tunnel.plist ~/Library/LaunchAgents/
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.vigo.tunnel.plist
+
+  Stop it with:
+
+    launchctl bootout gui/$(id -u)/dev.vigo.tunnel
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>dev.vigo.tunnel</string>
+
+    <!-- Both forwarded ports are loopback on the far side, so neither
+         OpenCode nor the peer port is reachable from the network. -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/ssh</string>
+        <string>-N</string>
+        <string>-o</string><string>BatchMode=yes</string>
+        <string>-o</string><string>ExitOnForwardFailure=yes</string>
+        <string>-o</string><string>ServerAliveInterval=30</string>
+        <string>-o</string><string>ServerAliveCountMax=3</string>
+        <string>-L</string><string>4097:127.0.0.1:4096</string>
+        <string>-L</string><string>4099:127.0.0.1:4098</string>
+        <string>user@pc</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardErrorPath</key>
+    <string>/tmp/vigo-tunnel.log</string>
+</dict>
+</plist>

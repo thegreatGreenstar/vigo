@@ -96,22 +96,24 @@ line in the log; the normal paths do not need it.
 
 ### 2. OpenCode on each device
 
-Run OpenCode's own server with a fixed password, bound to the network so the
-other device can reach it:
+Run OpenCode's own server with a fixed password, bound to the **Tailscale** address, so it is reachable from the
+other machine and from nothing else:
 
 ```sh
 OPENCODE_PASSWORD='something-long-and-not-reused' \
-  opencode serve --hostname 0.0.0.0 --port 4096
+  opencode serve --hostname "$(tailscale ip -4)" --port 4096
 ```
 
-Both devices use the same `OPENCODE_PASSWORD`. Check it answers:
+If Tailscale is not up yet, bind `127.0.0.1` for now and come back to "Reaching the other device".
+
+Check it answers (from this machine):
 
 ```sh
-curl -u "opencode:$OPENCODE_PASSWORD" http://127.0.0.1:4096/api/info
+curl -u "opencode:$OPENCODE_PASSWORD" http://127.0.0.1:4096/api/info || \
+curl -u "opencode:$OPENCODE_PASSWORD" "http://$(tailscale ip -4):4096/api/info"
 ```
 
-On the Mac, `/api/info` also tells you the hostname to put in the other
-device's settings.
+`/api/info` also tells you the hostname this machine goes by.
 
 ### 3. The settings file
 
@@ -207,9 +209,57 @@ interpreter. Then:
    OPENCODE_HOSTNAME=0.0.0.0 ./deploy/opencode-serve.sh
    ```
    or `systemctl --user enable --now opencode-serve vigo`.
-3. Reach each other by VPN address (Tailscale, WireGuard), not the LAN address, so the traffic is encrypted and the
-   port is never open on the network.
+3. Reach each other over the **Tailscale** address — never the LAN address and never a port forwarded from the
+   router. See "Reaching the other device".
 
+
+### Reaching the other device
+
+What crosses between the machines is a shell and a password, so the only thing in front of it is the tunnel. Two ways
+to make one; the first is what this setup uses.
+
+**Tailscale.** Both machines on the same tailnet, and each service bound to the tailnet address rather than the LAN:
+
+```sh
+opencode serve --hostname "$(tailscale ip -4)" --port 4096
+```
+
+then the settings name each machine by its tailnet address and nothing else:
+
+```jsonc
+// on macbook
+{ "name": "pc", "url": "http://100.64.1.20:4096", "directory": "C:/Users/…" }
+// on pc
+{ "name": "macbook", "url": "http://100.64.0.10:4096", "directory": "/Users/…" }
+```
+
+Add `"peerPort": 4098` and `"peerHost": "0.0.0.0"` on both, or set `"peer"` on each device entry to point at the
+other's tailnet address, and `/vigo upgrade` works across the pair. Binding to the tailnet address rather than
+`0.0.0.0` means the port is not on the café Wi-Fi at all.
+
+**SSH, instead.** No VPN daemon and no account; both services stay on loopback and the bot's machine forwards the
+ports:
+
+```sh
+ssh -N -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 \
+    -L 4097:127.0.0.1:4096 -L 4099:127.0.0.1:4098 \
+    user@pc
+```
+
+```jsonc
+{ "name": "pc", "url": "http://127.0.0.1:4097",
+  "directory": "C:/Users/…", "peer": "http://127.0.0.1:4099" }
+```
+
+`peer` must be given by hand with a tunnel: the port is derived from the device's URL host only, and here the local
+port would collide with this daemon's own. Keep the tunnel up with `deploy/dev.vigo.tunnel.plist` (macOS) or
+`deploy/vigo-tunnel.service` (Linux); both restart it when it drops.
+
+Either way the password still matters — it is the only check OpenCode makes — but the port is never reachable by
+anything that is not on the tailnet or holding the SSH key.
+
+
+What the Developer Portal asks for, if it helps:
 
 ## The Discord application, in words
 

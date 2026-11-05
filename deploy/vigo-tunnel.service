@@ -1,0 +1,22 @@
+[Unit]
+Description=Vigo: SSH tunnel to the other device
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Both forwarded ports are loopback on the far side, so neither OpenCode nor
+# the peer port is reachable from the network.
+ExecStart=/usr/bin/ssh -N \
+    -o BatchMode=yes \
+    -o ExitOnForwardFailure=yes \
+    -o ServerAliveInterval=30 \
+    -o ServerAliveCountMax=3 \
+    -L 4097:127.0.0.1:4096 \
+    -L 4099:127.0.0.1:4098 \
+    user@pc
+Restart=always
+RestartSec=5s
+
+[Install]
+WantedBy=default.target
