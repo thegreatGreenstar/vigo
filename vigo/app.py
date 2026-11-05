@@ -751,7 +751,7 @@ class App:
             lines.append("")
             lines.append(
                 "Yours: `/vigo allow user:<who> for:<time>`, `/vigo deny user:<who>`, "
-                "`/vigo allowed`. Tool permissions come to your DMs as buttons."
+                "`/vigo allowed`, `/vigo upgrade`. Tool permissions come to your DMs as buttons."
             )
         elif not approved:
             lines.append("")
