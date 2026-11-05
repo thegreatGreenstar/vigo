@@ -114,6 +114,13 @@ def build_of(checkout: Path | None = None) -> str:
     return said.splitlines()[0].strip() if code == 0 and said else ""
 
 
+def head_of(checkout: Path | None = None) -> str:
+    """The newest commit in this checkout: short hash and subject; empty if not git."""
+    here = Path(checkout or CHECKOUT)
+    code, said = _run(["git", "log", "-1", "--format=%h %s"], here, timeout=10.0)
+    return said.strip() if code == 0 and said else ""
+
+
 def update_self(checkout: Path | None = None, restart: bool = True) -> dict:
     """Pull this checkout, and restart through a supervisor when one runs it."""
     here = Path(checkout or CHECKOUT)
