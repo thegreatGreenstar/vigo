@@ -152,7 +152,7 @@ class Ask:
 
     def __init__(self, app: Host, *, token: str, channel_id: str, user_id: str,
                  device_name: str, prompt: str, new: bool, title: str,
-                 hidden: bool = False, goal: str = "") -> None:
+                 hidden: bool = False, goal: str = "", reply_in_channel: bool = False) -> None:
         self.app = app
         self.token = token
         self.channel_id = channel_id
@@ -163,6 +163,7 @@ class Ask:
         self.client = OpenCode(self.device.url, self.device.password)
         self.prompt = prompt
         self.goal = goal
+        self.reply_in_channel = reply_in_channel
         self.new = new
         self.title = title
         self.run = Run(session="", device=device_name, started=time.monotonic(), prompt=prompt)
@@ -201,13 +202,18 @@ class Ask:
         if self._already_answered(content):
             # Two runs can watch one device turn, and both would post it.
             log.info("ask: the channel already has that answer; not posting it twice")
+        elif self.reply_in_channel:
+            # The question came as a message, so the answer is one: there is no
+            # interaction to edit and nothing that expires.
+            self._late_answer(content)
         else:
             try:
-                self.app.api.followup(self.token, {
+                posted = self.app.api.followup(self.token, {
                     "content": content,
                     "allowed_mentions": {"parse": []},
                     **extra,
                 })
+                self._record(posted)
             except Exception as error:
                 log.error(f"ask: cannot post the answer ({error})")
                 self._late_answer(content)
@@ -218,6 +224,14 @@ class Ask:
             f"{text.money(cost)}"
         )
 
+    def _record(self, message: object) -> None:
+        """Remember a message this run posted, so a reply to it is a question."""
+        if not isinstance(message, dict):
+            return
+        message_id = str(message.get("id") or "")
+        if message_id:
+            self.app.state.remember_answer(message_id, self.channel_id)
+
     def _late_answer(self, content: str) -> None:
         """The interaction's 15 minutes ran out: post it where the question was."""
         if self.hidden:
@@ -227,10 +241,11 @@ class Ask:
             log.info("ask: the channel already has that answer; not posting it twice")
             return
         try:
-            self.app.api.send(self.channel_id, {
+            posted = self.app.api.send(self.channel_id, {
                 "content": content[:2000],
                 "allowed_mentions": {"parse": []},
             })
+            self._record(posted)
         except Exception as error:
             log.error(f"ask: cannot post the answer at all ({error})")
 
@@ -261,6 +276,9 @@ class Ask:
 
     def _tell(self, content: str) -> None:
         """An error from the run, visible even when the deferred message is gone."""
+        if self.reply_in_channel:
+            self._late_answer(content)
+            return
         if not self._edit(content):
             self._late_answer(content)
 

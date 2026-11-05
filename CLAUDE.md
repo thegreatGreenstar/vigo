@@ -132,11 +132,17 @@ edit anything here.
 | `vigo/opencode_api.py` | sessions, prompts, permissions, the SSE event stream |
 | `vigo/router.py` | which device answers, and what may be said about it |
 | `vigo/allowlist.py` | who may ask, in a Discord message so both daemons agree |
-| `vigo/app.py` | interactions, commands, permission and question cards, the election of one answerer |
+| `vigo/app.py` | interactions, commands, permission cards, the election of one answerer, and a DM reply that is a question |
 | `vigo/ask.py` | one question: session, the got-it line, the answer, the agent's own questions |
 | `vigo/goal.py` | when an ask is work to be done, and when it is a question |
 | `vigo/notify.py` | a DM to the owner: the update the daemon pulled, or `vigo dm` |
 | `vigo/lease.py` | one channel's run at a time across daemons, kept in the session's metadata |
+
+A direct message that replies to a message vigo posted is an ask in that DM's session. Only the daemon that posted
+the referenced message acts on the reply, which is how the two daemons agree on one answerer. It runs through the same
+queue and lease as any other ask, is acknowledged once, and its answer is posted as a message, not an edit. The bot
+asks for `DIRECT_MESSAGES` only: no privileged intent, and no guild message is read. A plain DM and a reply to
+somebody else's message are ignored, and a stranger is refused.
 
 `deploy/` holds the service units and the launchers that unseal the password (Keychain on macOS, systemd-creds on
 Linux). `art/` holds the icon pipeline.
@@ -151,6 +157,27 @@ stays staged: leave it staged, do not retry, and do not commit again until he sa
 That cost is **fresh-device's** only. Its key is Greenstar's own, so every commit there waits for his hand (YubiKey,
 Touch ID). On **rotten-device** a commit is signed by that machine's TPM key with no hand involved, so it adds no such
 user cost. Batch on both anyway: the history is shared, and the Mac reads what the PC wrote.
+
+## Pull requests
+
+Every change reaches `main` through a pull request, and the first push opens it **as a draft**. A draft runs the quick
+stage: one Python, the newest in the matrix, on Linux, macOS and Windows. That is where a path, a socket or a clock that
+differs by platform shows up, in three jobs instead of nine.
+
+Mark the pull request **ready for review** once that stage is green. Ready runs the full matrix, every OS on 3.12,
+3.13 and 3.14, and that is the matrix a merge waits for. Converting back to a draft runs the quick stage again.
+
+```sh
+gh pr create --draft --base main --title "…" --body-file …
+gh pr checks <number> --watch          # the quick stage
+gh pr ready <number>                   # the full matrix
+gh pr merge <number> --merge           # the owner runs this, never the agent
+```
+
+Do not open a pull request ready, and do not merge with a red matrix. The agent never merges into `main`, whatever
+the colour of the matrix; the owner does, every time. Inside an internal fork, the agent may merge branches it created
+in the same session onto each other. The reason the stages exist is to answer the platform question in three jobs
+before paying for nine.
 
 ## Finishing
 
