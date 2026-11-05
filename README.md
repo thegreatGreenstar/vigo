@@ -550,6 +550,15 @@ with the same caveat about the running process.
 A state file that cannot be read is kept as `state.json.bad` and a fresh one
 starts, with an error in the log. It holds no conversation text.
 
+## Platforms
+
+macOS (launchd) and Linux (systemd) are the hosts. Windows is in the CI matrix
+for the portable mistakes — a path, a clock, a socket — and one thing is known
+to differ there: shutting a socket down does not wake a read that is already
+blocked, so `EventStream.close` frees the connection but the reader thread
+waits for the device to speak. `tests/test_stream.py` skips that one assertion
+on Windows and says why.
+
 ## Tests
 
 ```sh
