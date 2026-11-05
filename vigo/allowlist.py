@@ -52,7 +52,7 @@ class Entry:
 
 
 class AllowList:
-    def __init__(self, config: Config, api: Discord, state: State):
+    def __init__(self, config: Config, api: Discord, state: State) -> None:
         self.config = config
         self.api = api
         self.state = state

@@ -35,7 +35,7 @@ def _auth(password: str) -> str:
 class PeerClient:
     """The other daemon, through the two answers it serves."""
 
-    def __init__(self, base: str, password: str, timeout: float = 3.0):
+    def __init__(self, base: str, password: str, timeout: float = 3.0) -> None:
         self.base = base.rstrip("/")
         self.password = password
         self.timeout = timeout
@@ -62,7 +62,7 @@ class PeerClient:
 class _Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
-    def log_message(self, *args):  # the bot's own log is the log
+    def log_message(self, *args: object) -> None:  # the bot's own log is the log
         pass
 
     def _send(self, status: int, body: dict) -> None:
@@ -204,7 +204,7 @@ def update_self(checkout: Path | None = None, restart: bool = True) -> dict:
 class PeerServer:
     def __init__(self, host: str, port: int, device: str, password: str,
                  checkout: Path | None = None, restart: bool = True,
-                 version: str = "", build: str = ""):
+                 version: str = "", build: str = "") -> None:
         self.server = ThreadingHTTPServer((host, port), _Handler)
         self.server.device = device  # type: ignore[attr-defined]
         self.server.password = password  # type: ignore[attr-defined]

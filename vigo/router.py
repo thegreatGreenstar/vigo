@@ -54,7 +54,8 @@ class Pick:
 
 
 class Router:
-    def __init__(self, config: Config, probe_timeout: float = 2.5, cache: float = 8.0):
+    def __init__(self, config: Config, probe_timeout: float = 2.5,
+                 cache: float = 8.0) -> None:
         self.config = config
         self.probe_timeout = probe_timeout
         self.cache_seconds = cache

@@ -15,9 +15,12 @@ import threading
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
+from typing import Protocol
 
 from . import log, text
+from .config import Config, Device
 from .opencode_api import EventStream, OpenCode, OpenCodeError, busy_since
+from .state import State
 
 FOOTER = {
     "succeeded": "",
@@ -48,7 +51,7 @@ POLL = 0.5
 RECENT = 300.0
 
 
-def _recent(stamp, seconds: float) -> bool:
+def _recent(stamp: object, seconds: float) -> bool:
     """Whether Discord's ISO timestamp is within that many seconds of now."""
     if not isinstance(stamp, str) or not stamp:
         return False
@@ -59,8 +62,15 @@ def _recent(stamp, seconds: float) -> bool:
     return abs(time.time() - when.timestamp()) <= seconds
 
 
-def open_session(app, client: OpenCode, device, channel_id: str, new: bool,
-                 title: str) -> str:
+class Host(Protocol):
+    """What a run needs from the app: its settings, and what it remembers."""
+
+    config: Config
+    state: State
+
+
+def open_session(app: Host, client: OpenCode, device: Device, channel_id: str,
+                 new: bool, title: str) -> str:
     """This channel's session on that device, or a new one.
 
     Shared with `/vigo goal`, which needs a session to hang an objective on
@@ -140,9 +150,9 @@ class Run:
 class Ask:
     """Ask one device one question, and keep its Discord message current."""
 
-    def __init__(self, app, *, token: str, channel_id: str, user_id: str,
+    def __init__(self, app: Host, *, token: str, channel_id: str, user_id: str,
                  device_name: str, prompt: str, new: bool, title: str,
-                 hidden: bool = False, goal: str = ""):
+                 hidden: bool = False, goal: str = "") -> None:
         self.app = app
         self.token = token
         self.channel_id = channel_id
@@ -555,7 +565,7 @@ class Ask:
             newest = self.client.messages(session, limit=1, order="desc")
         except OpenCodeError:
             return ""
-        return str((newest[0].get("id") or "")) if newest else ""
+        return str(newest[0].get("id") or "") if newest else ""
 
     def _verdict(self, session: str) -> str:
         """What the device says about this question, read once past `timeout`.

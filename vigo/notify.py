@@ -12,12 +12,13 @@ never swallowed: a DM that did not arrive must not look like one that did.
 from __future__ import annotations
 
 from . import text
+from .config import Config
 from .discord_api import Discord
 
 # Discord's own limit is 2000; `text.chunk` splits an answer the way it splits
 # a long one, so a long status report arrives as several messages, not one
 # refused.
-def send_owner(config, content: str, api: Discord | None = None) -> int:
+def send_owner(config: Config, content: str, api: Discord | None = None) -> int:
     """DM the owner; return how many messages it took.
 
     Raises DiscordError when Discord will not take it, and whatever the HTTP

@@ -11,14 +11,14 @@ from pathlib import Path
 from . import ask as asking
 from . import commands, goal, log, text
 from .allowlist import AllowError, AllowList
-from .config import Config
+from .config import Config, Device
 from .discord_api import Discord, DiscordError
 from .gateway import Gateway
 from . import __version__
 from .notify import send_owner
 from .opencode_api import OpenCode, OpenCodeError, busy_since
 from .peer import PeerClient, PeerServer, build_of, head_of, update_self
-from .router import Router
+from .router import Pick, Router
 from .state import State
 
 INTENTS = 0  # no gateway events are needed: interactions arrive without intents
@@ -73,7 +73,7 @@ def _select(custom_id: str, options: list[dict], maximum: int, placeholder: str)
     }
 
 
-def _answer_text(value) -> str:
+def _answer_text(value: object) -> str:
     if isinstance(value, list):
         return ", ".join(str(item) for item in value) or "(nothing)"
     return str(value)
@@ -81,7 +81,7 @@ def _answer_text(value) -> str:
 
 class App:
     def __init__(self, config: Config, api: Discord | None = None, state: State | None = None,
-                 checkout: Path | None = None):
+                 checkout: Path | None = None) -> None:
         self.checkout = checkout
         self._build: str | None = None
         self.config = config
@@ -478,7 +478,8 @@ class App:
             return
         self._question_answer(payload, ticket, field, value)
 
-    def _question_answer(self, payload: dict, ticket: str, field: dict, value) -> None:
+    def _question_answer(self, payload: dict, ticket: str, field: dict,
+                         value: object) -> None:
         interaction_id = payload["id"]
         token = payload["token"]
         entry = self.state.answer_form(ticket, field["key"], value)
@@ -808,7 +809,7 @@ class App:
     # -- the commands -----------------------------------------------------
 
     def _answer(self, sub: str, options: dict, token: str, channel_id: str,
-                channel_name: str, who: str, owner: bool, pick) -> None:
+                channel_name: str, who: str, owner: bool, pick: Pick) -> None:
         if sub == commands.ASK:
             self._ask(options, token, channel_id, channel_name, who, pick)
         elif sub == commands.QUICK:
@@ -831,7 +832,7 @@ class App:
             self._say(token, self.allow.describe())
 
     def _ask(self, options: dict, token: str, channel_id: str, channel_name: str,
-             who: str, pick) -> None:
+             who: str, pick: Pick) -> None:
         prompt = str(options.get("prompt") or "").strip()
         if not prompt:
             self._say(token, "The question is empty.")
@@ -902,7 +903,7 @@ class App:
         return prompt if bool(wanted) else ""
 
     def _goal(self, options: dict, token: str, channel_id: str, channel_name: str,
-              pick) -> None:
+              pick: Pick) -> None:
         """Set, pause, resume or clear the goal this channel's session holds."""
         objective = str(options.get("objective") or "").strip()
         if not objective:
@@ -963,7 +964,7 @@ class App:
             said += " `/vigo status` says what the device holds."
         self._say(token, said)
 
-    def _quick(self, options: dict, token: str, channel_id: str, pick) -> None:
+    def _quick(self, options: dict, token: str, channel_id: str, pick: Pick) -> None:
         """One question, answered once: no session, no tools, nothing kept."""
         prompt = str(options.get("prompt") or "").strip()
         if not prompt:
@@ -1218,7 +1219,7 @@ class App:
             lines.extend(line)
         return "\n".join(lines)
 
-    def _goal_text(self, device, remembered: dict | None) -> str:
+    def _goal_text(self, device: Device | None, remembered: dict | None) -> str:
         """What the device says about this channel's goal, or "" for none.
 
         A goal is the device's, not this daemon's, so it is read from there:
@@ -1259,7 +1260,7 @@ class App:
             lines.extend(f"“{text.shorten(prompt, 80)}”" for prompt in finished[-3:])
         return lines
 
-    def _devices(self, pick, detailed: bool = False) -> str:
+    def _devices(self, pick: Pick, detailed: bool = False) -> str:
         states = self.router.states(fresh=True)
         infos = self._peer_infos() if detailed else {}
         # Read the checkout every time.  A commit moves it without a restart,

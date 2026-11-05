@@ -10,6 +10,7 @@ from __future__ import annotations
 import base64
 import json
 import queue
+import socket
 import threading
 import urllib.request
 from dataclasses import dataclass
@@ -20,7 +21,7 @@ from . import httpc, log
 
 
 class OpenCodeError(Exception):
-    def __init__(self, status: int, message: str, where: str):
+    def __init__(self, status: int, message: str, where: str) -> None:
         super().__init__(f"{where}: {message}" + (f" ({status})" if status else ""))
         self.status = status
         self.message = message
@@ -55,12 +56,13 @@ def busy_since(info: dict) -> float | None:
 
 
 class OpenCode:
-    def __init__(self, base: str, password: str, timeout: float = 20.0):
+    def __init__(self, base: str, password: str, timeout: float = 20.0) -> None:
         self.base = base.rstrip("/")
         self.password = password
         self.timeout = timeout
 
-    def _call(self, method: str, path: str, payload: Any = None, timeout: float | None = None):
+    def _call(self, method: str, path: str, payload: Any = None,
+               timeout: float | None = None) -> Any:
         headers = {"Authorization": _auth(self.password)}
         body = None
         if payload is not None:
@@ -217,13 +219,14 @@ class OpenCode:
 class EventStream:
     """SSE from /api/event, read on its own thread into a queue."""
 
-    def __init__(self, base: str, password: str, stop: threading.Event):
+    def __init__(self, base: str, password: str, stop: threading.Event) -> None:
         self.base = base.rstrip("/")
         self.password = password
         self.stop = stop
         self.events: queue.Queue[dict | None] = queue.Queue()
         self.thread: threading.Thread | None = None
         self.ready = threading.Event()
+        self.answer = None   # the live response, which `close` shuts
 
     def start(self) -> EventStream:
         self.thread = threading.Thread(target=self._run, name="opencode-events", daemon=True)
@@ -231,7 +234,25 @@ class EventStream:
         return self
 
     def close(self) -> None:
+        """Stop reading and hand the connection back.
+
+        Setting the flag alone left the thread blocked in a read for as long as
+        the device had nothing to say, so every run left a connection and a
+        thread behind it.  Closing the response is not the way: `HTTPResponse`
+        is not safe to close from another thread, and it waits on the buffer
+        lock the reader holds, which hangs the run for good.  Shutting the
+        socket down wakes that read, and then the thread closes everything it
+        owns itself.
+        """
         self.stop.set()
+        answer = self.answer
+        sock = getattr(getattr(getattr(answer, "fp", None), "raw", None), "_sock", None)
+        if sock is None:
+            return
+        try:
+            sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
 
     def _run(self) -> None:
         request = urllib.request.Request(
@@ -245,6 +266,7 @@ class EventStream:
         data: list[str] = []
         try:
             with urllib.request.urlopen(request, timeout=60) as answer:
+                self.answer = answer
                 self.ready.set()
                 for raw in answer:
                     if self.stop.is_set():
@@ -267,6 +289,7 @@ class EventStream:
             if not self.stop.is_set():
                 log.info(f"events: stream ended ({error})")
         finally:
+            self.answer = None
             self.ready.set()
             self.events.put(None)
 

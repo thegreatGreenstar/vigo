@@ -24,7 +24,7 @@ import sys
 import time
 import unittest
 from concurrent.futures import ThreadPoolExecutor
-from typing import Iterable, Iterator
+from collections.abc import Iterable, Iterator
 
 
 def cases_of(suite: unittest.TestSuite) -> Iterator[unittest.TestCase]:

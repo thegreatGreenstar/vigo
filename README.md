@@ -531,6 +531,10 @@ python3 -m unittest discover -s tests -t . -v   # the canonical run
 python3 -m tests.parallel                       # the same suite on threads
 ```
 
+The product code is typed: every parameter and return in `vigo/` carries an
+annotation, and a test fails on a missing one or on one that does not resolve.
+A full type checker is not wired in yet.
+
 The parallel runner is standard library only: every test builds its own
 temporary directory and its own fakes on port 0, so nothing is shared and the
 cases can run beside each other. `--slowest 5` names where the time goes, and
