@@ -223,7 +223,11 @@ class AppTest(unittest.TestCase):
             finishing.set()
             self.assertTrue(self.discord.wait_for(
                 lambda: any("the late answer" in str(content) for content in self.said()), 15))
-        self.assertIsNone(app.run_for(CHANNEL))
+            # The answer is in the channel before the run lets go: releasing the
+            # claim and unregistering happen just after it is posted.
+            self.assertTrue(self.discord.wait_for(
+                lambda: app.run_for(CHANNEL) is None, 10),
+                "the run lets the channel go once it answers")
 
     def test_status_reports_a_run_that_belongs_to_another_daemon(self):
         """The device knows it is working; this daemon's map of runs cannot."""
@@ -661,7 +665,7 @@ class AppTest(unittest.TestCase):
         self.assertEqual(self.device.generated, [])
 
     def test_an_ask_is_acknowledged_first_and_answered_after(self):
-        self.device.script = [("sleep", 0.3), ("idle", "just the answer")]
+        self.device.script = [("idle", "just the answer")]
         with TempDir() as directory:
             app = self.make(directory)
             self.use(app, commands.ASK,
