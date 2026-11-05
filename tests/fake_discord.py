@@ -16,6 +16,7 @@ class FakeDiscord:
         self.responses: list[dict] = []
         self.edits: list[dict] = []
         self.followups: list[dict] = []
+        self.deleted: list[str] = []
         self.messages: dict[str, list[dict]] = {}
         self.commands: dict[str, list[dict]] = {}
         self.global_commands: list[dict] = []
@@ -194,6 +195,16 @@ class FakeDiscord:
                     if body.get("components"):
                         message["components"] = body["components"]
                     self._send(200, message)
+                    return
+                self._send(404, {"code": 0, "message": "no route"})
+
+            def do_DELETE(self) -> None:
+                path = urlsplit(self.path).path
+                if path.endswith("/messages/@original"):
+                    token = path.split("/webhooks/")[1].split("/")[1]
+                    with fake.lock:
+                        fake.deleted.append(token)
+                    self._send(204)
                     return
                 self._send(404, {"code": 0, "message": "no route"})
 

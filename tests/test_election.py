@@ -73,8 +73,8 @@ class ElectionTest(unittest.TestCase):
             for thread in threads:
                 thread.join(10)
             self.assertTrue(self.discord.wait_for(
-                lambda: any("from the mac" in str(edit["content"])
-                            for edit in self.discord.edits), 10))
+                lambda: any("from the mac" in str(entry["content"])
+                            for entry in self.discord.edits + self.discord.followups), 10))
         acks = [reply for reply in self.discord.responses if reply["id"] == interaction]
         self.assertEqual(len(acks), 1, "Discord acknowledged the use once")
         self.assertEqual(len(self.mac.prompts), 1)

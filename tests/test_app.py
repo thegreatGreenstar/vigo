@@ -39,6 +39,10 @@ class AppTest(unittest.TestCase):
         self.app = App(settings, api=api, state=State(directory / "state.json"))
         return self.app
 
+    def said(self) -> list[str]:
+        """Everything the bot posted: a command edits, an answer follows up."""
+        return [entry["content"] for entry in self.discord.edits + self.discord.followups]
+
     def use(self, app: App, sub: str, options: list | None = None,
             who: str = OWNER, token: str = "tok", interaction: str = ""):
         interaction = interaction or self.discord.next_id("int")
@@ -132,7 +136,7 @@ class AppTest(unittest.TestCase):
             self.use(app, commands.ASK, who=listed,
                      options=[{"name": "prompt", "type": 3, "value": "hi"}])
             self.assertTrue(self.discord.wait_for(
-                lambda: any("hello" in edit["content"] for edit in self.discord.edits)))
+                lambda: any("hello" in content for content in self.said())))
 
     # -- asking -----------------------------------------------------------
 
@@ -146,11 +150,11 @@ class AppTest(unittest.TestCase):
             self.assertEqual(deferred["type"], 5)
             self.assertNotIn("flags", deferred["data"])
             self.assertTrue(self.discord.wait_for(
-                lambda: any("hello world" in edit["content"] for edit in self.discord.edits), 10))
-        final = [edit for edit in self.discord.edits if "hello world" in edit["content"]][-1]
-        self.assertNotIn("asked by", final["content"])
-        self.assertNotIn("macbook", final["content"], "the answer carries no footer")
-        self.assertEqual(final["content"].strip(), "hello world")
+                lambda: any("hello world" in content for content in self.said()), 10))
+        final = next(content for content in self.said() if "hello world" in content)
+        self.assertNotIn("asked by", final)
+        self.assertNotIn("macbook", final, "the answer carries no footer")
+        self.assertEqual(final.strip(), "hello world")
         self.assertEqual(self.device.prompts[0][1], "say hi")
 
     def test_quick_answers_once_and_starts_no_session(self):
@@ -159,8 +163,8 @@ class AppTest(unittest.TestCase):
             self.use(app, commands.QUICK,
                       options=[{"name": "prompt", "type": 3, "value": "what is a pointer"}])
             self.assertTrue(self.discord.wait_for(
-                lambda: any("one-off answer" in str(edit["content"])
-                            for edit in self.discord.edits), 10))
+                lambda: any("one-off answer" in str(content)
+                            for content in self.said()), 10))
         self.assertEqual(self.device.generated, ["what is a pointer"])
         self.assertEqual(self.device.sessions, {}, "a one-off is not a session")
         self.assertEqual(self.device.prompts, [])
@@ -181,7 +185,7 @@ class AppTest(unittest.TestCase):
             self.use(app, commands.QUICK,
                       options=[{"name": "prompt", "type": 3, "value": "hi"}])
             self.assertTrue(self.discord.wait_for(
-                lambda: any("no device" in str(edit["content"]) for edit in self.discord.edits)))
+                lambda: any("no device" in str(content) for content in self.said())))
         self.assertEqual(self.device.generated, [])
 
     def test_a_quick_answer_is_not_preceded_by_progress(self):
@@ -191,11 +195,24 @@ class AppTest(unittest.TestCase):
             self.use(app, commands.ASK,
                       options=[{"name": "prompt", "type": 3, "value": "hi"}])
             self.assertTrue(self.discord.wait_for(
-                lambda: any("just the answer" in str(edit["content"])
-                            for edit in self.discord.edits), 10))
-        self.assertEqual(len(self.discord.edits), 1,
+                lambda: any("just the answer" in str(content)
+                            for content in self.said()), 10))
+        self.assertEqual(len(self.said()), 1,
                          "Discord's own 'thinking' is enough; only the answer is sent")
-        self.assertEqual(self.discord.edits[0]["content"].strip(), "just the answer")
+        self.assertEqual(self.said()[0].strip(), "just the answer")
+
+    def test_the_answer_is_its_own_message(self):
+        self.device.script = [("idle", "the answer")]
+        with TempDir() as directory:
+            app = self.make(directory)
+            self.use(app, commands.ASK,
+                      options=[{"name": "prompt", "type": 3, "value": "hi"}])
+            self.assertTrue(self.discord.wait_for(
+                lambda: any("the answer" in str(entry["content"])
+                            for entry in self.discord.followups), 10))
+        self.assertEqual(self.discord.edits, [], "the placeholder is not edited")
+        self.assertEqual(len(self.discord.deleted), 1, "the placeholder is removed")
+        self.assertEqual(self.discord.followups[0]["content"].strip(), "the answer")
 
     def test_hidden_asks_are_ephemeral(self):
         self.device.script = [("idle", "quiet")]
@@ -208,7 +225,7 @@ class AppTest(unittest.TestCase):
             deferred = self.discord.answer_for(interaction)
             self.assertEqual(deferred["data"]["flags"], 64)
             self.assertTrue(self.discord.wait_for(
-                lambda: any("quiet" in edit["content"] for edit in self.discord.edits), 10))
+                lambda: any("quiet" in content for content in self.said()), 10))
 
     def test_no_device_answers(self):
         self.device.close()
@@ -217,7 +234,7 @@ class AppTest(unittest.TestCase):
             self.use(app, commands.ASK,
                       options=[{"name": "prompt", "type": 3, "value": "hi"}])
             self.assertTrue(self.discord.wait_for(
-                lambda: any("no device" in str(edit["content"]) for edit in self.discord.edits)))
+                lambda: any("no device" in str(content) for content in self.said())))
         self.assertEqual(self.device.prompts, [])
 
     def test_one_run_per_channel(self):
@@ -230,7 +247,7 @@ class AppTest(unittest.TestCase):
             self.use(app, commands.ASK,
                       options=[{"name": "prompt", "type": 3, "value": "second"}])
             self.assertTrue(self.discord.wait_for(
-                lambda: any("already running" in str(edit["content"]) for edit in self.discord.edits)))
+                lambda: any("already running" in str(content) for content in self.said())))
             run = app.run_for(CHANNEL)
             if run:
                 run.stop.set()
@@ -280,9 +297,9 @@ class AppTest(unittest.TestCase):
                     {"name": "device", "type": 3, "value": "pc"},
                 ])
                 self.assertTrue(self.discord.wait_for(
-                    lambda: any("pc" in str(edit["content"])
-                                for edit in self.discord.edits), 30))
-                said = self.discord.edits[-1]["content"]
+                    lambda: any("pc" in str(content)
+                                for content in self.said()), 30))
+                said = self.said()[-1]
             self.assertIn("pulled", said)
             self.assertNotIn("macbook", said)
             self.assertTrue((peer_checkout / "two.txt").exists(), "the other checkout moved")
@@ -333,8 +350,8 @@ class AppTest(unittest.TestCase):
             interaction = self.use(app, commands.DEVICES)
             answer = self.discord.answer_for(interaction)
             self.assertTrue(self.discord.wait_for(
-                lambda: any("macbook" in str(edit["content"]) for edit in self.discord.edits)))
-            shown = self.discord.edits[-1]["content"]
+                lambda: any("macbook" in str(content) for content in self.said())))
+            shown = self.said()[-1]
         self.assertEqual(answer["data"]["flags"], 64, "devices is never shown to a channel")
         self.assertIn("/tmp/project", shown, "only the owner sees the machine")
 
@@ -363,8 +380,8 @@ class AppTest(unittest.TestCase):
             self.use(app, commands.DEVICES,
                       options=[{"name": "hidden", "type": 5, "value": True}])
             self.assertTrue(self.discord.wait_for(
-                lambda: any("/tmp/project" in str(edit["content"]) for edit in self.discord.edits)))
-        self.assertIn("macbook", self.discord.edits[-1]["content"])
+                lambda: any("/tmp/project" in str(content) for content in self.said())))
+        self.assertIn("macbook", self.said()[-1])
 
     def test_no_progress_message_names_a_device(self):
         self.device.script = [("delta", "thinking hard"), ("sleep", 0.4), ("idle", "done")]
@@ -373,9 +390,9 @@ class AppTest(unittest.TestCase):
             self.use(app, commands.ASK,
                       options=[{"name": "prompt", "type": 3, "value": "hi"}])
             self.assertTrue(self.discord.wait_for(
-                lambda: any("done" in str(edit["content"]) for edit in self.discord.edits), 10))
-        for edit in self.discord.edits:
-            self.assertNotIn("macbook", str(edit["content"]),
+                lambda: any("done" in str(content) for content in self.said()), 10))
+        for content in self.said():
+            self.assertNotIn("macbook", str(content),
                              "the device never appears in a channel message")
 
     def test_status_is_the_owners_alone_and_always_hidden(self):

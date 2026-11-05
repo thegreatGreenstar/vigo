@@ -27,10 +27,8 @@ END_EVENTS = {
     "session.execution.interrupted": "interrupted",
 }
 
-# Discord already shows "is thinking..." for a deferred response, so the first
-# progress edit waits until there is something to say, or until this much has
-# passed with nothing at all.
-FIRST_PROGRESS_AFTER = 5.0
+# The message stays empty (Discord shows "is thinking...") until the answer is
+# ready. No interim text is sent, by choice: the answer or nothing.
 
 
 @dataclass
@@ -64,8 +62,6 @@ class Ask:
         self.title = title
         self.run = Run(session="", device=device_name, started=time.monotonic())
         self.buffer = ""
-        self.tools: list[str] = []
-        self.state_word = "thinking"
         self.waiting = False
         self.prompted_at = 0.0
 
@@ -82,19 +78,6 @@ class Ask:
             log.debug(f"ask: cannot edit the message ({error})")
             return False
 
-    def _progress(self) -> str:
-        parts = [
-            f"**⏳ {self.state_word}** — {text.duration(self.run.elapsed)}",
-            f"**asked:** {text.shorten(self.prompt, 280)}",
-        ]
-        if self.waiting:
-            parts.append("🔐 waiting for your approval in your DMs")
-        if self.buffer.strip():
-            parts.append("> " + text.tail(self.buffer, 700).replace("\n", "\n> "))
-        if self.tools:
-            parts.append("🛠️ " + ", ".join(f"`{name}`" for name in self.tools[-4:]))
-        return "\n".join(parts)
-
     def _final(self, body: str, outcome: str, cost: float, tokens: dict,
                steps: int = 0, context: int = 0) -> None:
         note = FOOTER.get(outcome, "")
@@ -102,18 +85,25 @@ class Ask:
         if note:
             content += f"\n\n{note}"
         chunks = text.chunk(content) or ["_nothing to say_"]
-        if not self._edit(chunks[0]):
-            self._late_answer(chunks[0])
-            return
-        for extra in chunks[1:]:
+        # The answer is its own message, and the "thinking" placeholder goes
+        # away: an edit would leave an "edited" mark and no notification.
+        posted = 0
+        for piece in chunks:
             try:
                 self.app.api.followup(self.token, {
-                    "content": extra,
+                    "content": piece,
                     "allowed_mentions": {"parse": []},
                 })
+                posted += 1
             except Exception as error:
-                log.error(f"ask: cannot post the rest of the answer ({error})")
-                return
+                log.error(f"ask: cannot post the answer ({error})")
+                break
+        if not posted:
+            if not self._edit(chunks[0]):
+                self._late_answer(chunks[0])
+            return
+        if not self.app.api.delete_original(self.token):
+            log.info("ask: the placeholder stayed; the answer was posted anyway")
         log.info(
             f"ask: {self.device_name} · {text.duration(self.run.elapsed)} · "
             f"{steps} step(s) · context {text.tokens(context)} · "
@@ -194,6 +184,7 @@ class Ask:
         return answer, cost, tokens, steps, context
 
     def _note(self, event: dict) -> None:
+        """Keep the streamed text, which is the answer if the messages cannot be read."""
         kind = event.get("type", "")
         data = event.get("data") or {}
         if kind == "session.text.delta":
@@ -202,20 +193,12 @@ class Ask:
             piece = data.get("text")
             if piece:
                 self.buffer = str(piece)
-        elif kind in ("session.tool.input.started", "session.tool.called"):
-            name = str(data.get("name") or "")
-            if name and (not self.tools or self.tools[-1] != name):
-                self.tools.append(name)
-            self.state_word = "working"
-        elif kind == "session.step.started":
-            self.state_word = "working"
 
     def _permission(self, session: str, data: dict) -> None:
         request_id = data.get("id")
         if not request_id:
             return
         self.waiting = True
-        self.state_word = "blocked"
         try:
             self.app.ask_permission(
                 device=self.device_name,
@@ -265,9 +248,7 @@ class Ask:
             self.app.unregister_run(self.channel_id)
             return
 
-        prompted = time.monotonic()
         deadline = started + self.app.config.timeout
-        next_edit = prompted + self.app.config.edit_every
         stream_dead = False
         poll_at = 0.0
         succeeded_at = 0.0
@@ -313,7 +294,6 @@ class Ask:
                         self._permission(session, data)
                     elif kind == "permission.replied":
                         self.waiting = False
-                        self.state_word = "working"
                     elif kind == "session.execution.succeeded":
                         succeeded_at = now
                     elif kind in END_EVENTS:
@@ -323,16 +303,6 @@ class Ask:
                         outcome = "succeeded"
                         break
 
-            if time.monotonic() >= next_edit:
-                next_edit = time.monotonic() + self.app.config.edit_every
-                worth_saying = (
-                    self.buffer.strip()
-                    or self.tools
-                    or self.waiting
-                    or time.monotonic() - prompted >= FIRST_PROGRESS_AFTER
-                )
-                if worth_saying:
-                    self._edit(self._progress())
 
         if not outcome:
             outcome = "interrupted" if self.run.stop.is_set() else "succeeded"
