@@ -6,6 +6,7 @@ import secrets
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 from . import ask as asking
 from . import commands, log, text
@@ -54,7 +55,9 @@ def _strip(command: dict) -> dict:
 
 
 class App:
-    def __init__(self, config: Config, api: Discord | None = None, state: State | None = None):
+    def __init__(self, config: Config, api: Discord | None = None, state: State | None = None,
+                 checkout: Path | None = None):
+        self.checkout = checkout
         self.config = config
         self.api = api or Discord(config.token, config.app_id)
         self.router = Router(config)
@@ -542,7 +545,7 @@ class App:
         # This one last, after the answer is out: pulling is safe, restarting
         # is only safe once the person has read the list above.
         if local:
-            threading.Timer(1.0, update_self).start()
+            threading.Timer(1.0, lambda: update_self(self.checkout)).start()
 
     def _status(self, channel_id: str) -> str:
         remembered = self.state.session_for(channel_id)
@@ -668,7 +671,8 @@ class App:
         self.register_commands()
         if self.config.peer_port:
             PeerServer(self.config.peer_host, self.config.peer_port,
-                       self.config.device, self.config.password).start()
+                       self.config.device, self.config.password,
+                       checkout=self.checkout).start()
         gateway = Gateway(url, self.config.token, INTENTS, self.on_event,
                           lambda state: log.debug(f"gateway: {state}"))
         gateway.run()

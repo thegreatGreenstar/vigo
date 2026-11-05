@@ -80,7 +80,8 @@ class _Handler(BaseHTTPRequestHandler):
         if self.path.split("?")[0] != "/vigo/info":
             self._send(404, {"error": "no route"})
             return
-        self._send(200, {"device": self.server.device, "version": __version__})
+        self._send(200, {"device": self.server.device,
+                         "version": self.server.version or __version__})
 
     def do_POST(self) -> None:
         if not self._allowed():
@@ -89,7 +90,8 @@ class _Handler(BaseHTTPRequestHandler):
         if self.path.split("?")[0] != "/vigo/update":
             self._send(404, {"error": "no route"})
             return
-        self._send(200, update_self())
+        self._send(200, update_self(checkout=self.server.checkout,
+                                    restart=self.server.restart))
 
 
 def _run(command: list[str], cwd: Path, timeout: float = 120.0) -> tuple[int, str]:
@@ -117,10 +119,15 @@ def update_self(checkout: Path | None = None, restart: bool = True) -> dict:
 
 
 class PeerServer:
-    def __init__(self, host: str, port: int, device: str, password: str):
+    def __init__(self, host: str, port: int, device: str, password: str,
+                 checkout: Path | None = None, restart: bool = True,
+                 version: str = ""):
         self.server = ThreadingHTTPServer((host, port), _Handler)
         self.server.device = device  # type: ignore[attr-defined]
         self.server.password = password  # type: ignore[attr-defined]
+        self.server.checkout = checkout  # type: ignore[attr-defined]
+        self.server.restart = restart  # type: ignore[attr-defined]
+        self.server.version = version  # type: ignore[attr-defined]
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
 
     def start(self) -> PeerServer:

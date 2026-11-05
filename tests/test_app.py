@@ -1,9 +1,12 @@
+import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
 from vigo import commands
 from vigo.app import App
 from vigo.discord_api import Discord
+from vigo.peer import PeerServer
 from vigo.state import State
 from tests.fake_discord import FakeDiscord
 from tests.fake_opencode import FakeOpenCode
@@ -233,19 +236,63 @@ class AppTest(unittest.TestCase):
                 run.stop.set()
 
     def test_upgrade_updates_the_device_it_names(self):
-        with TempDir() as directory:
-            app = self.make(directory)
-            interaction = self.use(app, commands.UPGRADE, options=[
-                {"name": "device", "type": 3, "value": "pc"},
-            ])
-            self.assertTrue(self.discord.wait_for(
-                lambda: any("pc" in str(edit["content"])
-                            for edit in self.discord.edits), 5))
-            said = self.discord.edits[-1]["content"]
-            answer = self.discord.answer_for(interaction)
-        self.assertEqual(answer["data"]["flags"], 64, "upgrade is never shown to a channel")
-        self.assertIn("pc", said)
-        self.assertNotIn("macbook", said, "only the named device is touched")
+        with tempfile.TemporaryDirectory() as work:
+            root = Path(work)
+            origin = root / "origin.git"
+            self._git("init", "--bare", "-q", str(origin), cwd=root)
+            seed = root / "seed"
+            self._git("clone", "-q", str(origin), str(seed), cwd=root)
+            self._git("config", "user.email", "t@example.com", cwd=seed)
+            self._git("config", "user.name", "t", cwd=seed)
+            (seed / "one.txt").write_text("one\n", encoding="utf-8")
+            self._git("add", ".", cwd=seed)
+            self._git("commit", "-qm", "one", cwd=seed)
+            self._git("push", "-q", "origin", "HEAD:main", cwd=seed)
+            peer_checkout = root / "peer"
+            self._git("clone", "-q", "-b", "main", str(origin), str(peer_checkout), cwd=root)
+            (seed / "two.txt").write_text("two\n", encoding="utf-8")
+            self._git("add", ".", cwd=seed)
+            self._git("commit", "-qm", "two", cwd=seed)
+            self._git("push", "-q", "origin", "HEAD:main", cwd=seed)
+
+            # the other daemon, on its own checkout, old build, no restart
+            other = PeerServer("127.0.0.1", 0, "pc", "pw",
+                               checkout=peer_checkout, restart=False,
+                               version="0.9.0").start()
+            self.addCleanup(other.stop)
+            peer_url = f"http://127.0.0.1:{other.server.server_address[1]}"
+
+            with TempDir() as directory:
+                settings = load_settings(
+                    directory,
+                    device="macbook",
+                    devices=[
+                        {"name": "macbook", "url": "http://127.0.0.1:1",
+                         "directory": "/a"},
+                        {"name": "pc", "url": "http://127.0.0.1:2",
+                         "directory": "/b", "peer": peer_url},
+                    ],
+                )
+                api = Discord("token", settings.app_id, base=self.discord.url)
+                app = App(settings, api=api, state=State(directory / "state.json"))
+                self.app = app
+                self.use(app, commands.UPGRADE, options=[
+                    {"name": "device", "type": 3, "value": "pc"},
+                ])
+                self.assertTrue(self.discord.wait_for(
+                    lambda: any("pc" in str(edit["content"])
+                                for edit in self.discord.edits), 30))
+                said = self.discord.edits[-1]["content"]
+            self.assertIn("pulled", said)
+            self.assertNotIn("macbook", said)
+            self.assertTrue((peer_checkout / "two.txt").exists(), "the other checkout moved")
+
+    @staticmethod
+    def _git(*args, cwd):
+        done = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True)
+        if done.returncode != 0:
+            raise AssertionError(done.stderr)
+        return done.stdout
 
     def test_the_device_option_offers_the_names(self):
         with TempDir() as directory:

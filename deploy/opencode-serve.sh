@@ -25,5 +25,5 @@ fi
 password="$(systemd-creds decrypt --user --name="$name" "$cred" -)"
 
 OPENCODE_PASSWORD="$password" exec opencode serve \
-    --hostname "${OPENCODE_HOSTNAME:-0.0.0.0}" \
+    --hostname "${OPENCODE_HOSTNAME:-127.0.0.1}" \
     --port "${OPENCODE_PORT:-4096}"
