@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import tempfile
+import time
 from pathlib import Path
 
 from vigo import config as configuration
@@ -56,4 +58,18 @@ class TempDir:
         return self.path
 
     def __exit__(self, *args) -> None:
+        # A run can still be writing the state file as the test ends. Windows
+        # refuses to remove an open file (WinError 32, a PermissionError), and
+        # a directory that refills between the walk and the rmdir is ENOTEMPTY.
+        # Retry briefly, then raise if it never clears.
+        for _ in range(100):
+            try:
+                self._dir.cleanup()
+                return
+            except PermissionError:
+                time.sleep(0.01)
+            except OSError as error:
+                if error.errno != errno.ENOTEMPTY:
+                    raise
+                time.sleep(0.01)
         self._dir.cleanup()

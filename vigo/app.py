@@ -21,7 +21,12 @@ from .peer import PeerClient, PeerServer, build_of, head_of, update_self
 from .router import Pick, Router
 from .state import State
 
-INTENTS = 0  # no gateway events are needed: interactions arrive without intents
+# Interactions arrive without intents. Direct messages are read only so that a
+# reply to one of this bot's messages can be the next question: content is
+# delivered in a DM without the privileged intent, so this is the only one
+# asked for, and the text is never kept.
+DIRECT_MESSAGES = 1 << 12
+INTENTS = DIRECT_MESSAGES
 
 WAITING_MAX = 10   # questions a channel may hold behind the one that runs
 FINISHED_MAX = 10  # the last questions that ran, which `/vigo status` can name
@@ -605,6 +610,100 @@ class App:
     def on_event(self, event: str, data: dict) -> None:
         if event == "INTERACTION_CREATE":
             self.pool.submit(self.handle_interaction, data)
+        elif event == "MESSAGE_CREATE":
+            # A reply to one of this bot's answers is a question. Everything
+            # else is dropped in `handle_message` before its text is looked at.
+            self.pool.submit(self.handle_message, data)
+
+    def handle_message(self, data: dict) -> None:
+        """A reply to a message vigo posted in a DM is that person's next question.
+
+        The answer to a question is a message, so replying to it carries the
+        conversation on: the reply runs as an ask in the same DM session, and
+        its answer is a message too, so a reply to that works in turn.
+
+        Only direct messages are read, and only a reply to a message this
+        daemon posted in this conversation is a question. A plain message and
+        a reply to anybody else's message are ignored, and the text of either
+        is never kept. A message from somebody who may not ask is refused in
+        words.
+        """
+        if data.get("guild_id"):
+            return  # a guild channel is never read
+        author = data.get("author") or {}
+        if author.get("bot"):
+            return
+        who = str(author.get("id") or "")
+        reference = str((data.get("message_reference") or {}).get("message_id") or "")
+        channel_id = str(data.get("channel_id") or "")
+        prompt = str(data.get("content") or "").strip()
+        if not who or not reference or not channel_id or not prompt:
+            return  # a plain message is not a question
+        try:
+            allowed = who == self.config.owner or self.allow.may_ask(who)
+        except Exception:  # a slow read must not grant anything
+            allowed = who == self.config.owner
+        if not allowed:
+            log.info(f"denied a message from {who}")
+            self._post(channel_id, "Only this bot's owner and the people it approved may use "
+                                   "it. `/vigo help` says what it does.")
+            return
+        answered = self.state.answer_for(reference)
+        if answered is None or str(answered.get("channel") or "") != channel_id:
+            return  # not a message this daemon posted here
+        pick = self.router.pick()
+        if pick.name is None:
+            log.info(f"reply: no device ({pick.reason})")
+            self._post(channel_id, "No device would take the question. Start OpenCode there "
+                                   "with `opencode serve --hostname 0.0.0.0 --port 4096`.")
+            return
+        if not self.run_for(channel_id) and self._device_busy(channel_id, pick.name, new=False):
+            log.info("reply: the device is still working on this channel's last question")
+            self._post(channel_id, "The device is still working on the last question here. "
+                                   "`/vigo status` shows it, `/vigo stop` ends it.")
+            return
+        worker = asking.Ask(
+            self,
+            token="",
+            channel_id=channel_id,
+            user_id=who,
+            device_name=pick.name,
+            prompt=prompt,
+            new=False,
+            title="Discord DM",
+            reply_in_channel=True,
+        )
+        ahead = self.add_waiting(channel_id, worker)
+        if ahead is None:
+            log.info(f"reply: the line in this channel is full ({WAITING_MAX})")
+            self._post(channel_id, f"The line is full: {WAITING_MAX} questions wait in this "
+                                   "channel. Wait for them, or `/vigo stop` clears them.")
+            return
+        if ahead:
+            log.info(f"reply: queued in this channel ({ahead} ahead)")
+            self._post(channel_id, f"Queued behind {ahead} question{'' if ahead == 1 else 's'}. "
+                                   "I'll follow up here.", record=True)
+        else:
+            log.info("reply: a question from a reply")
+            self._post(channel_id, "Got it, working on it. I'll follow up here.", record=True)
+        self.start_next(channel_id)
+
+    def _post(self, channel_id: str, content: str, record: bool = False) -> None:
+        """Say something where there is no interaction to edit.
+
+        With `record`, a reply to it is the next question, and the daemon that
+        posted it is the only one that will act on that reply.
+        """
+        try:
+            posted = self.api.send(channel_id, {
+                "content": content[:2000],
+                "allowed_mentions": {"parse": []},
+            })
+        except DiscordError as error:
+            log.error(f"reply: cannot say it ({error.message})")
+            return
+        if record and isinstance(posted, dict) and posted.get("id"):
+            self.state.remember_answer(str(posted["id"]), channel_id)
 
     def register_commands(self) -> None:
         """Put the command on the application itself.

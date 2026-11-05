@@ -46,8 +46,9 @@ is, and a device answers even when its own daemon is not running.
 - **Nothing is stored about what was said.** No message text is logged; the
   log has ids, outcomes and durations. Answers live in Discord, as they do for
   any bot.
-- **The bot asks for no privileged intents.** It reads no messages: only the
-  slash command and the buttons. There is no message-content intent to enable.
+- **The bot asks for no privileged intents.** It asks for `DIRECT_MESSAGES` only.
+  A direct message is read only when it replies to a message the bot posted, and
+  the text is never stored. There is no message-content intent to enable.
 - **The token never enters the repository.** Settings live in
   `~/.config/vigo/vigo.json` (mode 0600); the repo ships only an example.
   CI fails if a `vigo.json` or a bot token shape reaches the tree.
@@ -343,6 +344,11 @@ working on it by then — nothing on the session is newer than the question — 
 run ends and says so, because a device that took the question and will not run
 it would hold the channel for ever with every later question behind it.
 
+In a direct message, reply to a message the bot posted and the reply is the
+next question in the same session. Its answer is posted in the DM as a message.
+A plain message is not a question. A reply to somebody else's message is
+ignored, and somebody who may not ask is told so.
+
 An ask that is a task gives the agent a **goal**, and it works toward that
 until it is met instead of answering once. A question stays a question:
 `/vigo ask goal:true` or `goal:false` says which it is when the wording is read
@@ -620,7 +626,7 @@ to a draft runs the quick one again.
 | What you see | What it means |
 | --- | --- |
 | `closed with 4004` | the token is not the bot's; reset it and copy it again |
-| `closed with 4014` | the bot asked for an intent Discord does not allow it; the bot asks only for `GUILDS` |
+| `closed with 4014` | the bot asked for an intent Discord does not allow it; the bot asks only for `DIRECT_MESSAGES` |
 | `no device answers` | no `opencode serve` is reachable from this daemon: check the URL, the port, and the password |
 | `Permission needed` never arrives | the owner and the bot do not share a server that allows DMs, so the card falls back to the channel |
 | the answer says `still running` | the run passed `timeout`; it keeps watching, `/vigo status` shows it, `/vigo stop` ends it |
