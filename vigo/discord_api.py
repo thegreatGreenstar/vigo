@@ -14,7 +14,7 @@ API = "https://discord.com/api/v10"
 class DiscordError(Exception):
     """Discord answered with an error the bot cannot retry."""
 
-    def __init__(self, status: int, code: int, message: str, where: str):
+    def __init__(self, status: int, code: int, message: str, where: str) -> None:
         super().__init__(
             f"{where}: Discord said {status} {message}" + (f" ({code})" if code else "")
         )
@@ -34,7 +34,8 @@ class Reply:
 
 
 class Discord:
-    def __init__(self, token: str, app_id: str, base: str = API, timeout: float = 20.0):
+    def __init__(self, token: str, app_id: str, base: str = API,
+                 timeout: float = 20.0) -> None:
         self.token = token
         self.app_id = app_id
         self.base = base.rstrip("/")

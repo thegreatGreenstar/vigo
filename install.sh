@@ -80,7 +80,15 @@ Linux)
     ;;
 esac
 
-# 5. what the settings still need
+# 5. main takes pull requests only: refuse a push straight to it
+if [ -d "$here/.git" ] || git -C "$here" rev-parse --git-dir >/dev/null 2>&1; then
+    git -C "$here" config core.hooksPath .githooks
+    say "hooks: pushes to main are refused here (.githooks/pre-push)"
+else
+    say "hooks: not a git checkout, so main is not guarded on this copy"
+fi
+
+# 6. what the settings still need
 say ""
 say "Now, in $config/vigo.json:"
 say "  device    this machine's name, exactly as it appears in devices"

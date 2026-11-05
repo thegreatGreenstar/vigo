@@ -9,38 +9,23 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from . import ask as asking
-from . import commands, log, text
+from . import commands, goal, log, text
 from .allowlist import AllowError, AllowList
-from .config import Config
+from .config import Config, Device
 from .discord_api import Discord, DiscordError
 from .gateway import Gateway
 from . import __version__
-from .opencode_api import OpenCode, OpenCodeError
+from .notify import send_owner
+from .opencode_api import OpenCode, OpenCodeError, busy_since
 from .peer import PeerClient, PeerServer, build_of, head_of, update_self
-from .router import Router
+from .router import Pick, Router
 from .state import State
 
 INTENTS = 0  # no gateway events are needed: interactions arrive without intents
 
 WAITING_MAX = 10   # questions a channel may hold behind the one that runs
 FINISHED_MAX = 10  # the last questions that ran, which `/vigo status` can name
-
-
-def busy_since(info: dict) -> float | None:
-    """When the session's turn started, in milliseconds, while it still runs.
-
-    The device stamps `busy` when a turn starts and `idle` when it ends, so a
-    finished turn has an `idle` at least as new as its `busy`.  This is the
-    only record that knows: the run may belong to another daemon, and it
-    outlives this daemon's timeout and its restarts.
-    """
-    stamps = info.get("time") or {}
-    busy, idle = stamps.get("busy"), stamps.get("idle")
-    if not isinstance(busy, (int, float)):
-        return None
-    if isinstance(idle, (int, float)) and idle >= busy:
-        return None
-    return float(busy)
+GOAL_WORDS = ("pause", "resume", "clear")  # `/vigo goal` control, not objectives
 
 
 def _strip(command: dict) -> dict:
@@ -74,9 +59,29 @@ def _strip(command: dict) -> dict:
     }
 
 
+def _select(custom_id: str, options: list[dict], maximum: int, placeholder: str) -> dict:
+    return {
+        "type": 3,
+        "custom_id": custom_id,
+        "placeholder": placeholder,
+        "min_values": 1,
+        "max_values": max(1, min(maximum, 25)),
+        "options": [
+            {"label": text.shorten(option["label"], 100), "value": str(position)}
+            for position, option in enumerate(options[:25])
+        ],
+    }
+
+
+def _answer_text(value: object) -> str:
+    if isinstance(value, list):
+        return ", ".join(str(item) for item in value) or "(nothing)"
+    return str(value)
+
+
 class App:
     def __init__(self, config: Config, api: Discord | None = None, state: State | None = None,
-                 checkout: Path | None = None):
+                 checkout: Path | None = None) -> None:
         self.checkout = checkout
         self._build: str | None = None
         self.config = config
@@ -97,15 +102,25 @@ class App:
         with self.runs_lock:
             self.runs[channel] = run
 
-    def unregister_run(self, channel: str) -> None:
-        """The run ended: remember its question, and start the next one."""
+    def unregister_run(self, channel: str, run: asking.Run | None = None) -> None:
+        """The run ended: remember its question, and start the next one.
+
+        Only the run that holds the channel may give it up.  A run calls this
+        from its own thread and again from its `finally`, and the second call
+        must not take the *next* run's place: doing that left one run invisible
+        while it worked, started another beside it, and posted the same answer
+        twice.
+        """
         with self.runs_lock:
-            run = self.runs.pop(channel, None)
-            if run is not None and run.prompt:
+            mine = run is None or self.runs.get(channel) is run
+            if not mine:
+                return
+            ended = self.runs.pop(channel, None)
+            if ended is not None and ended.prompt:
                 done = self.finished.setdefault(channel, [])
-                done.append(run.prompt)
+                done.append(ended.prompt)
                 del done[:-FINISHED_MAX]
-        if run is not None:
+        if ended is not None:
             self.start_next(channel)
 
     def start_next(self, channel: str) -> None:
@@ -157,8 +172,8 @@ class App:
         """
         if new:
             return False  # a fresh session, whatever the old one does
-        remembered = self.state.session_for(channel)
-        if not remembered or remembered.get("device") != device_name:
+        remembered = self.state.session_on(channel, device_name)
+        if not remembered:
             return False
         device = self.config.device_named(device_name)
         if device is None:
@@ -169,15 +184,166 @@ class App:
             return False  # a device that does not answer says so when asked
         return busy_since(info) is not None
 
+    # -- questions the agent asks -----------------------------------------
+
+    def ask_question(self, *, device: str, session: str, form: str,
+                     title: str, fields: list[dict], channel: str) -> bool:
+        """Relay a form to the owner's DM, one message when it fits.
+
+        The question tool asks one or more fields and waits for every answer
+        before it returns, so the answers stay here until the last field is
+        answered, and then one reply carries all of them.
+        """
+        prepared: list[dict] = []
+        for index, field in enumerate(fields):
+            if not isinstance(field, dict):
+                continue
+            key = str(field.get("key") or "")
+            if not key:
+                continue
+            options = []
+            for item in field.get("options") or []:
+                if not isinstance(item, dict):
+                    continue
+                value = item.get("value")
+                if value is None:
+                    continue
+                options.append({"value": str(value),
+                                "label": str(item.get("label") or value)})
+            prepared.append({
+                "index": index,
+                "key": key,
+                "title": str(field.get("title") or title or "Question"),
+                "description": str(field.get("description") or ""),
+                "kind": str(field.get("type") or "string"),
+                "options": options,
+                "custom": bool(field.get("custom", True)),
+            })
+        if not prepared:
+            log.error("question: the form has no field that can be shown")
+            return False
+        ticket = secrets.token_hex(4)
+        self.state.new_form(ticket, device, session, form, prepared, channel)
+        try:
+            dm = self.api.open_dm(self.config.owner)
+        except DiscordError as error:
+            log.error(f"question: no DM with the owner ({error.message})")
+            self.state.close_form(ticket)
+            return False
+        messages: list[dict] = []
+        failed = False
+        for chunk in self._form_chunks(ticket, prepared):
+            try:
+                sent = self.api.send(dm, self._form_payload(ticket, chunk, {}))
+            except DiscordError as error:
+                log.error(f"question: cannot send the card ({error.message})")
+                failed = True
+                continue
+            messages.append({
+                "channel": dm,
+                "id": str(sent.get("id") or ""),
+                "fields": [field["index"] for field in chunk],
+            })
+        if failed or not messages:
+            self.state.close_form(ticket)
+            return False
+        self.state.form_messages(ticket, messages)
+        log.info(f"question: card {ticket} sent to the owner's DM")
+        return True
+
+    def _form_chunks(self, ticket: str, fields: list[dict]) -> list[list[dict]]:
+        """Split fields into messages of at most five rows and one message of text."""
+        chunks: list[list[dict]] = []
+        current: list[dict] = []
+        rows = 0
+        length = len("**Question from the agent**")
+        for field in fields:
+            height = len(self._field_rows(ticket, field))
+            cost = (len(text.shorten(field["title"], 200))
+                    + len(text.shorten(field["description"], 700)) + 40)
+            if current and (rows + height > 5 or length + cost > 1500):
+                chunks.append(current)
+                current = []
+                rows = 0
+                length = len("**Question from the agent**")
+            current.append(field)
+            rows += height
+            length += cost
+        if current:
+            chunks.append(current)
+        return chunks
+
+    def _field_rows(self, ticket: str, field: dict) -> list[dict]:
+        """The components for one field: buttons for a few, a select for many."""
+        index = field["index"]
+        options = field["options"]
+        custom = field["custom"]
+        other = {
+            "type": 1,
+            "components": [{
+                "type": 2, "style": 1, "label": "Other",
+                "custom_id": f"q:{ticket}:c:{index}",
+            }],
+        }
+        if field["kind"] == "boolean":
+            buttons = [
+                {"type": 2, "style": 1, "label": "Yes",
+                 "custom_id": f"q:{ticket}:b:{index}:1"},
+                {"type": 2, "style": 1, "label": "No",
+                 "custom_id": f"q:{ticket}:b:{index}:0"},
+            ]
+            if custom:
+                buttons.append({"type": 2, "style": 1, "label": "Other",
+                                "custom_id": f"q:{ticket}:c:{index}"})
+            return [{"type": 1, "components": buttons}]
+        if options and field["kind"] == "multiselect":
+            rows = [{"type": 1, "components": [_select(
+                f"q:{ticket}:s:{index}", options, len(options), "Choose one or more")]}]
+            return rows + ([other] if custom else [])
+        if options and len(options) <= 4:
+            buttons = [
+                {"type": 2, "style": 2, "label": text.shorten(option["label"], 80),
+                 "custom_id": f"q:{ticket}:o:{index}:{position}"}
+                for position, option in enumerate(options)
+            ]
+            if custom:
+                buttons.append({"type": 2, "style": 1, "label": "Other",
+                                "custom_id": f"q:{ticket}:c:{index}"})
+            return [{"type": 1, "components": buttons}]
+        if options:
+            rows = [{"type": 1, "components": [_select(
+                f"q:{ticket}:s:{index}", options, 1, "Choose one")]}]
+            return rows + ([other] if custom else [])
+        return [other] if custom else []
+
+    def _form_payload(self, ticket: str, fields: list[dict],
+                      answers: dict) -> dict:
+        lines = ["**Question from the agent**"]
+        for field in fields:
+            lines.append(f"**{field['index'] + 1}. {text.shorten(field['title'], 200)}**")
+            if field["description"]:
+                lines.append(text.shorten(field["description"], 700))
+            if field["key"] in answers:
+                lines.append(f"answered: {_answer_text(answers[field['key']])}")
+        rows: list[dict] = []
+        for field in fields:
+            if field["key"] not in answers:
+                rows.extend(self._field_rows(ticket, field))
+        return {
+            "content": "\n".join(lines)[:1900],
+            "components": rows[:5],
+            "allowed_mentions": {"parse": []},
+        }
+
     # -- permission cards -------------------------------------------------
 
     def ask_permission(self, *, device: str, session: str, request: str,
-                       action: str, resources: list[str], channel: str) -> None:
+                       action: str, resources: list[str], channel: str) -> bool:
         ticket = secrets.token_hex(4)
         self.state.new_ticket(ticket, device, session, request, channel)
         shown = "\n".join(f"> `{text.shorten(item, 180)}`" for item in resources if item) or "> (no path)"
         content = (
-            f"**🔐 Permission needed** on `{device}`\n"
+            f"**Permission needed** on `{device}`\n"
             f"The agent asks to run `{text.shorten(action, 120)}`:\n{shown}"
         )
         components = [{
@@ -197,20 +363,20 @@ class App:
             dm = self.api.open_dm(self.config.owner)
             self.api.send(dm, payload)
             log.info(f"perm: card {ticket} sent to the owner's DM")
-            return
+            return True
         except DiscordError as error:
             # Never post a card in a channel: it names the action and the paths
-            # it touches.  Say that approval is needed, and keep the rest here.
-            log.error(f"perm: no DM with the owner ({error.message}); asking in the channel")
+            # it touches.  The run says approval is needed, and keeps the rest here.
+            log.error(f"perm: no DM with the owner ({error.message})")
         self.state.close_ticket(ticket)
-        self.api.send(channel, {
-            "content": "🔐 A tool needs your approval, but I could not send you a DM.",
-            "allowed_mentions": {"parse": []},
-        })
+        return False
 
     def _component(self, payload: dict, who: str) -> None:
         data = payload.get("data") or {}
         custom = str(data.get("custom_id") or "")
+        if custom.startswith("q:"):
+            self._question_component(payload, who, data)
+            return
         if not custom.startswith("pw:"):
             return
         parts = custom.split(":")
@@ -261,6 +427,178 @@ class App:
             },
         })
         log.info(f"perm: {ticket} {decision} on {info['device']}")
+
+    def _question_component(self, payload: dict, who: str, data: dict) -> None:
+        parts = str(data.get("custom_id") or "").split(":")
+        if len(parts) < 4:
+            return
+        _, ticket, action, field_index = parts[:4]
+        interaction_id = payload["id"]
+        token = payload["token"]
+        if who != self.config.owner:
+            self._answer_now(interaction_id, token,
+                             "Only the bot's owner answers this question.", ephemeral=True)
+            return
+        info = self.state.form(ticket)
+        if not info:
+            self._answer_now(interaction_id, token,
+                             "That question is old; it is no longer waiting.", ephemeral=True)
+            return
+        field = next((item for item in info["fields"]
+                      if str(item["index"]) == field_index), None)
+        if field is None:
+            self._answer_now(interaction_id, token,
+                             "That question is no longer waiting.", ephemeral=True)
+            return
+        if action == "c":
+            self._question_modal(interaction_id, token, ticket, field)
+            return
+        if action == "b":
+            value = (parts[4] if len(parts) > 4 else "") == "1"
+        elif action == "s":
+            chosen = []
+            for item in data.get("values") or []:
+                try:
+                    chosen.append(field["options"][int(str(item))]["value"])
+                except (IndexError, ValueError):
+                    continue
+            if not chosen:
+                self._answer_now(interaction_id, token,
+                                 "No choice was sent.", ephemeral=True)
+                return
+            value = chosen if field["kind"] == "multiselect" else chosen[0]
+        elif action == "o":
+            try:
+                value = field["options"][int(parts[4])]["value"]
+            except (IndexError, ValueError):
+                self._answer_now(interaction_id, token,
+                                 "That choice is not there any more.", ephemeral=True)
+                return
+        else:
+            return
+        self._question_answer(payload, ticket, field, value)
+
+    def _question_answer(self, payload: dict, ticket: str, field: dict,
+                         value: object) -> None:
+        interaction_id = payload["id"]
+        token = payload["token"]
+        entry = self.state.answer_form(ticket, field["key"], value)
+        if entry is None:
+            self._answer_now(interaction_id, token,
+                             "That question is old; it is no longer waiting.", ephemeral=True)
+            return
+        if len(entry["answers"]) < len(entry["fields"]):
+            self._update_question_message(payload, ticket, entry)
+            return
+        device = self.config.device_named(entry["device"])
+        if device is None:
+            self.state.close_form(ticket)
+            self._answer_now(interaction_id, token,
+                             f"`{entry['device']}` is not in the file any more.", ephemeral=True)
+            return
+        try:
+            OpenCode(device.url, device.password).reply_form(
+                entry["session"], entry["form"], entry["answers"])
+        except OpenCodeError as error:
+            log.error(f"question: {ticket} could not be answered ({error.message})")
+            if error.status in (404, 409):
+                self.state.close_form(ticket)
+                self._answer_now(interaction_id, token,
+                                 "That question is no longer waiting.", ephemeral=True)
+            else:
+                # Keep the answers: the card is still there, so another try is possible.
+                self._answer_now(interaction_id, token,
+                                 f"OpenCode would not take it: {error.message}", ephemeral=True)
+            return
+        log.info(f"question: {ticket} answered on {entry['device']}")
+        self.state.close_form(ticket)
+        self._update_question_message(payload, ticket, entry, done=True)
+
+    def _update_question_message(self, payload: dict, ticket: str, entry: dict,
+                                 done: bool = False) -> None:
+        message = payload.get("message") or {}
+        message_id = str(message.get("id") or "")
+        group = next((item for item in entry["messages"]
+                      if message_id and item.get("id") == message_id), None)
+        if group is None:
+            group = entry["messages"][0] if entry["messages"] else {"fields": []}
+        indexes = set(group.get("fields") or [])
+        fields = [item for item in entry["fields"] if item["index"] in indexes]
+        data = self._form_payload(ticket, fields, entry["answers"])
+        if done:
+            data["components"] = []
+            data["content"] += "\n\nAll answered. The agent is continuing."
+        self.api.respond(payload["id"], payload["token"], {"type": 7, "data": data})
+        if not done:
+            return
+        for other in entry["messages"]:
+            if other is group:
+                continue
+            try:
+                self.api.edit(other["channel"], other["id"], {
+                    "content": "All answered. The agent is continuing.",
+                    "components": [],
+                    "allowed_mentions": {"parse": []},
+                })
+            except DiscordError as error:
+                log.debug(f"question: cannot clear an older card ({error.message})")
+
+    def _question_modal(self, interaction_id: str, token: str, ticket: str,
+                        field: dict) -> None:
+        label = text.shorten(field["title"] or "Answer", 45)
+        self.api.respond(interaction_id, token, {
+            "type": 9,
+            "data": {
+                "custom_id": f"qm:{ticket}:{field['index']}",
+                "title": label,
+                "components": [{
+                    "type": 1,
+                    "components": [{
+                        "type": 4,
+                        "custom_id": "answer",
+                        "label": label,
+                        "style": 2,
+                        "max_length": 4000,
+                        "required": True,
+                    }],
+                }],
+            },
+        })
+
+    def _modal(self, payload: dict, who: str) -> None:
+        data = payload.get("data") or {}
+        parts = str(data.get("custom_id") or "").split(":")
+        if len(parts) != 3 or parts[0] != "qm":
+            return
+        _, ticket, field_index = parts
+        interaction_id = payload["id"]
+        token = payload["token"]
+        if who != self.config.owner:
+            self._answer_now(interaction_id, token,
+                             "Only the bot's owner answers this question.", ephemeral=True)
+            return
+        info = self.state.form(ticket)
+        if not info:
+            self._answer_now(interaction_id, token,
+                             "That question is old; it is no longer waiting.", ephemeral=True)
+            return
+        field = next((item for item in info["fields"]
+                      if str(item["index"]) == field_index), None)
+        if field is None:
+            self._answer_now(interaction_id, token,
+                             "That question is no longer waiting.", ephemeral=True)
+            return
+        typed = ""
+        for row in data.get("components") or []:
+            for component in row.get("components") or []:
+                if component.get("custom_id") == "answer":
+                    typed = str(component.get("value") or "").strip()
+        if not typed:
+            self._answer_now(interaction_id, token, "The answer is empty.", ephemeral=True)
+            return
+        value = ([piece.strip() for piece in typed.split(",") if piece.strip()]
+                 if field["kind"] == "multiselect" else typed)
+        self._question_answer(payload, ticket, field, value)
 
     # -- gateway events ---------------------------------------------------
 
@@ -320,6 +658,9 @@ class App:
         if kind == 4:
             self._autocomplete(payload, who)
             return
+        if kind == 5:
+            self._modal(payload, who)
+            return
         if kind != 2:
             return
 
@@ -355,8 +696,9 @@ class App:
             )
             return
         if sub not in (
-            commands.ASK, commands.QUICK, commands.UPGRADE, commands.STOP, commands.STATUS,
-            commands.DEVICES, commands.ALLOW, commands.DENY, commands.ALLOWED,
+            commands.ASK, commands.QUICK, commands.GOAL, commands.UPGRADE,
+            commands.STOP, commands.STATUS, commands.DEVICES, commands.ALLOW,
+            commands.DENY, commands.ALLOWED,
         ):
             self._answer_now(interaction_id, token, "`/vigo help` lists what it does.", ephemeral=True)
             return
@@ -381,12 +723,17 @@ class App:
         if not self._defer(interaction_id, token, ephemeral=self._ephemeral(sub, options)):
             return
 
+        # Say it was received before probing a device: a fresh probe can take
+        # seconds, and the person should not wait on a silent "thinking" line.
+        if sub in (commands.ASK, commands.QUICK):
+            self._say(token, "Got it, working on it. I'll follow up here.")
+
         pick = self.router.pick(explicit)
         try:
             self._answer(sub, options, token, channel_id, channel_name, who, owner, pick)
         except Exception as error:  # an answer always reaches the person
             log.error(f"command {sub}: {error}")
-            self._say(token, "❌ something broke; the log says what.")
+            self._say(token, "Something broke. The log says what.")
 
     def _autocomplete(self, payload: dict, who: str) -> None:
         """Offer the device names as they are typed, to whoever may ask."""
@@ -462,11 +809,13 @@ class App:
     # -- the commands -----------------------------------------------------
 
     def _answer(self, sub: str, options: dict, token: str, channel_id: str,
-                channel_name: str, who: str, owner: bool, pick) -> None:
+                channel_name: str, who: str, owner: bool, pick: Pick) -> None:
         if sub == commands.ASK:
             self._ask(options, token, channel_id, channel_name, who, pick)
         elif sub == commands.QUICK:
             self._quick(options, token, channel_id, pick)
+        elif sub == commands.GOAL:
+            self._goal(options, token, channel_id, channel_name, pick)
         elif sub == commands.STATUS:
             self._say(token, self._status(channel_id))
         elif sub == commands.DEVICES:
@@ -483,7 +832,7 @@ class App:
             self._say(token, self.allow.describe())
 
     def _ask(self, options: dict, token: str, channel_id: str, channel_name: str,
-             who: str, pick) -> None:
+             who: str, pick: Pick) -> None:
         prompt = str(options.get("prompt") or "").strip()
         if not prompt:
             self._say(token, "The question is empty.")
@@ -492,7 +841,7 @@ class App:
             log.info(f"ask: no device ({pick.reason})")
             self._say(
                 token,
-                "❌ no device would take the question.\n"
+                "No device would take the question.\n"
                 "Start OpenCode there with `opencode serve --hostname 0.0.0.0 --port 4096`; "
                 "`/vigo devices` (only you see it) says what is there.",
             )
@@ -506,7 +855,7 @@ class App:
             log.info("ask: the device is still working on this channel's last question")
             self._say(
                 token,
-                "⏳ the device is still working on the last question here; "
+                "The device is still working on the last question here. "
                 "`/vigo status` shows it, `/vigo stop` ends it.",
             )
             return
@@ -521,22 +870,101 @@ class App:
             new=bool(options.get("new")),
             title=title,
             hidden=bool(options.get("hidden")),
+            goal=self._objective(options, prompt),
         )
         ahead = self.add_waiting(channel_id, worker)
         if ahead is None:
             log.info(f"ask: the line in this channel is full ({WAITING_MAX})")
             self._say(
                 token,
-                f"❌ the line is full: {WAITING_MAX} questions wait in this channel. "
+                f"The line is full: {WAITING_MAX} questions wait in this channel. "
                 "Wait for them, or `/vigo stop` clears them.",
             )
             return
         if ahead:
             log.info(f"ask: queued in this channel ({ahead} ahead)")
-            self._say(token, f"🧾 Queued behind {ahead} question{'' if ahead == 1 else 's'}.")
+            self._say(
+                token,
+                f"Queued behind {ahead} question{'' if ahead == 1 else 's'}. "
+                "I'll follow up here.",
+            )
         self.start_next(channel_id)
 
-    def _quick(self, options: dict, token: str, channel_id: str, pick) -> None:
+    def _objective(self, options: dict, prompt: str) -> str:
+        """The goal an ask becomes, or "" when it is a question.
+
+        `goal:true` says this is work even though it reads as a question;
+        `goal:false` says it is a question even though it reads as work.  Left
+        out, the wording decides, and `vigo/goal.py` says how.
+        """
+        wanted = options.get("goal")
+        if wanted is None:
+            return prompt if goal.is_task(prompt) else ""
+        return prompt if bool(wanted) else ""
+
+    def _goal(self, options: dict, token: str, channel_id: str, channel_name: str,
+              pick: Pick) -> None:
+        """Set, pause, resume or clear the goal this channel's session holds."""
+        objective = str(options.get("objective") or "").strip()
+        if not objective:
+            self._say(token, "The goal is empty.")
+            return
+        control = objective.lower() in GOAL_WORDS
+        remembered = self.state.session_for(channel_id)
+        if control and not remembered:
+            self._say(token, "There is no goal in this channel yet.")
+            return
+        device = None
+        if remembered:
+            device = self.config.device_named(str(remembered.get("device") or ""))
+            if device is None:
+                self._say(token, f"`{remembered['device']}` is not in the file any more.")
+                return
+        elif pick.name is not None:
+            device = self.config.device_named(pick.name)
+        if device is None:
+            log.info(f"goal: no device ({pick.reason})")
+            self._say(
+                token,
+                "No device would take the goal.\n"
+                "Start OpenCode there with `opencode serve --hostname 0.0.0.0 --port 4096`; "
+                "`/vigo devices` (only you see it) says what is there.",
+            )
+            return
+        if not control and (self.run_for(channel_id)
+                            or self._device_busy(channel_id, device.name, new=False)):
+            # A goal would steer the turn that is already running, and this
+            # channel runs one thing at a time.  `pause` and `clear` are how
+            # the person stops it, so those are never held back.
+            log.info("goal: a question is running in this channel")
+            self._say(
+                token,
+                "A question is running in this channel. `/vigo stop` ends it, or "
+                "wait for it. `/vigo goal pause` and `/vigo goal clear` work now.",
+            )
+            return
+        client = OpenCode(device.url, device.password)
+        title = f"Discord #{channel_name}" if channel_name else "Discord DM"
+        try:
+            session = asking.open_session(self, client, device, channel_id, False, title)
+            client.set_goal(session, objective)
+        except OpenCodeError as error:
+            log.info(f"goal: the device refused ({error.message})")
+            self._say(token, "The device would not take the goal.")
+            return
+        log.info(f"goal: settled on {device.name}")
+        said = {
+            "pause": "The goal is paused.",
+            "resume": "The goal is running again.",
+            "clear": "The goal is cleared.",
+        }.get(objective.lower())
+        if said is None:
+            said = "The goal is set: the agent works toward it until it is met."
+        else:
+            said += " `/vigo status` says what the device holds."
+        self._say(token, said)
+
+    def _quick(self, options: dict, token: str, channel_id: str, pick: Pick) -> None:
         """One question, answered once: no session, no tools, nothing kept."""
         prompt = str(options.get("prompt") or "").strip()
         if not prompt:
@@ -546,7 +974,7 @@ class App:
             log.info(f"quick: no device ({pick.reason})")
             self._say(
                 token,
-                "❌ no device would take the question.\n"
+                "No device would take the question.\n"
                 "Start OpenCode there with `opencode serve --hostname 0.0.0.0 --port 4096`; "
                 "`/vigo devices` (only you see it) says what is there.",
             )
@@ -559,27 +987,23 @@ class App:
             )
         except OpenCodeError as error:
             log.info(f"quick: the device refused ({error.message})")
-            self._say(token, "❌ the device would not answer.")
+            self._say(token, "The device would not answer.")
             return
-        chunks = text.chunk(answer) or ["_nothing to say_"]
+        content = text.brief(answer) or "_nothing to say_"
         hidden = bool(options.get("hidden"))
-        # The same shape as an ask: the answer edits the deferred response, so
-        # it stays where the question was asked and keeps its ephemeral state.
-        # A followup sent first would edit that same message and a delete would
-        # then remove the answer; only the overflow is a followup.
-        if not self._say(token, chunks[0]):
-            self._late_quick(channel_id, chunks[0], hidden)
-            return
         extra = {"flags": 64} if hidden else {}
-        for piece in chunks[1:]:
-            try:
-                self.api.followup(token, {
-                    "content": piece, "allowed_mentions": {"parse": []},
-                    **extra,
-                })
-            except DiscordError as error:
-                log.error(f"quick: cannot post the rest of the answer ({error.message})")
-                break
+        # The answer is its own message, after the "got it": a new message
+        # notifies, an edit does not.  A hidden answer stays ephemeral.
+        try:
+            self.api.followup(token, {
+                "content": content[:2000],
+                "allowed_mentions": {"parse": []},
+                **extra,
+            })
+        except DiscordError as error:
+            log.error(f"quick: cannot post the answer ({error.message})")
+            self._late_quick(channel_id, content[:2000], hidden)
+            return
         log.info(f"quick: answered on {pick.name}")
 
     def _late_quick(self, channel_id: str, content: str, hidden: bool) -> None:
@@ -678,7 +1102,7 @@ class App:
             if not self._same_build(info):
                 theirs = str(info.get("build") or info.get("version") or "?")
                 lines.append(
-                    f"`{name}` runs {theirs}, not {self.build or __version__} — `/vigo upgrade`"
+                    f"`{name}` runs {theirs}, not {self.build or __version__}. Use `/vigo upgrade`."
                 )
         return lines
 
@@ -692,10 +1116,12 @@ class App:
             name for name in self.config.devices if name != self.config.device
         ]
         lines = []
+        moved: list[str] = []   # what the owner is told, once, in a DM
         local = False
         for name in targets:
             if name == self.config.device:
                 lines.append(f"`{name}`: this one pulls after this answer")
+                moved.append(f"`{name}` (this one): pulls now and restarts itself")
                 local = True
                 continue
             url = self._peer_url(name)
@@ -712,6 +1138,7 @@ class App:
                 theirs = str(info.get("build") or info.get("version") or __version__)
                 lines.append(f"`{name}`: already on {theirs}")
                 continue
+            was = str(info.get("build") or "?")
             try:
                 told = PeerClient(url, device.password, timeout=180.0).update()
             except OSError as error:
@@ -719,19 +1146,30 @@ class App:
                 continue
             if not told.get("ok"):
                 lines.append(f"`{name}`: git refused ({told.get('said')})")
-            elif told.get("restarted"):
-                lines.append(f"`{name}`: pulled and restarted")
-            else:
-                lines.append(f"`{name}`: pulled, restart it there")
+                continue
+            now = str(told.get("after") or told.get("before") or "?")
+            note = "restarted" if told.get("restarted") else "restart it there"
+            lines.append(f"`{name}`: pulled and {note}")
+            moved.append(f"`{name}`: {was} → {now} · {note}")
         self._say(token, "\n".join(lines) or "Nothing to upgrade.")
+        if moved:
+            self._tell_owner("**Vigo updated**\n" + "\n".join(moved))
         # This one last, after the answer is out: pulling is safe, restarting
         # is only safe once the person has read the list above.
         if local:
             threading.Timer(1.0, lambda: update_self(self.checkout)).start()
 
+    def _tell_owner(self, content: str) -> None:
+        """A DM to the owner: the update that happened, or that it failed."""
+        try:
+            send_owner(self.config, content, api=self.api)
+        except DiscordError as error:
+            log.error(f"dm: cannot reach the owner ({error.message})")
+
     def _status(self, channel_id: str) -> str:
         remembered = self.state.session_for(channel_id)
         running = self.run_for(channel_id)
+        device = None
         info: dict = {}
         lines: list[str] = []
         if remembered:
@@ -752,12 +1190,12 @@ class App:
                     )
                 except OpenCodeError as error:
                     log.info(f"status: the device does not answer ({error.message})")
-                    lines.append("⚠️ the device does not answer")
+                    lines.append("the device does not answer")
         else:
             lines = ["No question has been asked in this channel yet."]
         busy = busy_since(info)
         if running:
-            elapsed = f"⏳ running for {text.duration(running.elapsed)}"
+            elapsed = f"running for {text.duration(running.elapsed)}"
             if running.elapsed > self.config.timeout:
                 elapsed += " · still running on the device"
             lines.append(elapsed)
@@ -767,16 +1205,45 @@ class App:
             # so "idle" would be a lie it can be asked about.
             working = time.time() - busy / 1000.0
             lines.append(
-                f"⏳ still running on `{device.name if device else 'the device'}` "
-                f"for {text.duration(working)}; `/vigo stop` ends it"
+                f"still running on `{device.name if device else 'the device'}` "
+                f"for {text.duration(working)}. `/vigo stop` ends it"
             )
         else:
             lines.append("idle")
+        goal_line = self._goal_text(device, remembered)
+        if goal_line:
+            lines.append(goal_line)
         line = self._line_text(channel_id)
         if line:
             lines.append("")
             lines.extend(line)
         return "\n".join(lines)
+
+    def _goal_text(self, device: Device | None, remembered: dict | None) -> str:
+        """What the device says about this channel's goal, or "" for none.
+
+        A goal is the device's, not this daemon's, so it is read from there:
+        paused is a state the person must see, because a paused goal that says
+        it is running would be a promise nothing keeps.
+        """
+        if not remembered or device is None:
+            return ""
+        try:
+            held = OpenCode(device.url, device.password).goal(remembered["session"])
+        except OpenCodeError as error:
+            log.info(f"status: cannot read the goal ({error.message})")
+            return "The device does not answer about its goal"
+        if held is None:
+            return ""
+        if not held:
+            return "The device did not say what its goal is"
+        status = str(held.get("status") or "")
+        objective = text.shorten(str(held.get("objective") or ""), 80)
+        reason = str(held.get("reason") or "")
+        said = f"**Goal** ({status}): “{objective}”"
+        if reason:
+            said += f" · {reason}"
+        return said
 
     def _line_text(self, channel_id: str) -> list[str]:
         """The next three questions and the last three that ran, for status."""
@@ -793,7 +1260,7 @@ class App:
             lines.extend(f"“{text.shorten(prompt, 80)}”" for prompt in finished[-3:])
         return lines
 
-    def _devices(self, pick, detailed: bool = False) -> str:
+    def _devices(self, pick: Pick, detailed: bool = False) -> str:
         states = self.router.states(fresh=True)
         infos = self._peer_infos() if detailed else {}
         # Read the checkout every time.  A commit moves it without a restart,
@@ -806,18 +1273,18 @@ class App:
         behind = self._behind(infos) if detailed else []
         if behind:
             lines.append("")
-            lines.extend(f"⚠️ {line}" for line in behind)
+            lines.extend(behind)
         if latest:
             lines.append("")
             lines.append(f"latest commit: {latest}")
             short = latest.split(" ", 1)[0]
             if self.build and short != self.build:
-                lines.append(f"⚠️ this daemon runs {self.build}; restart it to run {short}")
+                lines.append(f"this daemon runs {self.build}. Restart it to run {short}.")
         lines.append("")
         if pick.name:
             lines.append(
                 f"A question would go to `{pick.name}`"
-                + (f" — {pick.reason}." if detailed else ".")
+                + (f", {pick.reason}." if detailed else ".")
             )
         elif detailed:
             lines.append(f"No device would take it: {pick.reason}.")
@@ -834,7 +1301,10 @@ class App:
             if run:
                 run.stop.set()
         note = f" Dropped {dropped} queued question{'s' if dropped != 1 else ''}." if dropped else ""
-        remembered = self.state.session_for(channel_id)
+        # The session to stop is the one the run is on; with no run here it is
+        # the newest this channel has, which is where another daemon works.
+        remembered = (self.state.session_on(channel_id, run.device) if run else None) \
+            or self.state.session_for(channel_id)
         if not remembered:
             said = "Nothing is running in this channel." if not run else "Stopping it."
             return said + note
@@ -844,10 +1314,10 @@ class App:
         client = OpenCode(device.url, device.password)
         try:
             client.interrupt(remembered["session"])
-            return "⏹️ Stopped." + note
+            return "Stopped." + note
         except OpenCodeError as error:
             if run:
-                return "⏹️ Stopping the run in this channel." + note
+                return "Stopping the run in this channel." + note
             log.info(f"stop: nothing to stop ({error.message})")
             return "Nothing to stop." + note
 
@@ -862,7 +1332,7 @@ class App:
         try:
             return self.allow.allow(target, commands.user_name(user), commands.SECONDS[chosen])
         except AllowError as error:
-            return f"⚠️ {error}"
+            return f"{error}"
 
     def _deny(self, options: dict) -> str:
         user = options.get("user")
@@ -873,21 +1343,25 @@ class App:
             _done, said = self.allow.deny(target)
             return said
         except AllowError as error:
-            return f"⚠️ {error}"
+            return f"{error}"
 
     def _help(self, owner: bool, approved: bool) -> str:
         lines = [
-            "**Vigo** — an OpenCode agent on your own machines, reached from Discord.",
+            "**Vigo**, an OpenCode agent on your own machines, reached from Discord.",
             "",
             "`/vigo ask prompt:…` asks the device you last worked on. "
-            "`device:` names one, `new:true` starts a fresh session; a question "
+            "`device:` names one, `new:true` starts a fresh session. A question "
             "asked while one runs waits its turn.",
+            "When the ask is a task, the agent gets a goal and works toward it "
+            "until it is done; `goal:true` or `goal:false` says which it is.",
+            "`/vigo goal objective:…` sets that goal yourself, with no question; "
+            "`pause`, `resume` and `clear` control the one this channel has.",
             "`/vigo quick prompt:…` answers once, with no session and no tools.",
             "`/vigo devices` shows what is up and where a question would go.",
             "`/vigo status` shows this channel's session, what waits in it, and "
-            "what ran; `/vigo stop` ends its run and drops what waits.",
+            "what ran. `/vigo stop` ends its run and drops what waits.",
             "Every command that answers a question takes `hidden:true` to keep "
-            "its answer to yourself; without it, the channel sees it. "
+            "its answer to yourself. Without it, the channel sees it. "
             "`devices`, `allow`, `deny` and `allowed` are always private.",
         ]
         if owner:

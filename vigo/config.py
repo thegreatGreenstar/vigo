@@ -110,7 +110,7 @@ def default_path() -> Path:
     return Path(base) / "vigo" / "vigo.json"
 
 
-def _need(obj: dict, key: str, where: str):
+def _need(obj: dict, key: str, where: str) -> object:
     if key not in obj:
         raise ConfigError(f"{where} needs the key {key!r}")
     return obj[key]

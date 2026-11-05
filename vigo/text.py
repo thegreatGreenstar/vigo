@@ -4,6 +4,8 @@ from __future__ import annotations
 
 LIMIT = 1900  # 2000 is Discord's; the margin keeps a fence's closing line safe.
 
+BRIEF = "… (ask a follow-up for the rest)"
+
 
 def clean(text: str) -> str:
     return (text or "").replace("\r\n", "\n").replace("\r", "\n").strip("\n")
@@ -58,6 +60,57 @@ def chunk(text: str, limit: int = LIMIT) -> list[str]:
     if current:
         parts.append("\n".join(current).strip("\n"))
     return [part for part in parts if part.strip()]
+
+
+def brief(text: str, limit: int = LIMIT) -> str:
+    """The answer as one message: its first two paragraphs, at most.
+
+    A blank line outside a code fence starts a paragraph, so a code block
+    with blank lines in it stays whole.  When there is more, the message ends
+    with a line that says a follow-up will bring it; the whole answer is still
+    in the session for that follow-up to reach.
+    """
+    text = clean(text)
+    if not text.strip():
+        return ""
+    blocks: list[str] = []
+    current: list[str] = []
+    fence = ""
+    for line in text.split("\n"):
+        if not line.strip() and not fence:
+            if current:
+                blocks.append("\n".join(current).strip("\n"))
+                current = []
+            continue
+        if line.strip().startswith("```"):
+            fence = "" if fence else line.strip()
+        current.append(line)
+    if current:
+        blocks.append("\n".join(current).strip("\n"))
+    blocks = [block for block in blocks if block.strip()]
+    if not blocks:
+        return ""
+    kept = "\n\n".join(blocks[:2])
+    more = len(blocks) > 2
+    if more or len(kept) > limit:
+        room = limit - len(BRIEF) - 2
+        if len(kept) > room:
+            kept = _cut(kept, room).rstrip()
+        more = True
+    if more:
+        kept += "\n\n" + BRIEF
+    return kept
+
+
+def _cut(body: str, size: int) -> str:
+    """Cut at the last space or line break in `size`, so a word is not split."""
+    if size <= 0:
+        return ""
+    cut = body[:size]
+    at = max(cut.rfind("\n"), cut.rfind(" "))
+    if at >= size // 2:
+        return cut[:at]
+    return cut
 
 
 def shorten(text: str, size: int) -> str:

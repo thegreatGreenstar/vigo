@@ -21,15 +21,30 @@ Do the whole thing, with tests and docs, so it is finished rather than nearly fi
 when the fix is within reach, and never say "tests later". If a change is too large to finish, say what is left and
 what blocks it.
 
+Ask the user only about real decisions. When the next step is obvious, do it. The confusion protocol below is for the
+two-designs case, not for routine work.
+
 You can outsource the typing, not the understanding. Before calling anything done, say why the code is correct and
 exactly where it would break. Green tests are not understanding.
 
 Errors show. Never trade an error for a silent fallback, a default, or a quieter path: a config key that is wrong
 stops the bot and names the key, a device that does not answer is said to be down, a refused command says so.
 
+## Running commands
+
+- Long runs go in the background. You are told when one finishes. Do not sleep, poll, or read its output file while it
+  runs.
+- Never use `pkill`, `killall` or a `kill $(pgrep -f PATTERN)` loop. The pattern matches the shell that runs it. List
+  with `pgrep -a NAME`, then `kill PID` in a separate command. The same applies to an `until` wait: it matches its own
+  shell and never ends. Wait for a file the job writes, or use `pgrep -x NAME`.
+- Put temporary files in the session temp folder, never in the repo root. Do not print a whole log or a large command
+  output. Use `grep`, `head`, or `tail` to read the part that matters.
+- Do not use `sudo` or install system packages. The project uses the standard library only, and the machine is the
+  user's.
+
 ## Task sizing
 
-Start with one line: `Size: small|medium|large — why`, then `Tests: which ones`.
+Start with one line: `Size: small|medium|large`, with the reason, then `Tests: which ones`.
 
 - **small**: a typo, a string, a config value, a rename with no behaviour change. Compile and the touched tests.
 - **medium**: a behaviour change in one module. Its tests, plus the test that fails without the fix.
@@ -44,9 +59,23 @@ Torn between two sizes: pick the smaller, and say so.
 - The suite never touches the network: `tests/fake_discord.py`, `tests/fake_gateway.py` and `tests/fake_opencode.py`
   stand in for Discord and OpenCode. A test that needs the internet or a bot token is not a test; it is a manual run,
   and it is labelled as one.
-- Run it with `python3 -m unittest discover -s tests -t .` from the repo root. CI runs the same on Linux, macOS and
-  Windows for 3.12–3.14; a fix for a CI-only failure says what stays unverified.
+- **The product code is typed.** Every parameter and return in `vigo/` carries an annotation, and
+  `tests/test_typing.py` fails on a missing one and on an annotation that does not resolve — which matters because
+  `from __future__ import annotations` makes them strings until something reads them. A full checker (mypy or
+  pyright) is a follow-up: it needs one more CI dependency, and this test already stops the rot.
+- Run it with `python3 -m unittest discover -s tests -t .` from the repo root; `python3 -m tests.parallel` runs the
+  same suite on threads (stdlib only, ~1.6 s here). CI is two-stage: a draft pull request runs one Python (3.14)
+  on Linux, macOS and Windows — the cross-platform question — and marking it ready runs every OS on 3.12–3.14 for
+  the version question. A fix for a CI-only failure says what stays unverified.
+- A test does not sleep. `tests/fake_opencode.py` takes `("until", event)` in a script, so the test decides when a
+  turn ends; a sleep makes the suite slower and flakier for no extra coverage.
+- Before pushing, run `tests/in-containers.sh`: the suite on Linux 3.12–3.14 in `podman`, which is the fastest CI
+  matrix half to answer. Windows and macOS stay CI-only — `podman` on a Mac is a Linux VM, and Windows has
+  already differed from Linux once (a socket read that `shutdown` does not wake there).
 - Anything a reader will copy and run (a command, a port, a link) is run before it ships.
+- `main` takes pull requests only. `.githooks/pre-push` refuses a push straight to it, and `install.sh` sets
+  `core.hooksPath` so every clone runs it; GitHub's own protection is a paid feature on a private repo. Do not
+  merge with a red CI, and do not reach for `--no-verify`.
 
 ## Non-negotiables for this repo
 
@@ -55,9 +84,9 @@ Torn between two sizes: pick the smaller, and say so.
 2. **No secret in the tree.** The token and the OpenCode password live in the Keychain or a TPM-sealed file; the
    settings file may name `tokenCommand` / `passwordCommand`, never the value. `.github/workflows/tests.yml` fails
    the build if a token shape or a `vigo.json` appears.
-3. **No PII to Discord.** Before adding any string that goes into an embed, a message or a progress line, ask what it
-   identifies. Device names, hostnames, paths, error internals and other users' names are out. `devices`, `allow`,
-   `deny` and `allowed` are always ephemeral and have no option that could show them.
+3. **No PII to Discord.** Before adding any string that goes into an embed or a message, ask what it identifies.
+   Device names, hostnames, paths, error internals and other users' names are out. `devices`, `allow`, `deny` and
+   `allowed` are always ephemeral and have no option that could show them.
 4. **The owner is an id, compared with `==`.** Not a role, not a permission bit, not a name. A Discord install grants
    nothing.
 5. **Discord gives three seconds.** Acknowledge first, then probe or run. Any new command follows that order.
@@ -72,7 +101,7 @@ areas below reads them again first, and updates this table when it does.
 | Source | What we take from it | Last checked | At |
 | --- | --- | --- | --- |
 | [DraChimeraVee/discord-bots](https://github.com/DraChimeraVee/discord-bots) (AogoWimsy, XujiWimsy) | the shape of the whole thing: owner approves, drafts and permission cards, a stranger is refused, an allowlist of ids, nothing stored about what was said, stderr without contents | 2026-11-04 | `475b229619` |
-| [OpenCode v2 API](https://opencode.ai/v2/openapi.json) and docs | every endpoint used: `/api/info`, sessions, prompt, message, permission reply, `experimental/generate/text`, `/api/event` SSE, `serve --hostname/--port`, `OPENCODE_PASSWORD` | 2026-11-04 | `opencode v2.2.5` |
+| [OpenCode v2 API](https://opencode.ai/v2/openapi.json) and docs | every endpoint used: `/api/info`, sessions, prompt, message, permission reply, `session.command` (`goal`), the `opencode.goal` RPC, the form list and reply the question tool uses, `experimental/generate/text`, `/api/event` SSE, `serve --hostname/--port`, `OPENCODE_PASSWORD` | 2026-11-05 | `opencode v2.2.5` |
 | [DeepSeek dsh-superagent-prototype](https://github.com/deepseek-ai/dsh-superagent-prototype) | the authorization stance: the host decides from its own state, and message text is input to a decision, never a grant | 2026-11-04 | `8c32a9dc5d` |
 | [Accord/CLAUDE.md](https://accord.dravee.dev/Accord/CLAUDE.md) | the structure of this contract: task sizing, tests ship with the change, completion status, self-rating, confusion protocol, safety | 2026-11-05 | commit `a18354b1` |
 
@@ -103,8 +132,10 @@ edit anything here.
 | `vigo/opencode_api.py` | sessions, prompts, permissions, the SSE event stream |
 | `vigo/router.py` | which device answers, and what may be said about it |
 | `vigo/allowlist.py` | who may ask, in a Discord message so both daemons agree |
-| `vigo/app.py` | interactions, commands, permission cards, the election of one answerer |
-| `vigo/ask.py` | one question: session, live progress, the answer |
+| `vigo/app.py` | interactions, commands, permission and question cards, the election of one answerer |
+| `vigo/ask.py` | one question: session, the got-it line, the answer, the agent's own questions |
+| `vigo/goal.py` | when an ask is work to be done, and when it is a question |
+| `vigo/notify.py` | a DM to the owner: the update the daemon pulled, or `vigo dm` |
 
 `deploy/` holds the service units and the launchers that unseal the password (Keychain on macOS, systemd-creds on
 Linux). `art/` holds the icon pipeline.
@@ -112,7 +143,7 @@ Linux). `art/` holds the icon pipeline.
 ## Commits
 
 Greenstar signs every commit by hand, with a YubiKey and Touch ID, so a commit is a cost he pays each time. Batch the
-work: **one commit per request, or fewer** — never one per change, and never while changes are still landing. Run the
+work: **one commit per request, or fewer**. Never one per change, and never while changes are still landing. Run the
 full suite once, stage everything, and give him the single message he should sign. If he cancels a signature, the work
 stays staged: leave it staged, do not retry, and do not commit again until he says so.
 
@@ -135,7 +166,7 @@ user cost. Batch on both anyway: the history is shared, and the Mac reads what t
 
 ## Confusion protocol
 
-High-stakes ambiguity — two plausible designs, a request against an established pattern, a destructive operation of
+High-stakes ambiguity: two plausible designs, a request against an established pattern, a destructive operation of
 unclear scope, missing context that would change the approach: stop, name it in one sentence, offer two or three real
 options with their trade-offs, and ask. Not for routine work.
 
@@ -148,6 +179,12 @@ options with their trade-offs, and ask. Not for routine work.
 - The bot's token and password are live credentials: if one appears anywhere it should not, say so at once and say
   which rotation is needed. Redacting a log is not rotation.
 - Nothing that touches greenstar's machines runs from a channel message. Only a click.
+
+## Text for users
+
+README, commit messages, and the messages the bot posts to Discord are plain prose. They have no emoji, no em dash
+between clauses, no semicolon between sentences, and no spaced hyphen as a dash. They have no rule-of-three
+flourishes. This rule does not apply to code comments.
 
 ## How greenstar wants to be talked to
 

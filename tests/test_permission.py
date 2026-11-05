@@ -129,5 +129,24 @@ class PermissionTest(unittest.TestCase):
         self.assertIn("Denied", answer["data"]["content"])
 
 
+    def test_when_a_dm_is_impossible_the_channel_says_only_that_approval_is_needed(self):
+        self.discord.no_dm.add(OWNER)
+        self.device.script = [("permission", "bash", ["git status"]), ("idle", "x")]
+        with TempDir() as directory:
+            app = self.make(directory)
+            worker = asking.Ask(app, token="tok", channel_id=CHANNEL, user_id=OWNER,
+                                device_name="macbook", prompt="check", new=True, title="t")
+            threading.Thread(target=worker.run_it, daemon=True).start()
+            self.assertTrue(self.discord.wait_for(
+                lambda: any("could not send you a DM" in str(content)
+                            for content in self.said()), 10))
+        for content in self.said():
+            self.assertNotIn("git status", str(content),
+                             "the action and its paths never reach the channel")
+        self.assertFalse(any("Permission needed" in message["content"]
+                             for messages in self.discord.messages.values()
+                             for message in messages))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -35,7 +35,7 @@ def _auth(password: str) -> str:
 class PeerClient:
     """The other daemon, through the two answers it serves."""
 
-    def __init__(self, base: str, password: str, timeout: float = 3.0):
+    def __init__(self, base: str, password: str, timeout: float = 3.0) -> None:
         self.base = base.rstrip("/")
         self.password = password
         self.timeout = timeout
@@ -62,7 +62,7 @@ class PeerClient:
 class _Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
-    def log_message(self, *args):  # the bot's own log is the log
+    def log_message(self, *args: object) -> None:  # the bot's own log is the log
         pass
 
     def _send(self, status: int, body: dict) -> None:
@@ -182,25 +182,29 @@ def _restart_later(command: list[str], here: Path) -> None:
 def update_self(checkout: Path | None = None, restart: bool = True) -> dict:
     """Pull this checkout, and restart through a supervisor when one runs it."""
     here = Path(checkout or CHECKOUT)
+    before = build_of(here)
     code, said = _run(["git", "pull", "--ff-only"], here)
     if code != 0:
         why = _why(said) or f"git failed ({code})"
         log.info(f"update: git refused ({why})")
         if said:
             log.info("update: git said " + " ".join(said.split()))
-        return {"ok": False, "said": why, "version": __version__}
+        return {"ok": False, "said": why, "version": __version__, "before": before}
     command = _supervisor(here) if restart else None
     if command:
         threading.Thread(target=_restart_later, args=(command, here), daemon=True).start()
-    log.info(f"update: pulled ({'restarting' if command else 'restart it here'})")
+    after = build_of(here)
+    moved = f"{before or '?'} -> {after or '?'}"
+    log.info(f"update: pulled ({moved}; {'restarting' if command else 'restart it here'})")
     return {"ok": True, "said": _why(said) or "up to date",
-            "version": __version__, "restarted": bool(command)}
+            "version": __version__, "restarted": bool(command),
+            "before": before, "after": after}
 
 
 class PeerServer:
     def __init__(self, host: str, port: int, device: str, password: str,
                  checkout: Path | None = None, restart: bool = True,
-                 version: str = "", build: str = ""):
+                 version: str = "", build: str = "") -> None:
         self.server = ThreadingHTTPServer((host, port), _Handler)
         self.server.device = device  # type: ignore[attr-defined]
         self.server.password = password  # type: ignore[attr-defined]
@@ -208,7 +212,12 @@ class PeerServer:
         self.server.restart = restart  # type: ignore[attr-defined]
         self.server.version = version  # type: ignore[attr-defined]
         self.server.build = build or build_of(checkout)  # type: ignore[attr-defined]
-        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        # A short poll: `shutdown()` waits for the loop to notice, and half a
+        # second per server is half a second per test.
+        self.thread = threading.Thread(
+            target=self.server.serve_forever,
+            kwargs={"poll_interval": 0.02}, daemon=True,
+        )
 
     def start(self) -> PeerServer:
         self.thread.start()
