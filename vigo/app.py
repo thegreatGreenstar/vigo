@@ -473,6 +473,16 @@ class App:
                 return
         log.info(f"quick: answered on {pick.name}")
 
+    def peer_password(self) -> str:
+        """The password a peer sends to this device: this device's own.
+
+        A peer looks this machine up as `devices[this].password`, so the server
+        must check that same value — not the top-level fallback, which is empty
+        when every device keeps its own secret.
+        """
+        own = self.config.device_named(self.config.device)
+        return own.password if own else self.config.password
+
     def _peer_url(self, name: str) -> str | None:
         device = self.config.device_named(name)
         if device is None:
@@ -672,7 +682,7 @@ class App:
         if self.config.peer_port:
             try:
                 PeerServer(self.config.peer_host, self.config.peer_port,
-                           self.config.device, self.config.password,
+                           self.config.device, self.peer_password(),
                            checkout=self.checkout).start()
             except OSError as error:  # the tailnet is not up, or the port is taken
                 log.error(f"peer: not listening ({error})")
