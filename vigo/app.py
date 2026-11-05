@@ -670,9 +670,12 @@ class App:
         log.info(f"up: {self.config.device}, {len(self.config.devices)} devices, model {self.config.model}")
         self.register_commands()
         if self.config.peer_port:
-            PeerServer(self.config.peer_host, self.config.peer_port,
-                       self.config.device, self.config.password,
-                       checkout=self.checkout).start()
+            try:
+                PeerServer(self.config.peer_host, self.config.peer_port,
+                           self.config.device, self.config.password,
+                           checkout=self.checkout).start()
+            except OSError as error:  # the tailnet is not up, or the port is taken
+                log.error(f"peer: not listening ({error})")
         gateway = Gateway(url, self.config.token, INTENTS, self.on_event,
                           lambda state: log.debug(f"gateway: {state}"))
         gateway.run()
