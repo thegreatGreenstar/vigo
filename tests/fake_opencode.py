@@ -339,6 +339,22 @@ class FakeOpenCode:
                     return
                 self._send(404, {"_tag": "NotFound", "message": "no route"})
 
+            def do_PATCH(self) -> None:
+                if not self._authed():
+                    return
+                path = urlsplit(self.path).path
+                body = self._body()
+                parts = path.strip("/").split("/")
+                if len(parts) == 3 and parts[0] == "api" and parts[1] == "session":
+                    with fake.lock:
+                        info = fake.sessions.get(parts[2])
+                        if info is not None and "metadata" in body:
+                            # Replaced, not merged, as the real device does.
+                            info["metadata"] = dict(body.get("metadata") or {})
+                    self._send(204)
+                    return
+                self._send(404, {"_tag": "NotFound", "message": "no route"})
+
             def do_POST(self) -> None:
                 if not self._authed():
                     return

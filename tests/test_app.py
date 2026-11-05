@@ -661,7 +661,7 @@ class AppTest(unittest.TestCase):
         self.assertEqual(self.device.generated, [])
 
     def test_an_ask_is_acknowledged_first_and_answered_after(self):
-        self.device.script = [("sleep", 0.3), ("idle", "just the answer")]
+        self.device.script = [("idle", "just the answer")]
         with TempDir() as directory:
             app = self.make(directory)
             self.use(app, commands.ASK,

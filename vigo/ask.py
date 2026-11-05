@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Protocol
 
-from . import log, text
+from . import lease as leasing, log, text
 from .config import Config, Device
 from .opencode_api import EventStream, OpenCode, OpenCodeError, busy_since
 from .state import State
@@ -167,6 +167,7 @@ class Ask:
         self.title = title
         self.run = Run(session="", device=device_name, started=time.monotonic(), prompt=prompt)
         self.buffer = ""
+        self.lease: leasing.Lease | None = None
         self.waiting = False
         self.prompted_at = 0.0
         self.before = ""   # the session's newest message when we asked
@@ -398,6 +399,8 @@ class Ask:
             # The only place that gives the channel up, and it gives up *this*
             # run: a second call from `_run`'s own paths used to take the next
             # run's place and start another beside it.
+            if self.lease is not None:
+                self.lease.release()
             self.app.unregister_run(self.channel_id, self.run)
 
     def _run(self) -> None:
@@ -411,14 +414,15 @@ class Ask:
             return
         self.run.session = session
         self.app.register_run(self.channel_id, self.run)
-        if not self._wait_for_idle(session, time.monotonic() + self.app.config.timeout):
+        self.lease = leasing.Lease(self.client, session, self.device_name)
+        if not self._wait_for_turn(session, time.monotonic() + self.app.config.timeout):
             if self.run.stop.is_set():
-                self._tell("⏹️ stopped.")
+                self._tell("Stopped.")
             else:
-                log.info("ask: the device is busy with another question; this one did not run")
+                log.info("ask: the channel is taken; this one did not run")
                 self._tell(
-                    "The device is still working on another question in this channel, "
-                    "so this one did not run. Ask again when it is free.",
+                    "Another vigo is asking in this channel, so this one did not run. "
+                    "Ask again when it is free.",
                 )
             return
         session_stop = threading.Event()
@@ -449,6 +453,8 @@ class Ask:
 
         while not self.run.stop.is_set():
             now = time.monotonic()
+            if self.lease is not None:
+                self.lease.renew()
             if not noted and now > deadline:
                 # Past `timeout`, say where it is and keep watching while the
                 # device works: `/vigo status` must not call the channel idle,
@@ -534,29 +540,42 @@ class Ask:
             pass
         return False
 
-    def _wait_for_idle(self, session: str, until: float) -> bool:
-        """Wait for the device to be free, so two daemons never share one turn.
+    def _wait_for_turn(self, session: str, until: float) -> bool:
+        """Wait until the device is free and this run holds the channel.
 
-        Both daemons receive every command and each keeps its own queue, so two
-        questions for one channel can arrive at one session at the same time.
-        The device then merges them into a single turn and one answer answers
-        both.  It says which session it is working on, so this one waits for it
-        rather than steers into it.  `until` bounds the wait: a question that
-        waited `timeout` for a free device is one that did not run.
+        Two things have to be true before a prompt, and either alone leaves a
+        way for two questions to meet in one turn. The device says when it is
+        working on the session; the lease says which daemon owns the channel,
+        which the device cannot know. `until` bounds the wait, because a
+        question that waited `timeout` is one that did not run.
         """
         announced = False
         while not self.run.stop.is_set():
-            try:
-                if busy_since(self.client.session(session)) is None:
-                    return True
-            except OpenCodeError:
-                return True  # cannot tell: ask, and the run reports what happens
+            # Once ours, it stays ours until we release it or somebody takes a
+            # stale one, so the claim is made once and the wait is for the
+            # device to finish the turn it is on.
+            if self.lease is None:
+                held = "unknown"
+            elif self.lease.mine:
+                held = "mine"
+            else:
+                held = self.lease.claim()
+            if held == "mine":
+                try:
+                    if busy_since(self.client.session(session)) is None:
+                        return True
+                except OpenCodeError:
+                    return True  # cannot tell: ask, and the run reports what happens
+            elif held == "unknown":
+                return True  # the device keeps no lease: ask, and the log says so
             if not announced:
-                log.info("ask: the device is busy with another question; waiting")
+                log.info("ask: the channel is taken or the device is busy; waiting")
                 announced = True
-            if time.monotonic() >= until:
+            left = until - time.monotonic()
+            if left <= 0:
                 return False
-            time.sleep(POLL)
+            # Never sleep past the deadline: a short `timeout` should be short.
+            time.sleep(min(POLL, left))
         return False
 
     def _newest_id(self, session: str) -> str:

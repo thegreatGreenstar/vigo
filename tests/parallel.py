@@ -1,6 +1,6 @@
 """Run the suite on several threads, with nothing but the standard library.
 
-    python3 -m tests.parallel                 # a thread per core, capped at 8
+    python3 -m tests.parallel                 # a thread per core, capped at 12
     python3 -m tests.parallel --workers 4
     python3 -m tests.parallel --pattern "test_app*"
 
@@ -114,7 +114,7 @@ def report(results: list[tuple[unittest.TestResult, float, str]], elapsed: float
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="tests.parallel", description=__doc__)
     parser.add_argument("--workers", type=int, default=0,
-                        help="how many threads; 0 means one per core, capped at 8")
+                        help="how many threads; 0 means one per core, capped at 12")
     parser.add_argument("--start", default="tests", help="where the test files are")
     parser.add_argument("--top", default=".", help="the directory the tests import from")
     parser.add_argument("--pattern", default="test*.py", help="which files to run")
@@ -122,7 +122,7 @@ def main(argv: list[str] | None = None) -> int:
                         help="name the N slowest cases, to see where the time goes")
     args = parser.parse_args(argv)
 
-    workers = args.workers or min(8, os.cpu_count() or 2)
+    workers = args.workers or min(12, os.cpu_count() or 2)
     suite = unittest.defaultTestLoader.discover(
         args.start, pattern=args.pattern, top_level_dir=args.top,
     )

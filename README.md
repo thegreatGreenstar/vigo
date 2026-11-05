@@ -352,6 +352,15 @@ wrong. `/vigo goal objective:…` sets one without asking anything, and
 a goal the device paused because it restarted under it.
 
 
+Two daemons answer every channel, one on each machine, and each keeps its own
+queue. Before a question is sent, its run claims the channel on the device
+itself: the session's metadata holds `vigoRun`, which names the daemon and a
+heartbeat that the run bumps every few seconds while it works. A run that finds
+a claim held by the other daemon waits for it and then asks. A claim whose
+heartbeat has not moved for twenty seconds is dead and is taken over, so a crash
+or a restart costs one turn and not the channel. `/vigo goal` reads the same
+claim and refuses while somebody else holds the session.
+
 A run is not always the daemon's that answers `/vigo status`: both daemons get
 every command, Discord takes the first acknowledgement, and either may restart
 under a run. So `status` asks the device's own session, which is the record

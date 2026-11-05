@@ -136,6 +136,7 @@ edit anything here.
 | `vigo/ask.py` | one question: session, the got-it line, the answer, the agent's own questions |
 | `vigo/goal.py` | when an ask is work to be done, and when it is a question |
 | `vigo/notify.py` | a DM to the owner: the update the daemon pulled, or `vigo dm` |
+| `vigo/lease.py` | one channel's run at a time across daemons, kept in the session's metadata |
 
 `deploy/` holds the service units and the launchers that unseal the password (Keychain on macOS, systemd-creds on
 Linux). `art/` holds the icon pipeline.
