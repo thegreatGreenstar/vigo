@@ -1,0 +1,28 @@
+{
+  "token": "the bot token from the Developer Portal",
+  "appID": "000000000000000000",
+  "owner": "000000000000000000",
+  "device": "macbook",
+  "password": "the OPENCODE_PASSWORD every device shares",
+  "install": "both",
+  "users": [],
+  "model": {
+    "providerID": "opencode-go",
+    "id": "deepseek-v4.1-flash"
+  },
+  "devices": [
+    {
+      "name": "macbook",
+      "url": "http://127.0.0.1:4096",
+      "directory": "/Users/you/Projects/ScarletNX"
+    },
+    {
+      "name": "pc",
+      "url": "http://192.168.1.20:4096",
+      "directory": "C:/Users/you/Projects/ScarletNX"
+    }
+  ],
+  "activityWindow": 1800,
+  "timeout": 900,
+  "editEvery": 3
+}

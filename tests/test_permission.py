@@ -1,0 +1,129 @@
+import threading
+import unittest
+
+from vigo import ask as asking
+from vigo.app import App
+from vigo.discord_api import Discord
+from vigo.state import State
+from tests.fake_discord import FakeDiscord
+from tests.fake_opencode import FakeOpenCode
+from tests.support import TempDir, load_settings
+
+OWNER = "145512144145512144"
+CHANNEL = "chan_9"
+
+
+class PermissionTest(unittest.TestCase):
+    def setUp(self):
+        self.discord = FakeDiscord()
+        self.device = FakeOpenCode("macbook")
+        self.app = None
+
+    def tearDown(self):
+        if self.app is not None:
+            self.app.shutdown()
+        self.device.close()
+        self.discord.close()
+
+    def make(self, directory):
+        settings = load_settings(
+            directory,
+            devices=[{"name": "macbook", "url": self.device.url, "directory": "/tmp/project"}],
+        )
+        api = Discord("token", settings.app_id, base=self.discord.url)
+        self.app = App(settings, api=api, state=State(directory / "state.json"))
+        return self.app
+
+    def button(self, app, custom: str, who: str = OWNER):
+        interaction = self.discord.next_id("int")
+        app.handle_interaction({
+            "id": interaction,
+            "token": "tok_button",
+            "type": 3,
+            "channel_id": "dm",
+            "member": {"user": {"id": who}},
+            "data": {"custom_id": custom},
+        })
+        return interaction
+
+    def card(self):
+        for channel, messages in self.discord.messages.items():
+            for message in messages:
+                if "Permission needed" in message["content"]:
+                    return channel, message
+        return None, None
+
+    def test_a_tool_waits_for_the_owner(self):
+        self.device.script = [
+            ("tool", "bash"),
+            ("permission", "bash", ["git status"]),
+            ("delta", "all clean"),
+            ("idle", "all clean"),
+        ]
+        with TempDir() as directory:
+            app = self.make(directory)
+            worker = asking.Ask(app, token="tok", channel_id=CHANNEL, user_id=OWNER,
+                                device_name="macbook", prompt="check the tree",
+                                new=False, title="Discord #general")
+            thread = threading.Thread(target=worker.run_it, daemon=True)
+            thread.start()
+
+            self.assertTrue(self.device.wait_for_prompt(10))
+            self.assertTrue(self.discord.wait_for(lambda: self.card()[0] is not None, 10))
+            channel, message = self.card()
+            self.assertEqual(channel, f"dm_{OWNER}")
+            self.assertIn("git status", message["content"])
+            self.assertEqual(self.device.permission_replies, [], "nothing runs before the owner says so")
+
+            components = message.get("components") or []
+            self.assertEqual(len(components), 1)
+            buttons = components[0]["components"]
+            self.assertEqual([button["label"] for button in buttons],
+                             ["Allow once", "Always allow", "Deny"])
+            custom = buttons[0]["custom_id"]
+
+            self.button(app, custom)
+            self.assertTrue(self.discord.wait_for(lambda: bool(self.device.permission_replies), 10))
+            session, request, decision = self.device.permission_replies[0]
+            self.assertEqual(decision, "once")
+            self.assertTrue(self.discord.wait_for(
+                lambda: any("all clean" in str(edit["content"]) for edit in self.discord.edits), 10))
+            thread.join(5)
+        self.assertFalse(thread.is_alive())
+
+    def test_a_stranger_cannot_answer_the_card(self):
+        self.device.script = [("permission", "bash", ["git status"]), ("idle", "x")]
+        with TempDir() as directory:
+            app = self.make(directory)
+            worker = asking.Ask(app, token="tok", channel_id=CHANNEL, user_id=OWNER,
+                                device_name="macbook", prompt="go", new=True, title="t")
+            threading.Thread(target=worker.run_it, daemon=True).start()
+            self.assertTrue(self.discord.wait_for(lambda: self.card()[0] is not None, 10))
+            _channel, message = self.card()
+            custom = message["components"][0]["components"][0]["custom_id"]
+            self.button(app, custom, who="888888888888888888")
+            self.assertEqual(self.device.permission_replies, [])
+            self.button(app, custom)
+            self.assertTrue(self.discord.wait_for(lambda: bool(self.device.permission_replies), 10))
+
+    def test_a_deny_goes_through(self):
+        self.device.script = [("permission", "bash", ["rm -rf build"]), ("idle", "stopped")]
+        with TempDir() as directory:
+            app = self.make(directory)
+            worker = asking.Ask(app, token="tok", channel_id=CHANNEL, user_id=OWNER,
+                                device_name="macbook", prompt="clean", new=True, title="t")
+            threading.Thread(target=worker.run_it, daemon=True).start()
+            self.assertTrue(self.discord.wait_for(lambda: self.card()[0] is not None, 10))
+            _channel, message = self.card()
+            deny = [button for button in message["components"][0]["components"]
+                    if button["label"] == "Deny"][0]
+            interaction = self.button(app, deny["custom_id"])
+            self.assertTrue(self.discord.wait_for(lambda: bool(self.device.permission_replies), 10))
+        self.assertEqual(self.device.permission_replies[0][2], "reject")
+        answer = self.discord.answer_for(interaction)
+        self.assertEqual(answer["type"], 7)
+        self.assertIn("Denied", answer["data"]["content"])
+
+
+if __name__ == "__main__":
+    unittest.main()

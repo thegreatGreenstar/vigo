@@ -1,0 +1,21 @@
+[Unit]
+Description=Vigo, your OpenCode agent on Discord
+After=network-online.target opencode-serve.service
+Wants=network-online.target
+PartOf=opencode-serve.service
+
+[Service]
+Type=simple
+WorkingDirectory=%h/Projects/vigo
+Environment=VIGO_CONFIG=%h/.config/vigo/vigo.json
+# The bot token, sealed to this machine's TPM; the settings file then says
+#   "tokenCommand": "cat \"$CREDENTIALS_DIRECTORY/vigo-token\""
+LoadCredentialEncrypted=vigo-token:%h/.config/vigo/vigo-token.cred
+ExecStart=/usr/bin/python3 -m vigo
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=default.target
