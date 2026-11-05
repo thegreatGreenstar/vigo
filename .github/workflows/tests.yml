@@ -46,7 +46,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install the linter
-        run: python -m pip install --disable-pip-version-check ruff
+        run: python -m pip install --disable-pip-version-check ruff==0.17.3
 
       - name: Lint
         run: ruff check --output-format=github .

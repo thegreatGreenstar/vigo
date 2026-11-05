@@ -419,7 +419,6 @@ class App:
             return
         device = self.config.device_named(pick.name)
         client = OpenCode(device.url, device.password)
-        self._say(token, "⏳ asking…")
         try:
             answer = client.generate_text(
                 prompt, model=self.config.model.as_ref(), timeout=float(self.config.timeout)

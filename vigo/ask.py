@@ -27,6 +27,11 @@ END_EVENTS = {
     "session.execution.interrupted": "interrupted",
 }
 
+# Discord already shows "is thinking..." for a deferred response, so the first
+# progress edit waits until there is something to say, or until this much has
+# passed with nothing at all.
+FIRST_PROGRESS_AFTER = 5.0
+
 
 @dataclass
 class Run:
@@ -260,9 +265,9 @@ class Ask:
             self.app.unregister_run(self.channel_id)
             return
 
-        self._edit(self._progress())
+        prompted = time.monotonic()
         deadline = started + self.app.config.timeout
-        next_edit = time.monotonic() + self.app.config.edit_every
+        next_edit = prompted + self.app.config.edit_every
         stream_dead = False
         poll_at = 0.0
         succeeded_at = 0.0
@@ -320,7 +325,14 @@ class Ask:
 
             if time.monotonic() >= next_edit:
                 next_edit = time.monotonic() + self.app.config.edit_every
-                self._edit(self._progress())
+                worth_saying = (
+                    self.buffer.strip()
+                    or self.tools
+                    or self.waiting
+                    or time.monotonic() - prompted >= FIRST_PROGRESS_AFTER
+                )
+                if worth_saying:
+                    self._edit(self._progress())
 
         if not outcome:
             outcome = "interrupted" if self.run.stop.is_set() else "succeeded"

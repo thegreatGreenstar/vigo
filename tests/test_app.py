@@ -181,6 +181,19 @@ class AppTest(unittest.TestCase):
                 lambda: any("no device" in str(edit["content"]) for edit in self.discord.edits)))
         self.assertEqual(self.device.generated, [])
 
+    def test_a_quick_answer_is_not_preceded_by_progress(self):
+        self.device.script = [("idle", "just the answer")]
+        with TempDir() as directory:
+            app = self.make(directory)
+            self.use(app, commands.ASK,
+                      options=[{"name": "prompt", "type": 3, "value": "hi"}])
+            self.assertTrue(self.discord.wait_for(
+                lambda: any("just the answer" in str(edit["content"])
+                            for edit in self.discord.edits), 10))
+        self.assertEqual(len(self.discord.edits), 1,
+                         "Discord's own 'thinking' is enough; only the answer is sent")
+        self.assertEqual(self.discord.edits[0]["content"].strip(), "just the answer")
+
     def test_hidden_asks_are_ephemeral(self):
         self.device.script = [("idle", "quiet")]
         with TempDir() as directory:

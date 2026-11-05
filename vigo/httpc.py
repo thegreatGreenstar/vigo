@@ -8,7 +8,6 @@ answered.
 from __future__ import annotations
 
 import json
-import socket
 import urllib.error
 import urllib.request
 
@@ -39,7 +38,7 @@ def call(
         return error.code, dict(error.headers or {}), payload
     except urllib.error.URLError as error:
         raise HttpError(str(error.reason)) from error
-    except (socket.timeout, TimeoutError) as error:
+    except TimeoutError as error:
         raise HttpError("timed out") from error
     except OSError as error:
         raise HttpError(error.strerror or str(error)) from error

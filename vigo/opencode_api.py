@@ -13,7 +13,8 @@ import queue
 import threading
 import urllib.request
 from dataclasses import dataclass
-from typing import Any, Iterator
+from typing import Any
+from collections.abc import Iterator
 
 from . import httpc, log
 
@@ -160,7 +161,7 @@ class EventStream:
         self.thread: threading.Thread | None = None
         self.ready = threading.Event()
 
-    def start(self) -> "EventStream":
+    def start(self) -> EventStream:
         self.thread = threading.Thread(target=self._run, name="opencode-events", daemon=True)
         self.thread.start()
         return self

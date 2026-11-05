@@ -16,7 +16,7 @@ import ssl
 import struct
 import time
 import urllib.parse
-from typing import Callable
+from collections.abc import Callable
 
 from . import log
 
@@ -117,7 +117,7 @@ class WebSocket:
         """The next whole frame, or None when nothing arrived in idle_timeout."""
         try:
             head = self._read(2, time.monotonic() + idle_timeout)
-        except socket.timeout:
+        except TimeoutError:
             return None
         except ssl.SSLError as error:
             raise GatewayClosed(str(error)) from error
@@ -309,7 +309,6 @@ class Gateway:
         return 30.0
 
     def _identify_data(self) -> dict:
-        import platform
         import sys
 
         system = {"darwin": "macos", "win32": "windows"}.get(sys.platform, "linux")
