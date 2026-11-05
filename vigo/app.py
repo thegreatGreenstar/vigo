@@ -16,7 +16,7 @@ from .discord_api import Discord, DiscordError
 from .gateway import Gateway
 from . import __version__
 from .opencode_api import OpenCode, OpenCodeError
-from .peer import PeerClient, PeerServer, update_self
+from .peer import PeerClient, PeerServer, build_of, update_self
 from .router import Router
 from .state import State
 
@@ -58,6 +58,7 @@ class App:
     def __init__(self, config: Config, api: Discord | None = None, state: State | None = None,
                  checkout: Path | None = None):
         self.checkout = checkout
+        self._build: str | None = None
         self.config = config
         self.api = api or Discord(config.token, config.app_id)
         self.router = Router(config)
@@ -488,6 +489,24 @@ class App:
         own = self.config.device_named(self.config.device)
         return own.password if own else self.config.password
 
+    @property
+    def build(self) -> str:
+        """The commit this daemon runs, short; empty when the checkout is not git."""
+        if self._build is None:
+            self._build = build_of(self.checkout)
+        return self._build
+
+    def _same_build(self, info: dict) -> bool:
+        """Whether a peer runs what this one runs.
+
+        A peer on older code does not report a build, so fall back to the
+        version string, which is all it can tell us.
+        """
+        theirs = str(info.get("build") or "")
+        if theirs and self.build:
+            return theirs == self.build
+        return str(info.get("version") or "") == __version__
+
     def _peer_url(self, name: str) -> str | None:
         device = self.config.device_named(name)
         if device is None:
@@ -511,9 +530,11 @@ class App:
                 info = PeerClient(url, device.password, timeout=1.5).info()
             except OSError:
                 continue  # that port is off or unreachable; say nothing
-            version = str(info.get("version") or "?")
-            if version != __version__:
-                lines.append(f"`{name}` runs vigo {version}, not {__version__} — `/vigo upgrade`")
+            if not self._same_build(info):
+                theirs = str(info.get("build") or info.get("version") or "?")
+                lines.append(
+                    f"`{name}` runs {theirs}, not {self.build or __version__} — `/vigo upgrade`"
+                )
         return lines
 
     def _upgrade(self, options: dict, token: str) -> None:
@@ -542,8 +563,9 @@ class App:
             except OSError:
                 lines.append(f"`{name}`: not answering on its peer port")
                 continue
-            if info.get("version") == __version__:
-                lines.append(f"`{name}`: already on {__version__}")
+            if self._same_build(info):
+                theirs = str(info.get("build") or info.get("version") or __version__)
+                lines.append(f"`{name}`: already on {theirs}")
                 continue
             try:
                 told = PeerClient(url, device.password, timeout=180.0).update()
@@ -688,7 +710,7 @@ class App:
             try:
                 PeerServer(self.config.peer_host, self.config.peer_port,
                            self.config.device, self.peer_password(),
-                           checkout=self.checkout).start()
+                           checkout=self.checkout, build=self.build).start()
             except OSError as error:  # the tailnet is not up, or the port is taken
                 log.error(f"peer: not listening ({error})")
         gateway = Gateway(url, self.config.token, INTENTS, self.on_event,

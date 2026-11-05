@@ -81,7 +81,8 @@ class _Handler(BaseHTTPRequestHandler):
             self._send(404, {"error": "no route"})
             return
         self._send(200, {"device": self.server.device,
-                         "version": self.server.version or __version__})
+                         "version": self.server.version or __version__,
+                         "build": self.server.build})
 
     def do_POST(self) -> None:
         if not self._allowed():
@@ -100,6 +101,17 @@ def _run(command: list[str], cwd: Path, timeout: float = 120.0) -> tuple[int, st
     except (OSError, subprocess.SubprocessError) as error:
         return 1, str(error)
     return done.returncode, (done.stdout or done.stderr or "").strip()
+
+
+def build_of(checkout: Path | None = None) -> str:
+    """The commit this checkout is on, short; empty when it is not a git tree.
+
+    A version string is bumped by hand and both daemons run "1.0.0" between
+    releases, so it cannot tell which of them is behind.  The commit can.
+    """
+    here = Path(checkout or CHECKOUT)
+    code, said = _run(["git", "rev-parse", "--short", "HEAD"], here, timeout=10.0)
+    return said.splitlines()[0].strip() if code == 0 and said else ""
 
 
 def update_self(checkout: Path | None = None, restart: bool = True) -> dict:
@@ -121,13 +133,14 @@ def update_self(checkout: Path | None = None, restart: bool = True) -> dict:
 class PeerServer:
     def __init__(self, host: str, port: int, device: str, password: str,
                  checkout: Path | None = None, restart: bool = True,
-                 version: str = ""):
+                 version: str = "", build: str = ""):
         self.server = ThreadingHTTPServer((host, port), _Handler)
         self.server.device = device  # type: ignore[attr-defined]
         self.server.password = password  # type: ignore[attr-defined]
         self.server.checkout = checkout  # type: ignore[attr-defined]
         self.server.restart = restart  # type: ignore[attr-defined]
         self.server.version = version  # type: ignore[attr-defined]
+        self.server.build = build or build_of(checkout)  # type: ignore[attr-defined]
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
 
     def start(self) -> PeerServer:

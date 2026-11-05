@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 
 from vigo import __version__
-from vigo.peer import PeerClient, PeerServer, update_self
+from vigo.peer import PeerClient, PeerServer, build_of, update_self
 
 
 def git(*args: str, cwd: Path) -> str:
@@ -33,6 +33,13 @@ class PeerTest(unittest.TestCase):
         with self.assertRaises(OSError):
             PeerClient(self.url, "pw")._call("GET", "/vigo/secrets")
 
+    def test_it_reports_the_build_it_was_given(self):
+        server = PeerServer("127.0.0.1", 0, "macbook", "pw", build="abc1234").start()
+        self.addCleanup(server.stop)
+        info = PeerClient(f"http://127.0.0.1:{server.server.server_address[1]}", "pw").info()
+        self.assertEqual(info["build"], "abc1234")
+        self.assertEqual(info["version"], __version__)
+
 
 class UpdateTest(unittest.TestCase):
     def test_a_checkout_is_pulled_and_never_forcefully(self):
@@ -60,6 +67,23 @@ class UpdateTest(unittest.TestCase):
             self.assertTrue(told["ok"])
             self.assertEqual((here / "file.txt").read_text(encoding="utf-8"), "two\n")
             self.assertFalse(told["restarted"])
+
+
+class BuildTest(unittest.TestCase):
+    def test_it_reads_the_checkout_commit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            git("init", "-q", str(root), cwd=root)
+            git("config", "user.email", "t@example.com", cwd=root)
+            git("config", "user.name", "t", cwd=root)
+            (root / "one.txt").write_text("one\n", encoding="utf-8")
+            git("add", ".", cwd=root)
+            git("commit", "-qm", "one", cwd=root)
+            self.assertEqual(build_of(root), git("rev-parse", "--short", "HEAD", cwd=root))
+
+    def test_a_directory_that_is_not_git_has_no_build(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self.assertEqual(build_of(Path(directory)), "")
 
 
 if __name__ == "__main__":
