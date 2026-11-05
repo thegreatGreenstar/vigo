@@ -126,8 +126,10 @@ user cost. Batch on both anyway: the history is shared, and the Mac reads what t
   **NEEDS_CONTEXT**. "Partially done" is not a status.
 - Self-rating before reporting: a score out of 10 from a fresh read, each missing point named, and an honest "am I
   proud of it". If not, fix it and rate again.
-- Say what must be restarted for the change to take effect, with the command. Here that is the bot
-  (`pkill -f "m vigo"` then `python3.14 -m vigo`), and the settings reload on the next start.
+- Say what must be restarted for the change to take effect, with the command. A supervisor owns the daemon, so
+  restart the job, not the process: `launchctl kickstart -k gui/$(id -u)/dev.vigo.bot` on macOS,
+  `systemctl --user restart vigo` on Linux. A `kill` works too, because both units are kept alive; starting a second
+  `python3.14 -m vigo` by hand would run two daemons. The settings reload on the next start.
 - Greenstar commits and pushes himself: on fresh-device with his YubiKey and the Secure Enclave key, on
   rotten-device with that machine's TPM key. Prepare the tree and hand him the command; never `git push` for him.
 

@@ -294,16 +294,19 @@ What the Developer Portal asks for, if it helps:
 | Command | Who | What happens |
 | --- | --- | --- |
 | `/vigo ask prompt:<text> [device] [hidden] [new]` | approved users | asks the device you last worked on; the answer is public in the channel unless `hidden:true`, in which case only you see the question and answer |
+| `/vigo quick prompt:<text> [device] [hidden]` | approved users | one answer, with no session and no tools |
 | `/vigo status` | approved users | the channel's session, its device, tokens and cost |
 | `/vigo devices` | approved users | what is up, and which one a question would go to |
 | `/vigo stop` | owner | interrupts the channel's run |
+| `/vigo upgrade [device]` | owner | pulls and restarts a daemon that runs a different commit; empty does every one of them |
 | `/vigo allow user:<who> [for:<2h｜1d｜7d｜perm>]` | owner | lets someone ask, for a time; 1 day when unnamed |
 | `/vigo deny user:<who>` | owner | takes that allow back |
 | `/vigo allowed` | owner | who may ask, and until when |
 | `/vigo help` | anyone | what the bot does |
 
-`/vigo allow`, `deny`, `allowed`, `stop` and every answer about the devices
-are ephemeral — only you see them.
+`/vigo status`, `devices`, `upgrade`, `allow`, `deny` and `allowed` are
+always ephemeral: only the person who ran it sees the answer, and no option
+could show it to a channel. `/vigo stop` takes `hidden` like the questions do.
 
 The allowlist is kept in a message the bot owns: in `stateChannel` when the
 file names one, otherwise in the bot's DM with you. It is read before every

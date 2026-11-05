@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 
 from vigo import __version__
-from vigo.peer import PeerClient, PeerServer, build_of, update_self
+from vigo.peer import PeerClient, PeerServer, _launchd_workdir, _why, build_of, update_self
 
 
 def git(*args: str, cwd: Path) -> str:
@@ -67,6 +67,96 @@ class UpdateTest(unittest.TestCase):
             self.assertTrue(told["ok"])
             self.assertEqual((here / "file.txt").read_text(encoding="utf-8"), "two\n")
             self.assertFalse(told["restarted"])
+
+
+class RefusalTest(unittest.TestCase):
+    """A refused pull says why, not the last line of git's advice."""
+
+    def test_a_refused_pull_reports_the_cause_and_no_local_path(self):
+        with tempfile.TemporaryDirectory() as directory:
+            here = Path(directory)
+            git("init", "-q", "-b", "main", str(here), cwd=here)
+            git("config", "user.email", "t@example.com", cwd=here)
+            git("config", "user.name", "t", cwd=here)
+            (here / "file.txt").write_text("one\n", encoding="utf-8")
+            git("add", ".", cwd=here)
+            git("commit", "-qm", "one", cwd=here)
+            git("remote", "add", "origin", str(here / "gone.git"), cwd=here)
+
+            told = update_self(checkout=here, restart=False)
+
+        self.assertFalse(told["ok"])
+        # git ends with "Please make sure you have the correct access rights /
+        # and the repository exists.", which names nothing; the fatal line does.
+        self.assertIn("Could not read from remote repository", told["said"])
+        self.assertNotIn("and the repository exists", told["said"])
+        self.assertNotIn(directory, told["said"], "a local path is not said to Discord")
+
+
+class WhyTest(unittest.TestCase):
+    def test_the_summary_fatal_line_wins(self):
+        self.assertEqual(
+            _why("fatal: '/x/gone.git' does not appear to be a git repository\n"
+                 "fatal: Could not read from remote repository.\n"
+                 "\n"
+                 "Please make sure you have the correct access rights\n"
+                 "and the repository exists."),
+            "fatal: Could not read from remote repository.",
+        )
+
+    def test_advice_alone_falls_back_to_its_last_line(self):
+        self.assertEqual(_why("error: Your local changes would be overwritten\nAborting\n"),
+                         "Aborting")
+
+    def test_no_output_says_nothing(self):
+        self.assertEqual(_why(""), "")
+
+
+class SupervisorTest(unittest.TestCase):
+    """Only the job that runs this checkout is restarted."""
+
+    PRINTED = """gui/501/dev.vigo.bot = {
+\tactive count = 1
+\tpath = /Users/greenstar/Library/LaunchAgents/dev.vigo.bot.plist
+\tstate = running
+
+\tprogram = /opt/homebrew/bin/python3.14
+\targuments = {
+\t\t/opt/homebrew/bin/python3.14
+\t\t-m
+\t\tvigo
+\t}
+
+\tworking directory = /Users/greenstar/Projects/vigo
+}
+"""
+
+    def test_it_reads_the_jobs_working_directory(self):
+        self.assertEqual(_launchd_workdir(self.PRINTED), "/Users/greenstar/Projects/vigo")
+
+    def test_a_job_without_one_is_not_this_checkout(self):
+        self.assertEqual(_launchd_workdir("state = running\n"), "")
+
+    def test_a_checkout_no_supervisor_runs_is_not_restarted(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            origin = root / "origin.git"
+            git("init", "--bare", "-q", str(origin), cwd=root)
+            seed = root / "seed"
+            git("clone", "-q", str(origin), str(seed), cwd=root)
+            git("config", "user.email", "t@example.com", cwd=seed)
+            git("config", "user.name", "t", cwd=seed)
+            (seed / "file.txt").write_text("one\n", encoding="utf-8")
+            git("add", ".", cwd=seed)
+            git("commit", "-qm", "one", cwd=seed)
+            git("push", "-q", "origin", "HEAD:main", cwd=seed)
+            here = root / "here"
+            git("clone", "-q", "-b", "main", str(origin), str(here), cwd=root)
+
+            told = update_self(checkout=here)  # restart is on by default
+
+        self.assertTrue(told["ok"])
+        self.assertFalse(told["restarted"], "no supervisor runs this clone")
 
 
 class BuildTest(unittest.TestCase):

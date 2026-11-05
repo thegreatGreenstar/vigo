@@ -113,6 +113,21 @@ class AppTest(unittest.TestCase):
         self.assertIn("Only", answer["data"]["content"])
         self.assertFalse(app.allow.may_ask("42"))
 
+    def test_only_the_owner_upgrades(self):
+        """Approval to ask is not approval to pull code onto the machines."""
+        with TempDir() as directory:
+            app = self.make(directory)
+            self.use(app, commands.ALLOW, options=[
+                {"name": "user", "type": 6, "value": {"id": "42", "username": "Alex"}},
+            ])
+            self.assertTrue(app.allow.may_ask("42"))
+            interaction = self.use(app, commands.UPGRADE, who="42")
+        answer = self.discord.answer_for(interaction)
+        self.assertEqual(answer["data"].get("flags"), 64)
+        self.assertIn("Only this bot's owner can use `/vigo upgrade`",
+                      answer["data"].get("content", ""),
+                      "an approved asker is refused, not deferred")
+
     def test_the_owner_allows_and_denies(self):
         with TempDir() as directory:
             app = self.make(directory)

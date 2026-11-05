@@ -15,8 +15,11 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import subprocess
+import sys
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -103,6 +106,23 @@ def _run(command: list[str], cwd: Path, timeout: float = 120.0) -> tuple[int, st
     return done.returncode, (done.stdout or done.stderr or "").strip()
 
 
+def _why(said: str) -> str:
+    """The line of git's output that says why, without the paths around it.
+
+    A refused `git pull` ends with advice, not with the cause: "Please make
+    sure you have the correct access rights" and "and the repository exists."
+    Taking the last line alone therefore reported "and the repository exists.",
+    which says nothing.  The `fatal:` line is the one that names the cause, and
+    the last of them is the summary ("Could not read from remote repository.")
+    rather than one that quotes a local path.
+    """
+    fatal = [line.strip() for line in said.splitlines() if line.startswith("fatal:")]
+    if fatal:
+        return fatal[-1]
+    lines = [line.strip() for line in said.splitlines() if line.strip()]
+    return lines[-1] if lines else ""
+
+
 def build_of(checkout: Path | None = None) -> str:
     """The commit this checkout is on, short; empty when it is not a git tree.
 
@@ -121,20 +141,60 @@ def head_of(checkout: Path | None = None) -> str:
     return said.strip() if code == 0 and said else ""
 
 
+def _launchd_workdir(printed: str) -> str:
+    """The working directory a `launchctl print` names, or empty."""
+    for line in printed.splitlines():
+        line = line.strip()
+        if line.startswith("working directory = "):
+            return line.split("= ", 1)[1].strip()
+    return ""
+
+
+def _supervisor(checkout: Path) -> list[str] | None:
+    """The command that restarts this daemon, when a supervisor runs it here.
+
+    systemd says so itself on Linux.  launchd says so for any job, so it is
+    only this checkout's job when the working directory matches: a job that
+    serves another clone is left alone.
+    """
+    here = checkout.resolve()
+    if _run(["systemctl", "--user", "is-active", "--quiet", "vigo.service"],
+            here, timeout=10.0)[0] == 0:
+        return ["systemctl", "--user", "restart", "vigo.service"]
+    getuid = getattr(os, "getuid", None)
+    if sys.platform != "darwin" or getuid is None:
+        return None
+    label = f"gui/{getuid()}/dev.vigo.bot"
+    code, said = _run(["launchctl", "print", label], here, timeout=10.0)
+    if code == 0 and _launchd_workdir(said) == str(here):
+        return ["launchctl", "kickstart", "-k", label]
+    return None
+
+
+def _restart_later(command: list[str], here: Path) -> None:
+    """Restart once the answer is out, because the restart kills this process."""
+    time.sleep(1.0)
+    code, said = _run(command, here, timeout=30.0)
+    if code != 0:
+        log.error(f"update: restart refused ({said or code})")
+
+
 def update_self(checkout: Path | None = None, restart: bool = True) -> dict:
     """Pull this checkout, and restart through a supervisor when one runs it."""
     here = Path(checkout or CHECKOUT)
     code, said = _run(["git", "pull", "--ff-only"], here)
     if code != 0:
-        log.info(f"update: git refused ({said.splitlines()[-1] if said else code})")
-        return {"ok": False, "said": said.splitlines()[-1] if said else "git failed",
-                "version": __version__}
-    restarted = False
-    if restart and _run(["systemctl", "--user", "is-active", "--quiet", "vigo.service"], here)[0] == 0:
-        restarted = _run(["systemctl", "--user", "restart", "vigo.service"], here)[0] == 0
-    log.info(f"update: pulled ({'restarting' if restarted else 'restart it here'})")
-    return {"ok": True, "said": said.splitlines()[-1] if said else "up to date",
-            "version": __version__, "restarted": restarted}
+        why = _why(said) or f"git failed ({code})"
+        log.info(f"update: git refused ({why})")
+        if said:
+            log.info("update: git said " + " ".join(said.split()))
+        return {"ok": False, "said": why, "version": __version__}
+    command = _supervisor(here) if restart else None
+    if command:
+        threading.Thread(target=_restart_later, args=(command, here), daemon=True).start()
+    log.info(f"update: pulled ({'restarting' if command else 'restart it here'})")
+    return {"ok": True, "said": _why(said) or "up to date",
+            "version": __version__, "restarted": bool(command)}
 
 
 class PeerServer:
