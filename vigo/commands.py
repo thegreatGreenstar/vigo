@@ -101,8 +101,7 @@ def spec(install: str = "both") -> list[dict]:
                 {
                     "type": 1,
                     "name": STATUS,
-                    "description": "What this channel's session is doing.",
-                    "options": [dict(hidden)],
+                    "description": "What this channel's session is doing. Only you ever see this.",
                 },
                 {
                     "type": 1,

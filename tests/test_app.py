@@ -283,12 +283,23 @@ class AppTest(unittest.TestCase):
             self.assertNotIn("macbook", str(edit["content"]),
                              "the device never appears in a channel message")
 
+    def test_status_is_the_owners_alone_and_always_hidden(self):
+        listed = "777777777777777777"
+        with TempDir() as directory:
+            app = self.make(directory, users=[listed])
+            refused = self.use(app, commands.STATUS, who=listed)
+            self.assertEqual(self.discord.answer_for(refused)["data"]["flags"], 64)
+            self.assertIn("Only", self.discord.answer_for(refused)["data"]["content"])
+            mine = self.use(app, commands.STATUS)
+            self.assertEqual(self.discord.answer_for(mine)["data"]["flags"], 64,
+                             "status is never shown to a channel")
+
     def test_an_answer_is_public_unless_hidden(self):
         with TempDir() as directory:
             app = self.make(directory)
-            interaction = self.use(app, commands.STATUS)
+            interaction = self.use(app, commands.HELP)
             self.assertNotIn("flags", self.discord.answer_for(interaction)["data"])
-            interaction = self.use(app, commands.STATUS,
+            interaction = self.use(app, commands.HELP,
                                    options=[{"name": "hidden", "type": 5, "value": True}])
             self.assertEqual(self.discord.answer_for(interaction)["data"]["flags"], 64)
 
@@ -308,7 +319,7 @@ class AppTest(unittest.TestCase):
         subcommands = [option["name"] for option in command["options"]]
         self.assertEqual(subcommands, ["ask", "quick", "stop", "status", "devices",
                                        "allow", "deny", "allowed", "help"])
-        always_private = {"devices", "allow", "deny", "allowed"}
+        always_private = {"devices", "status", "allow", "deny", "allowed"}
         for option in command["options"]:
             names = [inner["name"] for inner in (option.get("options") or [])]
             if option["name"] in always_private:

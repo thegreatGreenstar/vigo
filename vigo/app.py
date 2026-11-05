@@ -259,8 +259,8 @@ class App:
             )
             log.info(f"denied {sub or 'a use'} from {who}")
             return
-        if sub in (commands.STOP, commands.ALLOW, commands.DENY, commands.ALLOWED,
-                   commands.DEVICES) and not owner:
+        if sub in (commands.STOP, commands.STATUS, commands.ALLOW, commands.DENY,
+                   commands.ALLOWED, commands.DEVICES) and not owner:
             self._answer_now(
                 interaction_id, token,
                 f"Only this bot's owner can use `/vigo {sub}`.",
@@ -305,11 +305,12 @@ class App:
     def _ephemeral(self, sub: str, options: dict) -> bool:
         """Everyone sees the answer unless the asker asked to hide it.
 
-        `devices` names the machines, and the three allowlist commands name
-        other people, so those are always private: there is no option that
-        could show them to a channel by accident.
+        `devices` names the machines, `status` names the session and its cost,
+        and the three allowlist commands name other people, so those are always
+        private: no option could show them to a channel by accident.
         """
-        if sub in (commands.DEVICES, commands.ALLOW, commands.DENY, commands.ALLOWED):
+        if sub in (commands.DEVICES, commands.STATUS, commands.ALLOW,
+                   commands.DENY, commands.ALLOWED):
             return True
         return bool(options.get("hidden"))
 
@@ -447,7 +448,7 @@ class App:
         device = self.config.device_named(remembered["device"])
         lines = [
             "**This channel** has an OpenCode session",
-            f"Session `{remembered['session']}` — {remembered.get('title') or 'untitled'}",
+            f"“{remembered.get('title') or 'untitled'}”",
         ]
         if device:
             client = OpenCode(device.url, device.password)
