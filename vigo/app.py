@@ -13,8 +13,9 @@ from .allowlist import AllowError, AllowList
 from .config import Config
 from .discord_api import Discord, DiscordError
 from .gateway import Gateway
+from . import __version__
 from .opencode_api import OpenCode, OpenCodeError
-from .presence import Presence
+from .peer import PeerClient, PeerServer, update_self
 from .router import Router
 from .state import State
 
@@ -59,7 +60,6 @@ class App:
         self.router = Router(config)
         self.state = state or State()
         self.allow = AllowList(config, self.api, self.state)
-        self.presence = Presence(config.device, self.api, self.state, self.allow.home)
         self.runs: dict[str, asking.Run] = {}
         self.runs_lock = threading.Lock()
         self.pool = ThreadPoolExecutor(max_workers=8, thread_name_prefix="vigo")
@@ -264,8 +264,8 @@ class App:
             )
             log.info(f"denied {sub or 'a use'} from {who}")
             return
-        if sub in (commands.STOP, commands.STATUS, commands.ALLOW, commands.DENY,
-                   commands.ALLOWED, commands.DEVICES) and not owner:
+        if sub in (commands.STOP, commands.UPGRADE, commands.STATUS, commands.ALLOW,
+                   commands.DENY, commands.ALLOWED, commands.DEVICES) and not owner:
             self._answer_now(
                 interaction_id, token,
                 f"Only this bot's owner can use `/vigo {sub}`.",
@@ -273,7 +273,7 @@ class App:
             )
             return
         if sub not in (
-            commands.ASK, commands.QUICK, commands.STOP, commands.STATUS,
+            commands.ASK, commands.QUICK, commands.UPGRADE, commands.STOP, commands.STATUS,
             commands.DEVICES, commands.ALLOW, commands.DENY, commands.ALLOWED,
         ):
             self._answer_now(interaction_id, token, "`/vigo help` lists what it does.", ephemeral=True)
@@ -337,7 +337,7 @@ class App:
         and the three allowlist commands name other people, so those are always
         private: no option could show them to a channel by accident.
         """
-        if sub in (commands.DEVICES, commands.STATUS, commands.ALLOW,
+        if sub in (commands.DEVICES, commands.STATUS, commands.UPGRADE, commands.ALLOW,
                    commands.DENY, commands.ALLOWED):
             return True
         return bool(options.get("hidden"))
@@ -387,6 +387,8 @@ class App:
             self._say(token, self._status(channel_id))
         elif sub == commands.DEVICES:
             self._say(token, self._devices(pick, detailed=True))
+        elif sub == commands.UPGRADE:
+            self._upgrade(options, token)
         elif sub == commands.STOP:
             self._say(token, self._stop(channel_id))
         elif sub == commands.ALLOW:
@@ -468,6 +470,80 @@ class App:
                 return
         log.info(f"quick: answered on {pick.name}")
 
+    def _peer_url(self, name: str) -> str | None:
+        device = self.config.device_named(name)
+        if device is None:
+            return None
+        if device.peer:
+            return device.peer
+        if not self.config.peer_port:
+            return None
+        host = device.url.split("//", 1)[1].split("/")[0].split(":")[0]
+        return f"http://{host}:{self.config.peer_port}"
+
+    def _behind(self) -> list[str]:
+        """Daemons that answer on their peer port with a different build."""
+        lines = []
+        for name in self.config.devices:
+            url = self._peer_url(name)
+            if not url:
+                continue
+            device = self.config.device_named(name)
+            try:
+                info = PeerClient(url, device.password, timeout=1.5).info()
+            except OSError:
+                continue  # that port is off or unreachable; say nothing
+            version = str(info.get("version") or "?")
+            if version != __version__:
+                lines.append(f"`{name}` runs vigo {version}, not {__version__} — `/vigo upgrade`")
+        return lines
+
+    def _upgrade(self, options: dict, token: str) -> None:
+        """Pull one daemon, or every one behind this build, and restart it."""
+        wanted = str(options.get("device") or "").strip()
+        if wanted and wanted not in self.config.devices:
+            self._say(token, f"No device is called `{wanted}`.")
+            return
+        targets = [wanted] if wanted else [
+            name for name in self.config.devices if name != self.config.device
+        ]
+        lines = []
+        local = False
+        for name in targets:
+            if name == self.config.device:
+                lines.append(f"`{name}`: this one pulls after this answer")
+                local = True
+                continue
+            url = self._peer_url(name)
+            if not url:
+                lines.append(f"`{name}`: no `peerPort` to ask on")
+                continue
+            device = self.config.device_named(name)
+            try:
+                info = PeerClient(url, device.password, timeout=2.0).info()
+            except OSError:
+                lines.append(f"`{name}`: not answering on its peer port")
+                continue
+            if info.get("version") == __version__:
+                lines.append(f"`{name}`: already on {__version__}")
+                continue
+            try:
+                told = PeerClient(url, device.password, timeout=180.0).update()
+            except OSError as error:
+                lines.append(f"`{name}`: could not update it ({error})")
+                continue
+            if not told.get("ok"):
+                lines.append(f"`{name}`: git refused ({told.get('said')})")
+            elif told.get("restarted"):
+                lines.append(f"`{name}`: pulled and restarted")
+            else:
+                lines.append(f"`{name}`: pulled, restart it there")
+        self._say(token, "\n".join(lines) or "Nothing to upgrade.")
+        # This one last, after the answer is out: pulling is safe, restarting
+        # is only safe once the person has read the list above.
+        if local:
+            threading.Timer(1.0, update_self).start()
+
     def _status(self, channel_id: str) -> str:
         remembered = self.state.session_for(channel_id)
         running = self.run_for(channel_id)
@@ -500,10 +576,10 @@ class App:
     def _devices(self, pick, detailed: bool = False) -> str:
         states = self.router.states(fresh=True)
         lines = [self.router.describe(states, detailed=detailed)]
-        stale = self.presence.stale()
-        if stale:
+        behind = self._behind()
+        if behind:
             lines.append("")
-            lines.extend(f"⚠️ {line} — restart it there." for line in stale)
+            lines.extend(f"⚠️ {line}" for line in behind)
         lines.append("")
         if pick.name:
             lines.append(
@@ -590,7 +666,9 @@ class App:
         url = self.api.gateway_url()
         log.info(f"up: {self.config.device}, {len(self.config.devices)} devices, model {self.config.model}")
         self.register_commands()
-        self.presence.announce()
+        if self.config.peer_port:
+            PeerServer(self.config.peer_host, self.config.peer_port,
+                       self.config.device, self.config.password).start()
         gateway = Gateway(url, self.config.token, INTENTS, self.on_event,
                           lambda state: log.debug(f"gateway: {state}"))
         gateway.run()

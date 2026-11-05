@@ -35,9 +35,12 @@ KNOWN_KEYS = {
     "activityWindow",
     "timeout",
     "editEvery",
+    "peerPort",
+    "peerHost",
 }
 
-KNOWN_DEVICE_KEYS = {"name", "url", "directory", "password", "passwordFile", "passwordCommand"}
+KNOWN_DEVICE_KEYS = {"name", "url", "directory", "password", "passwordFile",
+                     "passwordCommand", "peer"}
 
 
 class ConfigError(Exception):
@@ -50,6 +53,7 @@ class Device:
     url: str
     directory: str
     password: str = ""
+    peer: str = ""
 
     def __repr__(self) -> str:
         return f"Device({self.name})"
@@ -87,6 +91,8 @@ class Config:
     activity_window: int = 1800
     timeout: int = 900
     edit_every: float = 3.0
+    peer_port: int = 0
+    peer_host: str = "127.0.0.1"
 
     def device_named(self, name: str) -> Device | None:
         return self.devices.get(name)
@@ -229,7 +235,12 @@ def _device(entry: object, index: int, fallback_password: str, base: Path | None
     password = _secret(entry, "password", where, base) or fallback_password
     if not password:
         raise ConfigError(f"{where}: no password, and the file sets none")
-    return Device(name=name, url=url, directory=directory, password=password)
+    peer = ""
+    if "peer" in entry:
+        peer = _str(entry, "peer", where).rstrip("/")
+        if not re.match(r"\Ahttps?://[^\s/]+", peer):
+            raise ConfigError(f"{where}: peer {peer!r} is not http:// or https://")
+    return Device(name=name, url=url, directory=directory, password=password, peer=peer)
 
 
 def _model(raw: object) -> Model:
@@ -327,6 +338,8 @@ def parse(raw: object, base: Path | None = None) -> Config:
         activity_window=_whole(raw, "activityWindow", "the file", 0, 86400, 1800),
         timeout=_whole(raw, "timeout", "the file", 30, 3600, 900),
         edit_every=float(_whole(raw, "editEvery", "the file", 1, 60, 3)),
+        peer_port=_whole(raw, "peerPort", "the file", 0, 65535, 0),
+        peer_host=_str(raw, "peerHost", "the file") if "peerHost" in raw else "127.0.0.1",
     )
 
 
