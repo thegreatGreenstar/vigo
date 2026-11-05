@@ -15,6 +15,8 @@ from pathlib import Path
 
 from . import log
 
+ANSWER_AGE = 7 * 86400  # seconds a message stays a way back into its conversation
+
 
 def default_dir() -> Path:
     base = os.environ.get("XDG_STATE_HOME") or (Path.home() / ".local" / "state")
@@ -25,7 +27,8 @@ class State:
     def __init__(self, path: Path | None = None) -> None:
         self.path = Path(path or (default_dir() / "state.json"))
         self.lock = threading.Lock()
-        self.data: dict = {"sessions": {}, "tickets": {}, "forms": {}, "channels": {}}
+        self.data: dict = {"sessions": {}, "tickets": {}, "forms": {}, "answers": {},
+                           "channels": {}}
         self._load()
 
     def _load(self) -> None:
@@ -39,6 +42,7 @@ class State:
                 self.data.setdefault("sessions", {})
                 self.data.setdefault("tickets", {})
                 self.data.setdefault("forms", {})
+                self.data.setdefault("answers", {})
                 self.data.setdefault("channels", {})
                 self._migrate_sessions()
         except (OSError, json.JSONDecodeError) as error:
@@ -220,6 +224,32 @@ class State:
                 for key in stale:
                     self.data["forms"].pop(key, None)
                 self._write()
+
+    # -- the messages this daemon posted --------------------------------
+
+    def remember_answer(self, message_id: str, channel: str) -> None:
+        """Remember one message this daemon posted, so a reply to it is a question.
+
+        It is also how the daemons elect one answerer: only the daemon that
+        posted the message has it, so only that daemon acts on a reply.
+        """
+        with self.lock:
+            self.data["answers"][message_id] = {
+                "channel": channel,
+                "at": int(time.time()),
+            }
+            cutoff = time.time() - ANSWER_AGE
+            stale = [key for key, entry in self.data["answers"].items()
+                     if float(entry.get("at") or 0) < cutoff]
+            for key in stale:
+                self.data["answers"].pop(key, None)
+            self._write()
+
+    def answer_for(self, message_id: str) -> dict | None:
+        """The message, if this daemon posted it, and the channel it is in."""
+        with self.lock:
+            entry = self.data["answers"].get(message_id)
+            return dict(entry) if isinstance(entry, dict) else None
 
     # -- the allowlist's message in Discord -------------------------------
 
