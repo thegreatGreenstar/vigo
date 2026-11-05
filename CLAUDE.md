@@ -69,6 +69,9 @@ Torn between two sizes: pick the smaller, and say so.
 - A test does not sleep. `tests/fake_opencode.py` takes `("until", event)` in a script, so the test decides when a
   turn ends; a sleep makes the suite slower and flakier for no extra coverage.
 - Anything a reader will copy and run (a command, a port, a link) is run before it ships.
+- `main` takes pull requests only. `.githooks/pre-push` refuses a push straight to it, and `install.sh` sets
+  `core.hooksPath` so every clone runs it; GitHub's own protection is a paid feature on a private repo. Do not
+  merge with a red CI, and do not reach for `--no-verify`.
 
 ## Non-negotiables for this repo
 

@@ -1,0 +1,29 @@
+#!/bin/sh
+# Refuse to push straight to main.
+#
+# main takes pull requests only, so CI can refuse it: GitHub's own branch
+# protection and rulesets are paid features on a private repository, and until
+# this one is public or on Pro, this hook is the guard that exists.  It runs on
+# every machine that installs it — `install.sh` does, with
+#
+#   git config core.hooksPath .githooks
+#
+# which applies to every worktree of the clone.  The deliberate exception is
+# one environment variable, so nobody is tempted to reach for --no-verify:
+#
+#   VIGO_ALLOW_MAIN=1 git push
+set -eu
+
+[ "${VIGO_ALLOW_MAIN:-}" = "1" ] && exit 0
+
+remote=${1:-origin}
+while read -r local_ref local_sha remote_ref remote_sha; do
+    case "$remote_ref" in
+        refs/heads/main)
+            printf '%s\n' "refusing to push to $remote/main: open a pull request instead" >&2
+            printf '%s\n' "  (VIGO_ALLOW_MAIN=1 git push, to do it on purpose)" >&2
+            exit 1
+            ;;
+    esac
+done
+exit 0
