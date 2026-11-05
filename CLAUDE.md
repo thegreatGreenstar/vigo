@@ -152,6 +152,25 @@ That cost is **fresh-device's** only. Its key is Greenstar's own, so every commi
 Touch ID). On **rotten-device** a commit is signed by that machine's TPM key with no hand involved, so it adds no such
 user cost. Batch on both anyway: the history is shared, and the Mac reads what the PC wrote.
 
+## Pull requests
+
+Every change reaches `main` through a pull request, and the first push opens it **as a draft**. A draft runs the quick
+stage: one Python, the newest in the matrix, on Linux, macOS and Windows. That is where a path, a socket or a clock that
+differs by platform shows up, in three jobs instead of nine.
+
+Mark the pull request **ready for review** once that stage is green. Ready runs the full matrix, every OS on 3.12,
+3.13 and 3.14, and that is the matrix a merge waits for. Converting back to a draft runs the quick stage again.
+
+```sh
+gh pr create --draft --base main --title "…" --body-file …
+gh pr checks <number> --watch          # the quick stage
+gh pr ready <number>                   # the full matrix
+gh pr merge <number> --merge           # only when ready and green
+```
+
+Do not open a pull request ready, and do not merge with a red matrix. The reason the stages exist is to answer the
+platform question in three jobs before paying for nine.
+
 ## Finishing
 
 - Status: **DONE**, **DONE_WITH_CONCERNS** (each with its severity), **BLOCKED** (what blocks it, what was tried), or
