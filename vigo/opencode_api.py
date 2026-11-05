@@ -38,6 +38,12 @@ def _auth(password: str) -> str:
     return "Basic " + base64.b64encode(f"opencode:{password}".encode()).decode()
 
 
+def _socket_of(answer: object) -> socket.socket | None:
+    """The socket under an `urllib` response, when it is a plain one."""
+    sock = getattr(getattr(getattr(answer, "fp", None), "raw", None), "_sock", None)
+    return sock if isinstance(sock, socket.socket) else None
+
+
 def busy_since(info: dict) -> float | None:
     """When the session's turn started, in milliseconds, while it still runs.
 
@@ -216,6 +222,10 @@ class OpenCode:
         return newest
 
 
+# How long the connection itself may take, in seconds.
+CONNECT = 10.0
+
+
 class EventStream:
     """SSE from /api/event, read on its own thread into a queue."""
 
@@ -240,25 +250,19 @@ class EventStream:
         the device had nothing to say, so every run left a connection and a
         thread behind it.  Closing the response is not the way: `HTTPResponse`
         is not safe to close from another thread, and it waits on the buffer
-        lock the reader holds, which hangs the run for good.  Shutting the
-        socket down wakes that read, and then the thread closes everything it
-        owns itself.
+        lock the reader holds, which hangs the run for good.
+
+        Shutting the socket down is: it wakes the read on POSIX, and the reader
+        then closes everything it owns itself.  Windows is the open question —
+        `tests/test_stream.py` says where the reader is parked there.
         """
         self.stop.set()
-        answer = self.answer
-        sock = getattr(getattr(getattr(answer, "fp", None), "raw", None), "_sock", None)
-        if sock is None:
-            return
-        # `shutdown` wakes a read on POSIX and is not enough on Windows, where
-        # the reader stays parked until the socket itself is closed.
-        try:
-            sock.shutdown(socket.SHUT_RDWR)
-        except OSError:
-            pass
-        try:
-            sock.close()
-        except OSError:
-            pass
+        sock = _socket_of(self.answer)
+        if sock is not None:
+            try:
+                sock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
 
     def _run(self) -> None:
         request = urllib.request.Request(
@@ -271,7 +275,7 @@ class EventStream:
         )
         data: list[str] = []
         try:
-            with urllib.request.urlopen(request, timeout=60) as answer:
+            with urllib.request.urlopen(request, timeout=CONNECT) as answer:
                 self.answer = answer
                 self.ready.set()
                 for raw in answer:
