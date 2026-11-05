@@ -1,0 +1,18 @@
+[Unit]
+Description=OpenCode server for Vigo
+Documentation=https://opencode.ai/v2/docs
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# The password is unsealed from this machine's TPM by the script; see
+# deploy/opencode-serve.sh for how the .cred file is made.
+Environment=VIGO_OPENCODE_CRED=%h/.config/vigo/opencode.cred
+ExecStart=%h/.local/libexec/opencode-serve.sh
+Restart=on-failure
+RestartSec=3s
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=default.target

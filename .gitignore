@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+.state/
+.state.bad
+.venv/
+# the settings file holds the bot token; it lives in ~/.config/vigo
+vigo.json
+*.env
+.DS_Store

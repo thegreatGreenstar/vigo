@@ -1,0 +1,145 @@
+# CLAUDE.md
+
+The standing contract for work in this repo. It outranks the defaults a coding agent brings, and the specifics here
+outrank the general advice it learned.
+
+## What this project is
+
+Vigo is a Discord bot that asks OpenCode, on greenstar's own machines, a question and answers in the channel. One
+daemon runs per device; each daemon can drive any device's `opencode serve`. Python 3.12+, standard library only.
+
+Two things follow from that shape and never change:
+
+- **The daemon decides who may act, from its own state.** Never from the text of a message, a prompt, an answer or a
+  reaction. A stranger who installs the app gets a refusal and nothing else; only `owner` can approve a tool.
+- **Nothing identifying goes to Discord.** No device names in a channel message, no hostnames, no paths, no error
+  text, no user ids except in an allowlist answer that is always ephemeral. The log may hold them; Discord may not.
+
+## How to work
+
+Do the whole thing, with tests and docs, so it is finished rather than nearly finished. Never hand over a workaround
+when the fix is within reach, and never say "tests later". If a change is too large to finish, say what is left and
+what blocks it.
+
+You can outsource the typing, not the understanding. Before calling anything done, say why the code is correct and
+exactly where it would break. Green tests are not understanding.
+
+Errors show. Never trade an error for a silent fallback, a default, or a quieter path: a config key that is wrong
+stops the bot and names the key, a device that does not answer is said to be down, a refused command says so.
+
+## Task sizing
+
+Start with one line: `Size: small|medium|large — why`, then `Tests: which ones`.
+
+- **small**: a typo, a string, a config value, a rename with no behaviour change. Compile and the touched tests.
+- **medium**: a behaviour change in one module. Its tests, plus the test that fails without the fix.
+- **large**: a new subcommand, a change to the daemon/device contract, or anything touching permissions. The full
+  suite, and a fresh read of the diff before reporting.
+
+Torn between two sizes: pick the smaller, and say so.
+
+## Tests
+
+- Every behaviour change ships its test in the same commit. A bug fix ships the test that fails without it.
+- The suite never touches the network: `tests/fake_discord.py`, `tests/fake_gateway.py` and `tests/fake_opencode.py`
+  stand in for Discord and OpenCode. A test that needs the internet or a bot token is not a test; it is a manual run,
+  and it is labelled as one.
+- Run it with `python3 -m unittest discover -s tests -t .` from the repo root. CI runs the same on Linux, macOS and
+  Windows for 3.12–3.14; a fix for a CI-only failure says what stays unverified.
+- Anything a reader will copy and run (a command, a port, a link) is run before it ships.
+
+## Non-negotiables for this repo
+
+1. **No dependencies.** `pyproject.toml` lists none, and it stays that way. A task that seems to need a library is
+   usually a hundred lines of `urllib`, `socket` or `zlib`.
+2. **No secret in the tree.** The token and the OpenCode password live in the Keychain or a TPM-sealed file; the
+   settings file may name `tokenCommand` / `passwordCommand`, never the value. `.github/workflows/tests.yml` fails
+   the build if a token shape or a `vigo.json` appears.
+3. **No PII to Discord.** Before adding any string that goes into an embed, a message or a progress line, ask what it
+   identifies. Device names, hostnames, paths, error internals and other users' names are out. `devices`, `allow`,
+   `deny` and `allowed` are always ephemeral and have no option that could show them.
+4. **The owner is an id, compared with `==`.** Not a role, not a permission bit, not a name. A Discord install grants
+   nothing.
+5. **Discord gives three seconds.** Acknowledge first, then probe or run. Any new command follows that order.
+6. **A tool runs only when the owner clicks.** Permission cards go to the owner's DM; a channel fallback says only
+   that approval is needed, never what the tool wanted to touch.
+
+## Where this design comes from, and when we last looked
+
+Four outside sources shaped this repo. Their changes are not tracked automatically, so a session that touches the
+areas below reads them again first, and updates this table when it does.
+
+| Source | What we take from it | Last checked | At |
+| --- | --- | --- | --- |
+| [DraChimeraVee/discord-bots](https://github.com/DraChimeraVee/discord-bots) (AogoWimsy, XujiWimsy) | the shape of the whole thing: owner approves, drafts and permission cards, a stranger is refused, an allowlist of ids, nothing stored about what was said, stderr without contents | 2026-11-04 | `475b229619` |
+| [OpenCode v2 API](https://opencode.ai/v2/openapi.json) and docs | every endpoint used: `/api/info`, sessions, prompt, message, permission reply, `experimental/generate/text`, `/api/event` SSE, `serve --hostname/--port`, `OPENCODE_PASSWORD` | 2026-11-04 | `opencode v2.2.5` |
+| [DeepSeek dsh-superagent-prototype](https://github.com/deepseek-ai/dsh-superagent-prototype) | the authorization stance: the host decides from its own state, and message text is input to a decision, never a grant | 2026-11-04 | `8c32a9dc5d` |
+| [Accord/CLAUDE.md](https://accord.dravee.dev/Accord/CLAUDE.md) | the structure of this contract: task sizing, tests ship with the change, completion status, self-rating, confusion protocol, safety | 2026-11-05 | commit `a18354b1` |
+
+Re-read one when a task touches it:
+
+```sh
+# the reference bot's README, which states its behaviour in full
+curl -s https://raw.githubusercontent.com/DraChimeraVee/discord-bots/main/README.md | less
+
+# the API surface this bot calls (the paths and schemas above)
+curl -s https://opencode.ai/v2/openapi.json | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['info'])"
+
+# what has moved since the recorded commit
+curl -s https://api.github.com/repos/DraChimeraVee/discord-bots/commits/main | grep -m1 '"sha"'
+```
+
+A change matters when it moves something we depend on: a new OpenCode endpoint or a changed request shape, a Discord
+API revision, or a safety rule in the reference bot that we do not have. Cosmetic upstream changes are not a reason to
+edit anything here.
+
+## How the pieces fit
+
+| File | Holds |
+| --- | --- |
+| `vigo/config.py` | the settings, checked strictly, one error named at a time |
+| `vigo/discord_api.py` | REST v10: commands, interactions, messages, DMs |
+| `vigo/gateway.py` | the WebSocket client: handshake, frames, heartbeat, resume |
+| `vigo/opencode_api.py` | sessions, prompts, permissions, the SSE event stream |
+| `vigo/router.py` | which device answers, and what may be said about it |
+| `vigo/allowlist.py` | who may ask, in a Discord message so both daemons agree |
+| `vigo/app.py` | interactions, commands, permission cards, the election of one answerer |
+| `vigo/ask.py` | one question: session, live progress, the answer |
+
+`deploy/` holds the service units and the launchers that unseal the password (Keychain on macOS, systemd-creds on
+Linux). `art/` holds the icon pipeline.
+
+## Finishing
+
+- Status: **DONE**, **DONE_WITH_CONCERNS** (each with its severity), **BLOCKED** (what blocks it, what was tried), or
+  **NEEDS_CONTEXT**. "Partially done" is not a status.
+- Self-rating before reporting: a score out of 10 from a fresh read, each missing point named, and an honest "am I
+  proud of it". If not, fix it and rate again.
+- Say what must be restarted for the change to take effect, with the command. Here that is the bot
+  (`pkill -f "m vigo"` then `python3.14 -m vigo`), and the settings reload on the next start.
+- Greenstar commits and pushes himself, with his YubiKey and the Secure Enclave key. Prepare the tree and hand him
+  the command; never `git push` for him.
+
+## Confusion protocol
+
+High-stakes ambiguity — two plausible designs, a request against an established pattern, a destructive operation of
+unclear scope, missing context that would change the approach: stop, name it in one sentence, offer two or three real
+options with their trade-offs, and ask. Not for routine work.
+
+## Safety
+
+- Never commit secrets. Check `git status` before a commit that touches config or `deploy/`.
+- No `rm -rf`, `git reset --hard`, or force-push without explicit confirmation. Prefer moving a file aside to
+  deleting it.
+- Never skip hooks.
+- The bot's token and password are live credentials: if one appears anywhere it should not, say so at once and say
+  which rotation is needed. Redacting a log is not rotation.
+- Nothing that touches greenstar's machines runs from a channel message. Only a click.
+
+## How greenstar wants to be talked to
+
+- English, direct, concrete. Name files, functions and line numbers. Short answers; no praise, no preamble.
+- Say the thing that matters first, then the evidence. If something is wrong, lead with that.
+- When a requirement is about exposure or permissions, treat it as absolute: no "mostly hidden".
+- State what is verified and what is assumed, and never present a passing test as proof of something the test does
+  not cover.
