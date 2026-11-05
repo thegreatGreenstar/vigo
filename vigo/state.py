@@ -32,7 +32,7 @@ class State:
         if not self.path.exists():
             return
         try:
-            with open(self.path, "r", encoding="utf-8") as handle:
+            with open(self.path, encoding="utf-8") as handle:
                 loaded = json.load(handle)
             if isinstance(loaded, dict):
                 self.data.update(loaded)

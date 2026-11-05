@@ -334,7 +334,7 @@ def load(path: Path | None = None) -> Config:
     path = Path(path or default_path())
     _check_mode(path)
     try:
-        with open(path, "r", encoding="utf-8") as handle:
+        with open(path, encoding="utf-8") as handle:
             raw = json.load(handle)
     except json.JSONDecodeError as error:
         raise ConfigError(f"{path}: not JSON ({error.msg} at line {error.lineno})") from error

@@ -26,6 +26,7 @@ class ConfigTest(unittest.TestCase):
                 configuration.load(path)
         self.assertIn("surprise", str(caught.exception))
 
+    @unittest.skipIf(os.name == "nt", "Windows guards with ACLs, not these bits")
     def test_a_readable_file_stops_it(self):
         with TempDir() as directory:
             path = write_settings(directory, base_settings())
@@ -165,6 +166,7 @@ class ConfigTest(unittest.TestCase):
                 configuration.load(write_settings(directory, raw))
         self.assertIn("cannot be read", str(caught.exception))
 
+    @unittest.skipIf(os.name == "nt", "Windows guards with ACLs, not these bits")
     def test_a_readable_secret_file_is_refused(self):
         raw = base_settings()
         raw.pop("token")
