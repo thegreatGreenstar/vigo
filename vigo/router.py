@@ -135,11 +135,13 @@ class Router:
         first = alive[0]
         return Pick(first.device.name, "the first device up", states)
 
-    def describe(self, states: dict[str, DeviceState], detailed: bool = False) -> str:
+    def describe(self, states: dict[str, DeviceState], detailed: bool = False,
+                 builds: dict[str, str] | None = None) -> str:
         """The devices, in as much detail as the reader is allowed to see.
 
         Hostnames, versions, paths and error text identify a machine and a
         person, so they appear only when the answer is hidden from the channel.
+        `builds` maps a device name to the vigo version it runs, when known.
         """
         lines = []
         for name, state in states.items():
@@ -158,7 +160,9 @@ class Router:
                     used = f"used {int(age // 3600)}h ago"
                 lines.append(
                     f"`{name}` **up** — {state.health.hostname}, "
-                    f"OpenCode {state.health.version}, {used} · {state.device.directory}"
+                    f"OpenCode {state.health.version}, {used}"
+                    + (f", {builds[name]}" if builds and name in builds else "")
+                    + f" · {state.device.directory}"
                 )
             elif detailed:
                 lines.append(f"`{name}` **down** — {state.error or 'no answer'}")

@@ -343,6 +343,16 @@ class AppTest(unittest.TestCase):
             self.assertTrue(app._same_build({"version": __version__}))
             self.assertFalse(app._same_build({"version": "0.1.0"}))
 
+    def test_devices_show_the_vigo_version_and_latest_commit(self):
+        with TempDir() as directory:
+            app = self.make(directory)
+            app._build = "abc1234"
+            app._head = "abc1234 Test commit"
+            pick = app.router.pick(fresh=True)
+            written = app._devices(pick, detailed=True)
+        self.assertIn(f"vigo {__version__} (abc1234)", written)
+        self.assertIn("latest commit: abc1234 Test commit", written)
+
     @staticmethod
     def _git(*args, cwd):
         done = subprocess.run(["git", "-c", "commit.gpgsign=false", *args], cwd=cwd, capture_output=True, text=True)

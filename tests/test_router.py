@@ -102,6 +102,17 @@ class RouterTest(unittest.TestCase):
         self.assertIn("pc", written)
         self.assertIn("up", written)
 
+    def test_the_description_can_name_the_vigo_build(self):
+        with TempDir() as directory:
+            router = Router(self.settings(directory))
+            written = router.describe(
+                router.states(fresh=True), detailed=True,
+                builds={"macbook": "vigo 1.0.0 (abc1234)"},
+            )
+        self.assertIn("vigo 1.0.0 (abc1234)", written)
+        pc_line = next(line for line in written.splitlines() if line.startswith("`pc`"))
+        self.assertNotIn("vigo", pc_line)
+
 
 if __name__ == "__main__":
     unittest.main()

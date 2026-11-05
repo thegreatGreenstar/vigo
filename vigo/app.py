@@ -16,7 +16,7 @@ from .discord_api import Discord, DiscordError
 from .gateway import Gateway
 from . import __version__
 from .opencode_api import OpenCode, OpenCodeError
-from .peer import PeerClient, PeerServer, build_of, update_self
+from .peer import PeerClient, PeerServer, build_of, head_of, update_self
 from .router import Router
 from .state import State
 
@@ -59,6 +59,7 @@ class App:
                  checkout: Path | None = None):
         self.checkout = checkout
         self._build: str | None = None
+        self._head: str | None = None
         self.config = config
         self.api = api or Discord(config.token, config.app_id)
         self.router = Router(config)
@@ -515,6 +516,13 @@ class App:
             self._build = build_of(self.checkout)
         return self._build
 
+    @property
+    def head(self) -> str:
+        """The newest commit in this checkout: short hash and subject."""
+        if self._head is None:
+            self._head = head_of(self.checkout)
+        return self._head
+
     def _same_build(self, info: dict) -> bool:
         """Whether a peer runs what this one runs.
 
@@ -537,18 +545,43 @@ class App:
         host = device.url.split("//", 1)[1].split("/")[0].split(":")[0]
         return f"http://{host}:{self.config.peer_port}"
 
-    def _behind(self) -> list[str]:
-        """Daemons that answer on their peer port with a different build."""
-        lines = []
+    def _peer_infos(self) -> dict[str, dict]:
+        """What the other daemons say about themselves, when their peer port answers."""
+        found: dict[str, dict] = {}
         for name in self.config.devices:
+            if name == self.config.device:
+                continue
             url = self._peer_url(name)
             if not url:
                 continue
             device = self.config.device_named(name)
             try:
-                info = PeerClient(url, device.password, timeout=1.5).info()
+                found[name] = PeerClient(url, device.password, timeout=1.5).info()
             except OSError:
                 continue  # that port is off or unreachable; say nothing
+        return found
+
+    def _builds(self, infos: dict[str, dict]) -> dict[str, str]:
+        """One label per device: the vigo version it runs, and the commit when known."""
+        labels: dict[str, str] = {}
+        for name in self.config.devices:
+            if name == self.config.device:
+                version, build = __version__, self.build
+            else:
+                info = infos.get(name)
+                if not info:
+                    continue
+                version = str(info.get("version") or "")
+                build = str(info.get("build") or "")
+            if version:
+                labels[name] = f"vigo {version}" + (f" ({build})" if build else "")
+        return labels
+
+    def _behind(self, infos: dict[str, dict] | None = None) -> list[str]:
+        """Daemons that answer on their peer port with a different build."""
+        seen = self._peer_infos() if infos is None else infos
+        lines = []
+        for name, info in seen.items():
             if not self._same_build(info):
                 theirs = str(info.get("build") or info.get("version") or "?")
                 lines.append(
@@ -634,11 +667,17 @@ class App:
 
     def _devices(self, pick, detailed: bool = False) -> str:
         states = self.router.states(fresh=True)
-        lines = [self.router.describe(states, detailed=detailed)]
-        behind = self._behind()
+        infos = self._peer_infos() if detailed else {}
+        lines = [self.router.describe(
+            states, detailed=detailed, builds=self._builds(infos) if detailed else None,
+        )]
+        behind = self._behind(infos) if detailed else []
         if behind:
             lines.append("")
             lines.extend(f"⚠️ {line}" for line in behind)
+        if detailed and self.head:
+            lines.append("")
+            lines.append(f"latest commit: {self.head}")
         lines.append("")
         if pick.name:
             lines.append(
