@@ -232,6 +232,39 @@ class AppTest(unittest.TestCase):
             if run:
                 run.stop.set()
 
+    def test_the_device_option_offers_the_names(self):
+        with TempDir() as directory:
+            app = self.make(directory)
+            interaction = self.discord.next_id("int")
+            app.handle_interaction({
+                "id": interaction,
+                "token": "tok",
+                "type": 4,
+                "member": {"user": {"id": OWNER}},
+                "data": {"name": "vigo", "options": [{"name": "ask", "type": 1, "options": [
+                    {"name": "device", "type": 3, "value": "mac", "focused": True},
+                ]}]},
+            })
+            answer = self.discord.answer_for(interaction)
+        self.assertEqual(answer["type"], 8)
+        self.assertEqual([choice["value"] for choice in answer["data"]["choices"]], ["macbook"])
+
+    def test_autocomplete_offers_nothing_to_a_stranger(self):
+        with TempDir() as directory:
+            app = self.make(directory)
+            interaction = self.discord.next_id("int")
+            app.handle_interaction({
+                "id": interaction,
+                "token": "tok",
+                "type": 4,
+                "member": {"user": {"id": STRANGER}},
+                "data": {"name": "vigo", "options": [{"name": "ask", "type": 1, "options": [
+                    {"name": "device", "type": 3, "value": "", "focused": True},
+                ]}]},
+            })
+            answer = self.discord.answer_for(interaction)
+        self.assertEqual(answer["data"]["choices"], [])
+
     def test_the_devices_listing_is_hidden_and_detailed(self):
         with TempDir() as directory:
             app = self.make(directory)

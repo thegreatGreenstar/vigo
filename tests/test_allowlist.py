@@ -1,3 +1,4 @@
+import json
 import unittest
 
 from vigo.allowlist import MARKER, AllowError, AllowList
@@ -99,6 +100,18 @@ class AllowListTest(unittest.TestCase):
             self.assertIn("cannot read", str(caught.exception))
             self.assertFalse(mac.may_ask("42"), "it refuses instead of allowing by accident")
             self.assertIn("cannot read", mac.describe())
+
+    def test_a_newer_schema_is_refused_rather_than_guessed(self):
+        with TempDir() as directory:
+            newer = "555555555555555555"
+            self.discord.add_message(newer, f"{MARKER}\n" + json.dumps({
+                "v": 2, "allowed": [{"id": "42", "name": "Alex", "since": 1, "until": None}],
+            }))
+            mac, _pc = self.lists(directory, channel=newer)
+            with self.assertRaises(AllowError) as caught:
+                mac.entries()
+            self.assertIn("newer vigo", str(caught.exception))
+            self.assertFalse(mac.may_ask("42"), "it refuses rather than guessing")
 
     def test_two_allows_replace_one(self):
         with TempDir() as directory:

@@ -64,6 +64,10 @@ class AllowList:
 
     # -- where the list lives ---------------------------------------------
 
+    def home(self) -> str:
+        """The channel both shared messages live in."""
+        return self._home()
+
     def _home(self) -> str:
         if self._channel:
             return self._channel
@@ -129,6 +133,11 @@ class AllowList:
             raise AllowError(f"the allowlist in {self.where} is not JSON ({error.msg})") from error
         if not isinstance(data, dict) or not isinstance(data.get("allowed", []), list):
             raise AllowError(f"the allowlist in {self.where} has no 'allowed' list")
+        if data.get("v", 1) != 1:
+            raise AllowError(
+                f"the allowlist in {self.where} was written by a newer vigo "
+                f"(schema v{data.get('v')}); upgrade this one before changing it"
+            )
         fresh: list[Entry] = []
         for item in data.get("allowed", []):
             if not isinstance(item, dict):

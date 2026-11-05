@@ -127,3 +127,12 @@ class State:
         with self.lock:
             self.data["channels"][channel_id] = message_id
             self._write()
+
+    def daemons_message(self, channel_id: str) -> str | None:
+        with self.lock:
+            return self.data.get("daemons", {}).get(channel_id)
+
+    def remember_daemons_message(self, channel_id: str, message_id: str) -> None:
+        with self.lock:
+            self.data.setdefault("daemons", {})[channel_id] = message_id
+            self._write()
