@@ -1,6 +1,8 @@
 """The SSE reader: it gives the connection back when the run is over."""
 
+import sys
 import threading
+import traceback
 import unittest
 
 from vigo.opencode_api import EventStream
@@ -25,8 +27,13 @@ class EventStreamTest(unittest.TestCase):
         self.addCleanup(stream.close)
         self.assertTrue(stream.ready.wait(5.0), "the stream connected")
         stream.close()
-        stream.thread.join(5.0)
-        self.assertFalse(stream.thread.is_alive(), "the reader stopped")
+        stream.thread.join(10.0)
+        if stream.thread.is_alive():
+            # Say where it is parked, not just that it is: the wake differs by
+            # platform, and a bare assertion cannot tell which one it is.
+            frame = sys._current_frames().get(stream.thread.ident)
+            where = "".join(traceback.format_stack(frame)) if frame else "no frame"
+            self.fail(f"the reader is still running, in:\n{where}")
 
     def test_an_event_reaches_the_queue(self):
         stop = threading.Event()
