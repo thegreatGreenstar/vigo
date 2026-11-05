@@ -135,6 +135,14 @@ class OpenCode:
         data = self._call("POST", "/api/session", payload)
         return data.get("data", {}) if isinstance(data, dict) else {}
 
+    def set_metadata(self, session_id: str, metadata: dict) -> None:
+        """Replace the session's metadata.
+
+        It replaces rather than merges, so a caller that means to change one
+        key must send the whole dict it read, or it deletes the rest.
+        """
+        self._call("PATCH", f"/api/session/{session_id}", {"metadata": metadata})
+
     def set_model(self, session_id: str, model: dict) -> None:
         self._call("POST", f"/api/session/{session_id}/model", {"model": model})
 
