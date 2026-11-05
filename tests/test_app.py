@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from vigo import commands
+from vigo import __version__, commands
 from vigo.app import App
 from vigo.discord_api import Discord
 from vigo.peer import PeerServer
@@ -303,6 +303,16 @@ class AppTest(unittest.TestCase):
             self.assertIn("pulled", said)
             self.assertNotIn("fresh-device", said)
             self.assertTrue((peer_checkout / "two.txt").exists(), "the other checkout moved")
+
+    def test_builds_decide_who_is_behind(self):
+        with TempDir() as directory:
+            app = self.make(directory)
+            app._build = "aaa1111"
+            self.assertTrue(app._same_build({"build": "aaa1111", "version": "0.9.0"}))
+            self.assertFalse(app._same_build({"build": "bbb2222", "version": __version__}))
+            # an older peer reports no build; the version is all it can tell
+            self.assertTrue(app._same_build({"version": __version__}))
+            self.assertFalse(app._same_build({"version": "0.1.0"}))
 
     @staticmethod
     def _git(*args, cwd):

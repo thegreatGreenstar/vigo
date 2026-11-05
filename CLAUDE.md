@@ -116,6 +116,10 @@ work: **one commit per request, or fewer** — never one per change, and never w
 full suite once, stage everything, and give him the single message he should sign. If he cancels a signature, the work
 stays staged: leave it staged, do not retry, and do not commit again until he says so.
 
+That cost is **fresh-device's** only. Its key is Greenstar's own, so every commit there waits for his hand (YubiKey,
+Touch ID). On **rotten-device** a commit is signed by that machine's TPM key with no hand involved, so it adds no such
+user cost. Batch on both anyway: the history is shared, and the Mac reads what the PC wrote.
+
 ## Finishing
 
 - Status: **DONE**, **DONE_WITH_CONCERNS** (each with its severity), **BLOCKED** (what blocks it, what was tried), or
@@ -124,8 +128,8 @@ stays staged: leave it staged, do not retry, and do not commit again until he sa
   proud of it". If not, fix it and rate again.
 - Say what must be restarted for the change to take effect, with the command. Here that is the bot
   (`pkill -f "m vigo"` then `python3.14 -m vigo`), and the settings reload on the next start.
-- Greenstar commits and pushes himself, with his YubiKey and the Secure Enclave key. Prepare the tree and hand him
-  the command; never `git push` for him.
+- Greenstar commits and pushes himself: on fresh-device with his YubiKey and the Secure Enclave key, on
+  rotten-device with that machine's TPM key. Prepare the tree and hand him the command; never `git push` for him.
 
 ## Confusion protocol
 
