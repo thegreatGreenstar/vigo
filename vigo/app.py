@@ -14,6 +14,7 @@ from .config import Config
 from .discord_api import Discord, DiscordError
 from .gateway import Gateway
 from .opencode_api import OpenCode, OpenCodeError
+from .presence import Presence
 from .router import Router
 from .state import State
 
@@ -58,6 +59,7 @@ class App:
         self.router = Router(config)
         self.state = state or State()
         self.allow = AllowList(config, self.api, self.state)
+        self.presence = Presence(config.device, self.api, self.state, self.allow.home)
         self.runs: dict[str, asking.Run] = {}
         self.runs_lock = threading.Lock()
         self.pool = ThreadPoolExecutor(max_workers=8, thread_name_prefix="vigo")
@@ -233,6 +235,9 @@ class App:
         if kind == 3:
             self._component(payload, who)
             return
+        if kind == 4:
+            self._autocomplete(payload, who)
+            return
         if kind != 2:
             return
 
@@ -281,8 +286,7 @@ class App:
             if explicit and explicit not in self.config.devices:
                 self._answer_now(
                     interaction_id, token,
-                    f"No device is called `{explicit}`. "
-                    f"The file has {', '.join(f'`{n}`' for n in self.config.devices)}.",
+                    f"No device is called `{explicit}`.",
                     ephemeral=True,
                 )
                 return
@@ -301,6 +305,30 @@ class App:
         except Exception as error:  # an answer always reaches the person
             log.error(f"command {sub}: {error}")
             self._say(token, "❌ something broke; the log says what.")
+
+    def _autocomplete(self, payload: dict, who: str) -> None:
+        """Offer the device names as they are typed, to whoever may ask."""
+        data = payload.get("data") or {}
+        focused = None
+        for sub in data.get("options") or []:
+            for option in sub.get("options") or []:
+                if option.get("focused"):
+                    focused = option
+        choices: list[dict] = []
+        if focused and focused.get("name") == "device":
+            try:
+                allowed = who == self.config.owner or self.allow.may_ask(who)
+            except Exception:  # a slow read must not stall the three seconds
+                allowed = who == self.config.owner
+            if allowed:
+                typed = str(focused.get("value") or "").strip().lower()
+                choices = [
+                    {"name": name, "value": name}
+                    for name in self.config.devices
+                    if typed in name.lower()
+                ][:25]
+        self.api.respond(payload["id"], payload["token"],
+                         {"type": 8, "data": {"choices": choices}})
 
     def _ephemeral(self, sub: str, options: dict) -> bool:
         """Everyone sees the answer unless the asker asked to hide it.
@@ -471,7 +499,12 @@ class App:
 
     def _devices(self, pick, detailed: bool = False) -> str:
         states = self.router.states(fresh=True)
-        lines = [self.router.describe(states, detailed=detailed), ""]
+        lines = [self.router.describe(states, detailed=detailed)]
+        stale = self.presence.stale()
+        if stale:
+            lines.append("")
+            lines.extend(f"⚠️ {line} — restart it there." for line in stale)
+        lines.append("")
         if pick.name:
             lines.append(
                 f"A question would go to `{pick.name}`"
@@ -557,6 +590,7 @@ class App:
         url = self.api.gateway_url()
         log.info(f"up: {self.config.device}, {len(self.config.devices)} devices, model {self.config.model}")
         self.register_commands()
+        self.presence.announce()
         gateway = Gateway(url, self.config.token, INTENTS, self.on_event,
                           lambda state: log.debug(f"gateway: {state}"))
         gateway.run()
