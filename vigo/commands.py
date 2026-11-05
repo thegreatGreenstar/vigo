@@ -219,13 +219,13 @@ def flatten(data: dict) -> tuple[str, dict]:
     return name, values
 
 
-def user_id(value) -> str:
+def user_id(value: object) -> str:
     if isinstance(value, dict):
         return str(value.get("id") or "")
     return ""
 
 
-def user_name(value) -> str:
+def user_name(value: object) -> str:
     if isinstance(value, dict):
         return str(value.get("global_name") or value.get("username") or value.get("id") or "they")
     return "they"

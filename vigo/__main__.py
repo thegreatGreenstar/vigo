@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import io
 import sys
 from pathlib import Path
 
@@ -69,7 +70,7 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-def message_of(words: list[str], stdin=None) -> str:
+def message_of(words: list[str], stdin: io.TextIOBase | None = None) -> str:
     """The words given, or what was piped in when there are none."""
     said = " ".join(word for word in words if word).strip()
     if said:
@@ -81,7 +82,7 @@ def message_of(words: list[str], stdin=None) -> str:
     return stdin.read().strip()
 
 
-def _dm(settings, words: list[str]) -> int:
+def _dm(settings: configuration.Config, words: list[str]) -> int:
     """DM the owner.  `vigo dm done` is what a session on this machine uses."""
     from .discord_api import DiscordError
     from .notify import send_owner
@@ -102,7 +103,7 @@ def _dm(settings, words: list[str]) -> int:
     return 0
 
 
-def _report(settings) -> None:
+def _report(settings: configuration.Config) -> None:
     devices = ", ".join(sorted(settings.devices))
     print(f"vigo {__version__} · this device is {settings.device}")
     print(f"owner {settings.owner} · devices: {devices}")

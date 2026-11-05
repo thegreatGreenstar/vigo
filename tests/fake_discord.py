@@ -75,7 +75,7 @@ class FakeDiscord:
             "channel_id": channel,
             "content": content,
             "author": {"id": author, "bot": bot},
-            "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "timestamp": datetime.datetime.now(datetime.UTC).isoformat(),
         }
         with self.lock:
             self.messages.setdefault(channel, []).insert(0, message)

@@ -22,7 +22,7 @@ def default_dir() -> Path:
 
 
 class State:
-    def __init__(self, path: Path | None = None):
+    def __init__(self, path: Path | None = None) -> None:
         self.path = Path(path or (default_dir() / "state.json"))
         self.lock = threading.Lock()
         self.data: dict = {"sessions": {}, "tickets": {}, "forms": {}, "channels": {}}
@@ -195,7 +195,7 @@ class State:
                 entry["messages"] = messages
                 self._write()
 
-    def answer_form(self, ticket: str, key: str, value) -> dict | None:
+    def answer_form(self, ticket: str, key: str, value: object) -> dict | None:
         with self.lock:
             entry = self.data["forms"].get(ticket)
             if entry is None:

@@ -46,6 +46,16 @@ class AppTest(unittest.TestCase):
         """Everything the bot posted: commands edit the deferred message."""
         return [entry["content"] for entry in self.discord.edits + self.discord.followups]
 
+    def posted(self) -> list[str]:
+        """Everything the bot said anywhere, including the channel itself.
+
+        An answer is a followup when the interaction still lives and a plain
+        message when it has expired, and a real connection can drop between the
+        two; a test that asserts on the answer asks this, not one route.
+        """
+        return self.said() + [message["content"]
+                              for message in self.discord.messages.get(CHANNEL, [])]
+
     def use(self, app: App, sub: str, options: list | None = None,
             who: str = OWNER, token: str = "tok", interaction: str = ""):
         interaction = interaction or self.discord.next_id("int")
@@ -486,8 +496,7 @@ class AppTest(unittest.TestCase):
             self.use(app, commands.ASK,
                       options=[{"name": "prompt", "type": 3, "value": "why is CI red?"}])
             self.assertTrue(self.discord.wait_for(
-                lambda: self.discord.followups, 10))
-        self.assertIn("a fresh answer", self.discord.followups[-1]["content"])
+                lambda: any("a fresh answer" in str(content) for content in self.posted()), 10))
 
     def test_a_run_that_ends_does_not_take_the_next_ones_place(self):
         """The run that ends gives up its own place, never the next one's.
@@ -529,7 +538,7 @@ class AppTest(unittest.TestCase):
                       options=[{"name": "prompt", "type": 3, "value": "why second?"}])
             gate.set()
             self.assertTrue(self.discord.wait_for(
-                lambda: any("the first answer" in str(content) for content in self.said()), 10))
+                lambda: any("the first answer" in str(content) for content in self.posted()), 10))
             # One prompt so far, and a second must not follow while the device
             # still looks busy: `wait_for` polls, so this is a bounded look.
             self.assertFalse(self.discord.wait_for(
@@ -538,7 +547,7 @@ class AppTest(unittest.TestCase):
             session = app.state.session_for(CHANNEL)["session"]
             self.device.finished_turn(session)
             self.assertTrue(self.discord.wait_for(
-                lambda: any("the second answer" in str(content) for content in self.said()), 10))
+                lambda: any("the second answer" in str(content) for content in self.posted()), 10))
         self.assertEqual([asked for _session, asked in self.device.prompts],
                          ["why first?", "why second?"], "no turn was shared")
 

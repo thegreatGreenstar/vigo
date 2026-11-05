@@ -45,7 +45,7 @@ class FatalGatewayError(Exception):
 
 
 class WebSocket:
-    def __init__(self, url: str, timeout: float = 20.0):
+    def __init__(self, url: str, timeout: float = 20.0) -> None:
         parsed = urllib.parse.urlsplit(url)
         self.host = parsed.hostname or ""
         self.port = parsed.port or (443 if parsed.scheme == "wss" else 80)
@@ -180,7 +180,7 @@ class Gateway:
         intents: int,
         on_event: Callable[[str, dict], None],
         on_state: Callable[[str], None] | None = None,
-    ):
+    ) -> None:
         self.url = url
         self.token = token
         self.intents = intents

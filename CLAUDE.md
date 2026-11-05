@@ -59,6 +59,10 @@ Torn between two sizes: pick the smaller, and say so.
 - The suite never touches the network: `tests/fake_discord.py`, `tests/fake_gateway.py` and `tests/fake_opencode.py`
   stand in for Discord and OpenCode. A test that needs the internet or a bot token is not a test; it is a manual run,
   and it is labelled as one.
+- **The product code is typed.** Every parameter and return in `vigo/` carries an annotation, and
+  `tests/test_typing.py` fails on a missing one and on an annotation that does not resolve — which matters because
+  `from __future__ import annotations` makes them strings until something reads them. A full checker (mypy or
+  pyright) is a follow-up: it needs one more CI dependency, and this test already stops the rot.
 - Run it with `python3 -m unittest discover -s tests -t .` from the repo root; `python3 -m tests.parallel` runs the
   same suite on threads (stdlib only, ~1.6 s here). CI runs the canonical one on Linux, macOS and Windows for
   3.12–3.14; a fix for a CI-only failure says what stays unverified.
