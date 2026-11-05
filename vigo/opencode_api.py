@@ -249,8 +249,14 @@ class EventStream:
         sock = getattr(getattr(getattr(answer, "fp", None), "raw", None), "_sock", None)
         if sock is None:
             return
+        # `shutdown` wakes a read on POSIX and is not enough on Windows, where
+        # the reader stays parked until the socket itself is closed.
         try:
             sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+        try:
+            sock.close()
         except OSError:
             pass
 
