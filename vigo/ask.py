@@ -2,7 +2,9 @@
 
 The message is deferred, stays as Discord's own "thinking" indicator while the
 agent works, and is edited into the answer when it is ready.  A tool that needs
-permission asks its owner in a DM, and the run waits for the answer.
+permission asks its owner in a DM, and the run waits for the answer.  Past
+``timeout`` the message says the device is still working, and the run keeps
+watching: the channel is still busy, so the next question waits.
 """
 
 from __future__ import annotations
@@ -19,7 +21,6 @@ FOOTER = {
     "succeeded": "",
     "failed": "❌ the agent failed",
     "interrupted": "⏹️ stopped",
-    "timeout": "⏳ still running on the device",
 }
 
 END_EVENTS = {
@@ -36,6 +37,7 @@ class Run:
     session: str
     device: str
     started: float
+    prompt: str = ""
     stop: threading.Event = field(default_factory=threading.Event)
 
     @property
@@ -60,7 +62,7 @@ class Ask:
         self.prompt = prompt
         self.new = new
         self.title = title
-        self.run = Run(session="", device=device_name, started=time.monotonic())
+        self.run = Run(session="", device=device_name, started=time.monotonic(), prompt=prompt)
         self.buffer = ""
         self.waiting = False
         self.prompted_at = 0.0
@@ -261,6 +263,7 @@ class Ask:
             return
 
         deadline = started + self.app.config.timeout
+        noted = False
         stream_dead = False
         poll_at = 0.0
         succeeded_at = 0.0
@@ -268,9 +271,12 @@ class Ask:
 
         while not self.run.stop.is_set():
             now = time.monotonic()
-            if now > deadline:
-                outcome = "timeout"
-                break
+            if not noted and now > deadline:
+                # Say it and keep watching.  The device is still working, so
+                # `/vigo status` must not call the channel idle and the next
+                # question in the channel must keep waiting for this one.
+                noted = True
+                self._tell("⏳ still running on the device; `/vigo stop` ends it.")
             if succeeded_at and now - succeeded_at > 3.0:
                 outcome = "succeeded"
                 break
@@ -322,11 +328,6 @@ class Ask:
         stream.close()
 
         answer, cost, tokens, steps, context = self._collect(session)
-        if not answer and outcome == "timeout":
-            answer = (
-                "The question is still running.\n"
-                "`/vigo status` shows it; `/vigo stop` ends it."
-            )
         self._final(answer, outcome, cost, tokens, steps, context)
         self.app.unregister_run(self.channel_id)
         log.info(f"ask: done on {self.device_name} ({outcome})")

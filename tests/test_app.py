@@ -1,10 +1,12 @@
+import dataclasses
 import subprocess
 import tempfile
 import unittest
 from pathlib import Path
 
 from vigo import __version__, commands
-from vigo.app import App
+from vigo import ask as asking
+from vigo.app import WAITING_MAX, App
 from vigo.discord_api import Discord
 from vigo.peer import PeerServer
 from vigo.state import State
@@ -29,14 +31,14 @@ class AppTest(unittest.TestCase):
         self.device.close()
         self.discord.close()
 
-    def make(self, directory: Path, **overrides) -> App:
+    def make(self, directory: Path, checkout: Path | None = None, **overrides) -> App:
         settings = load_settings(
             directory,
             devices=[{"name": "macbook", "url": self.device.url, "directory": "/tmp/project"}],
             **overrides,
         )
         api = Discord("token", settings.app_id, base=self.discord.url)
-        self.app = App(settings, api=api, state=State(directory / "state.json"))
+        self.app = App(settings, api=api, state=State(directory / "state.json"), checkout=checkout)
         return self.app
 
     def said(self) -> list[str]:
@@ -172,6 +174,128 @@ class AppTest(unittest.TestCase):
         self.assertEqual(final.strip(), "hello world")
         self.assertEqual(self.device.prompts[0][1], "say hi")
 
+    def test_a_second_ask_in_the_channel_waits_its_turn(self):
+        self.device.script = [("sleep", 1.0), ("idle", "the answer")]
+        with TempDir() as directory:
+            app = self.make(directory)
+            self.use(app, commands.ASK,
+                      options=[{"name": "prompt", "type": 3, "value": "first"}])
+            self.assertTrue(self.device.wait_for_prompt())
+            self.use(app, commands.ASK,
+                      options=[{"name": "prompt", "type": 3, "value": "second"}])
+            self.assertTrue(any("Queued" in str(content) for content in self.said()))
+            self.assertEqual([asked for _session, asked in self.device.prompts], ["first"],
+                             "the second question waits for the first")
+            self.assertTrue(self.discord.wait_for(
+                lambda: len(self.device.prompts) == 2, 15))
+        self.assertEqual([asked for _session, asked in self.device.prompts], ["first", "second"])
+
+    def test_a_run_past_the_timeout_keeps_the_channel_busy(self):
+        self.device.script = [("sleep", 2.0), ("idle", "the late answer")]
+        with TempDir() as directory:
+            app = self.make(directory)
+            app.config = dataclasses.replace(app.config, timeout=1)
+            self.use(app, commands.ASK,
+                      options=[{"name": "prompt", "type": 3, "value": "slow"}])
+            self.assertTrue(self.discord.wait_for(
+                lambda: any("still running" in str(content) for content in self.said()), 10))
+            self.assertIsNotNone(app.run_for(CHANNEL), "the run keeps the channel until it ends")
+            shown = app._status(CHANNEL)
+            self.assertIn("running for", shown)
+            self.assertIn("still running on the device", shown)
+            self.assertTrue(self.discord.wait_for(
+                lambda: any("the late answer" in str(content) for content in self.said()), 15))
+        self.assertIsNone(app.run_for(CHANNEL))
+
+    def test_status_reports_a_run_that_belongs_to_another_daemon(self):
+        """The device knows it is working; this daemon's map of runs cannot."""
+        with TempDir() as directory:
+            app = self.make(directory)
+            session = self.device.new_session("Discord DM")
+            app.state.remember_session(CHANNEL, "macbook", session, "Discord DM")
+            self.device.started_turn(session)
+            shown = app._status(CHANNEL)
+            self.assertIsNone(app.run_for(CHANNEL), "no run here: another daemon has it")
+        self.assertIn("still running on `macbook`", shown)
+        self.assertIn("/vigo stop", shown)
+        self.assertNotIn("idle", shown)
+
+    def test_status_says_idle_when_the_device_finished(self):
+        with TempDir() as directory:
+            app = self.make(directory)
+            session = self.device.new_session("Discord DM")
+            app.state.remember_session(CHANNEL, "macbook", session, "Discord DM")
+            self.device.started_turn(session)
+            self.device.finished_turn(session)
+            shown = app._status(CHANNEL)
+        self.assertIn("idle", shown)
+        self.assertNotIn("still running", shown)
+
+    def test_a_question_does_not_join_a_run_another_daemon_drives(self):
+        with TempDir() as directory:
+            app = self.make(directory)
+            session = self.device.new_session("Discord DM")
+            app.state.remember_session(CHANNEL, "macbook", session, "Discord DM")
+            self.device.started_turn(session)
+            self.use(app, commands.ASK,
+                     options=[{"name": "prompt", "type": 3, "value": "second"}])
+            self.assertTrue(any("still working" in str(content) for content in self.said()))
+        self.assertEqual(self.device.prompts, [],
+                         "a second prompt would steer the agent that is working")
+
+    def test_a_new_session_asks_while_the_old_one_works(self):
+        with TempDir() as directory:
+            app = self.make(directory)
+            session = self.device.new_session("Discord DM")
+            app.state.remember_session(CHANNEL, "macbook", session, "Discord DM")
+            self.device.started_turn(session)
+            self.device.script = [("idle", "the answer")]
+            self.use(app, commands.ASK, options=[
+                {"name": "prompt", "type": 3, "value": "fresh"},
+                {"name": "new", "type": 5, "value": True},
+            ])
+            self.assertTrue(self.discord.wait_for(
+                lambda: any("the answer" in str(content) for content in self.said()), 10))
+        self.assertNotEqual(self.device.prompts[0][0], session, "a fresh session, not the busy one")
+
+    def test_status_names_the_next_up_and_the_questions_that_ran(self):
+        with TempDir() as directory:
+            app = self.make(directory)
+            app.finished[CHANNEL] = ["old one", "old two", "old three", "old four"]
+            app.waiting[CHANNEL] = [self.worker(app, "next one"), self.worker(app, "next two"),
+                                    self.worker(app, "next three")]
+            self.use(app, commands.STATUS)
+            written = self.said()[-1]
+        self.assertIn("**Next up** (3 waiting):", written)
+        self.assertIn("1. “next one”", written)
+        self.assertIn("3. “next three”", written)
+        self.assertIn("**Finished:**", written)
+        self.assertIn("“old four”", written)
+        self.assertNotIn("“old one”", written, "only the last three that ran are named")
+
+    def test_stop_drops_the_questions_that_wait(self):
+        with TempDir() as directory:
+            app = self.make(directory)
+            app.waiting[CHANNEL] = [self.worker(app, "one"), self.worker(app, "two")]
+            self.use(app, commands.STOP)
+            written = self.said()[-1]
+        self.assertIn("Dropped 2 queued questions.", written)
+        self.assertEqual(app.waiting, {})
+
+    def test_the_line_in_a_channel_is_bounded(self):
+        with TempDir() as directory:
+            app = self.make(directory)
+            app.waiting[CHANNEL] = [self.worker(app, f"q{number}") for number in range(WAITING_MAX)]
+            self.use(app, commands.ASK,
+                      options=[{"name": "prompt", "type": 3, "value": "one too many"}])
+            written = self.said()[-1]
+        self.assertIn("full", written)
+        self.assertEqual(len(app.waiting[CHANNEL]), WAITING_MAX)
+
+    def worker(self, app: App, prompt: str) -> asking.Ask:
+        return asking.Ask(app, token="tok", channel_id=CHANNEL, user_id=OWNER,
+                          device_name="macbook", prompt=prompt, new=False, title="test")
+
     def test_quick_answers_once_and_starts_no_session(self):
         with TempDir() as directory:
             app = self.make(directory)
@@ -258,6 +382,22 @@ class AppTest(unittest.TestCase):
                             for message in self.discord.messages.get(CHANNEL, [])), 10))
         self.assertEqual(self.discord.deleted, [])
 
+    def test_a_hidden_answer_that_is_too_late_is_dropped(self):
+        """The public fallback of an expired message must never run for a hidden ask."""
+        self.device.script = [("idle", "nobody may see this")]
+        with TempDir() as directory:
+            app = self.make(directory)
+            self.discord.uneditable.add("tok")  # the 15 minutes ran out
+            self.use(app, commands.ASK, options=[
+                {"name": "prompt", "type": 3, "value": "hi"},
+                {"name": "hidden", "type": 5, "value": True},
+            ])
+            self.assertTrue(self.discord.wait_for(
+                lambda: app.finished.get(CHANNEL) == ["hi"], 10), "the run ended")
+        self.assertEqual(self.discord.messages.get(CHANNEL, []), [],
+                         "a hidden answer is lost, never posted")
+        self.assertEqual(self.discord.followups, [])
+
     def test_hidden_asks_are_ephemeral(self):
         self.device.script = [("idle", "quiet")]
         with TempDir() as directory:
@@ -281,20 +421,19 @@ class AppTest(unittest.TestCase):
                 lambda: any("no device" in str(content) for content in self.said())))
         self.assertEqual(self.device.prompts, [])
 
-    def test_one_run_per_channel(self):
-        self.device.script = [("sleep", 1.5), ("idle", "slow")]
+    def test_one_run_per_channel_and_the_rest_wait(self):
+        self.device.script = [("sleep", 1.0), ("idle", "slow")]
         with TempDir() as directory:
             app = self.make(directory)
             self.use(app, commands.ASK,
                       options=[{"name": "prompt", "type": 3, "value": "first"}])
-            self.assertTrue(self.discord.wait_for(lambda: bool(self.device.prompts)))
+            self.assertTrue(self.device.wait_for_prompt())
             self.use(app, commands.ASK,
                       options=[{"name": "prompt", "type": 3, "value": "second"}])
+            self.assertEqual(list(app.runs), [CHANNEL], "one run per channel")
+            self.assertEqual([worker.prompt for worker in app.waiting[CHANNEL]], ["second"])
             self.assertTrue(self.discord.wait_for(
-                lambda: any("already running" in str(content) for content in self.said())))
-            run = app.run_for(CHANNEL)
-            if run:
-                run.stop.set()
+                lambda: len(self.device.prompts) == 2, 15))
 
     def test_upgrade_updates_the_device_it_names(self):
         with tempfile.TemporaryDirectory() as work:
@@ -359,14 +498,49 @@ class AppTest(unittest.TestCase):
             self.assertFalse(app._same_build({"version": "0.1.0"}))
 
     def test_devices_show_the_vigo_version_and_latest_commit(self):
-        with TempDir() as directory:
-            app = self.make(directory)
-            app._build = "abc1234"
-            app._head = "abc1234 Test commit"
-            pick = app.router.pick(fresh=True)
-            written = app._devices(pick, detailed=True)
+        with tempfile.TemporaryDirectory() as work:
+            checkout = self._checkout(Path(work))
+            one = self._commit(checkout, "one")
+            with TempDir() as directory:
+                app = self.make(directory, checkout=checkout)
+                app._build = "abc1234"
+                pick = app.router.pick(fresh=True)
+                written = app._devices(pick, detailed=True)
         self.assertIn(f"vigo {__version__} (abc1234)", written)
-        self.assertIn("latest commit: abc1234 Test commit", written)
+        self.assertIn(f"latest commit: {one} one", written)
+        self.assertIn("this daemon runs abc1234; restart it to run", written)
+
+    def test_devices_read_the_latest_commit_again_after_a_commit(self):
+        """The daemon keeps running through a commit, so the line must follow the checkout."""
+        with tempfile.TemporaryDirectory() as work:
+            checkout = self._checkout(Path(work))
+            one = self._commit(checkout, "one")
+            with TempDir() as directory:
+                app = self.make(directory, checkout=checkout)
+                app._build = one
+                pick = app.router.pick(fresh=True)
+                before = app._devices(pick, detailed=True)
+                two = self._commit(checkout, "two")
+                after = app._devices(pick, detailed=True)
+        self.assertIn(f"latest commit: {one} one", before)
+        self.assertNotIn("restart it", before)
+        self.assertIn(f"latest commit: {two} two", after)
+        self.assertIn(f"this daemon runs {one}; restart it to run {two}", after)
+
+    def _checkout(self, root: Path) -> Path:
+        """A git checkout to read commits from."""
+        checkout = root / "checkout"
+        self._git("init", "-q", str(checkout), cwd=root)
+        self._git("config", "user.email", "t@example.com", cwd=checkout)
+        self._git("config", "user.name", "t", cwd=checkout)
+        return checkout
+
+    def _commit(self, checkout: Path, subject: str) -> str:
+        """Commit one file named after the subject, and answer the short hash."""
+        (checkout / f"{subject}.txt").write_text(subject, encoding="utf-8")
+        self._git("add", ".", cwd=checkout)
+        self._git("commit", "-qm", subject, cwd=checkout)
+        return self._git("rev-parse", "--short", "HEAD", cwd=checkout).strip()
 
     @staticmethod
     def _git(*args, cwd):

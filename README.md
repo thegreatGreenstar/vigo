@@ -155,7 +155,7 @@ Then fill it in:
 | `model` | provider, model id, optional `variant` |
 | `devices` | name, base URL and project directory of each machine |
 | `activityWindow` | seconds of "recent use" that make a device the one to use (0 disables) |
-| `timeout` | seconds before a run reports "still running" (30–3600) |
+| `timeout` | seconds before a run says the device is still working (30–3600); it keeps watching |
 | `editEvery` | seconds between progress edits of the Discord message |
 | `stateChannel` | optional, but recommended: a private channel the bot can read, where the allowlist message lives; empty means the bot's DM with you |
 
@@ -295,9 +295,9 @@ What the Developer Portal asks for, if it helps:
 | --- | --- | --- |
 | `/vigo ask prompt:<text> [device] [hidden] [new]` | approved users | asks the device you last worked on; the answer is public in the channel unless `hidden:true`, in which case only you see the question and answer |
 | `/vigo quick prompt:<text> [device] [hidden]` | approved users | one answer, with no session and no tools |
-| `/vigo status` | approved users | the channel's session, its device, tokens and cost |
+| `/vigo status` | approved users | the channel's session, its device, tokens and cost; the next three questions that wait, and the last three that ran |
 | `/vigo devices` | approved users | what is up, and which one a question would go to |
-| `/vigo stop` | owner | interrupts the channel's run |
+| `/vigo stop` | owner | interrupts the channel's run, and drops the questions that wait behind it |
 | `/vigo upgrade [device]` | owner | pulls and restarts a daemon that runs a different commit; empty does every one of them |
 | `/vigo allow user:<who> [for:<2h｜1d｜7d｜perm>]` | owner | lets someone ask, for a time; 1 day when unnamed |
 | `/vigo deny user:<who>` | owner | takes that allow back |
@@ -307,6 +307,20 @@ What the Developer Portal asks for, if it helps:
 `/vigo status`, `devices`, `upgrade`, `allow`, `deny` and `allowed` are
 always ephemeral: only the person who ran it sees the answer, and no option
 could show it to a channel. `/vigo stop` takes `hidden` like the questions do.
+
+One question runs in a channel at a time. A question asked while one runs
+waits its turn, and the message it came from says how many run before it. The
+line holds ten; `/vigo stop` clears it. `/vigo status` names the next three and
+the last three that ran. A run that passes `timeout` says the device is still
+working and keeps watching: the answer still lands in its message, and the
+channel stays busy until it does.
+
+A run is not always the daemon's that answers `/vigo status`: both daemons get
+every command, Discord takes the first acknowledgement, and either may restart
+under a run. So `status` asks the device's own session, which is the record
+they share, and reports the device working when it is — even with no run in
+this process. A question asked then is refused with that reason instead of
+joining the agent's turn; `new:true` still starts a fresh session.
 
 The allowlist is kept in a message the bot owns: in `stateChannel` when the
 file names one, otherwise in the bot's DM with you. It is read before every
@@ -492,5 +506,6 @@ CI runs the same suite on Linux, macOS and Windows for Python 3.12, 3.13 and
 | `closed with 4014` | the bot asked for an intent Discord does not allow it; the bot asks only for `GUILDS` |
 | `no device answers` | no `opencode serve` is reachable from this daemon — check the URL, the port, and the password |
 | `Permission needed` never arrives | the owner and the bot do not share a server that allows DMs, so the card falls back to the channel |
-| the answer says `still running` | the run passed `timeout`; `/vigo status` shows it, `/vigo stop` ends it |
+| the answer says `still running` | the run passed `timeout`; it keeps watching, `/vigo status` shows it, `/vigo stop` ends it |
+| a question says `Queued` | one run at a time per channel; it starts when the one before it ends, or `/vigo stop` clears it |
 | a channel has no session | the first ask creates one; `new:true` starts a fresh one on purpose |

@@ -109,13 +109,13 @@ def spec(install: str = "both") -> list[dict]:
                 {
                     "type": 1,
                     "name": STOP,
-                    "description": "Stop what is running in this channel.",
+                    "description": "Stop what is running in this channel, and drop what waits.",
                     "options": [dict(hidden)],
                 },
                 {
                     "type": 1,
                     "name": STATUS,
-                    "description": "What this channel's session is doing. Only you ever see this.",
+                    "description": "What this channel is doing and what waits in it. Only you ever see this.",
                 },
                 {
                     "type": 1,

@@ -75,6 +75,21 @@ class FakeOpenCode:
             self.messages.setdefault(session, [])
         return session
 
+    def started_turn(self, session: str) -> None:
+        """Mark the session busy, as the device does while an agent works."""
+        with self.lock:
+            stamps = self.sessions[session]["time"]
+            stamps["busy"] = time.time() * 1000
+            stamps.pop("idle", None)
+
+    def finished_turn(self, session: str) -> None:
+        """Mark the session idle, as the device does when the agent stops."""
+        with self.lock:
+            stamps = self.sessions[session]["time"]
+            stamps["busy"] = time.time() * 1000
+            stamps["idle"] = stamps["busy"] + 1
+            stamps["updated"] = stamps["idle"]
+
     def wait_for_prompt(self, timeout: float = 5.0) -> bool:
         end = time.monotonic() + timeout
         while time.monotonic() < end:

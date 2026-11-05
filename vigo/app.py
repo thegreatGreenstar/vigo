@@ -22,6 +22,26 @@ from .state import State
 
 INTENTS = 0  # no gateway events are needed: interactions arrive without intents
 
+WAITING_MAX = 10   # questions a channel may hold behind the one that runs
+FINISHED_MAX = 10  # the last questions that ran, which `/vigo status` can name
+
+
+def busy_since(info: dict) -> float | None:
+    """When the session's turn started, in milliseconds, while it still runs.
+
+    The device stamps `busy` when a turn starts and `idle` when it ends, so a
+    finished turn has an `idle` at least as new as its `busy`.  This is the
+    only record that knows: the run may belong to another daemon, and it
+    outlives this daemon's timeout and its restarts.
+    """
+    stamps = info.get("time") or {}
+    busy, idle = stamps.get("busy"), stamps.get("idle")
+    if not isinstance(busy, (int, float)):
+        return None
+    if isinstance(idle, (int, float)) and idle >= busy:
+        return None
+    return float(busy)
+
 
 def _strip(command: dict) -> dict:
     """The parts of a command that decide whether Discord's copy is ours."""
@@ -59,13 +79,14 @@ class App:
                  checkout: Path | None = None):
         self.checkout = checkout
         self._build: str | None = None
-        self._head: str | None = None
         self.config = config
         self.api = api or Discord(config.token, config.app_id)
         self.router = Router(config)
         self.state = state or State()
         self.allow = AllowList(config, self.api, self.state)
         self.runs: dict[str, asking.Run] = {}
+        self.waiting: dict[str, list[asking.Ask]] = {}
+        self.finished: dict[str, list[str]] = {}
         self.runs_lock = threading.Lock()
         self.pool = ThreadPoolExecutor(max_workers=8, thread_name_prefix="vigo")
         self.started = time.time()
@@ -77,13 +98,48 @@ class App:
             self.runs[channel] = run
 
     def unregister_run(self, channel: str) -> None:
+        """The run ended: remember its question, and start the next one."""
         with self.runs_lock:
-            self.runs.pop(channel, None)
+            run = self.runs.pop(channel, None)
+            if run is not None and run.prompt:
+                done = self.finished.setdefault(channel, [])
+                done.append(run.prompt)
+                del done[:-FINISHED_MAX]
+        if run is not None:
+            self.start_next(channel)
+
+    def start_next(self, channel: str) -> None:
+        """Start the first waiting question, when nothing runs in the channel."""
+        with self.runs_lock:
+            line = self.waiting.get(channel) or []
+            if channel in self.runs or not line:
+                return
+            worker = line.pop(0)
+            if not line:
+                del self.waiting[channel]
+            self.runs[channel] = worker.run
+            left = len(line)
+        log.debug(f"ask: starting the next question in this channel ({left} left)")
+        threading.Thread(target=worker.run_it, name=f"ask-{channel}", daemon=True).start()
+
+    def add_waiting(self, channel: str, worker: asking.Ask) -> int | None:
+        """Queue a question behind the run; answer how many run before it.
+
+        ``None`` means the channel's line is full: the question is not queued
+        and the caller says so.
+        """
+        with self.runs_lock:
+            line = self.waiting.setdefault(channel, [])
+            if len(line) >= WAITING_MAX:
+                return None
+            line.append(worker)
+            return len(line) - 1 + (1 if channel in self.runs else 0)
 
     def shutdown(self) -> None:
         """Stop every run and the worker pool; used on the way out and by tests."""
         with self.runs_lock:
             runs = list(self.runs.values())
+            self.waiting.clear()  # a stopping run must not start the next one
         for run in runs:
             run.stop.set()
         self.pool.shutdown(wait=False)
@@ -91,6 +147,27 @@ class App:
     def run_for(self, channel: str) -> asking.Run | None:
         with self.runs_lock:
             return self.runs.get(channel)
+
+    def _device_busy(self, channel: str, device_name: str, new: bool) -> bool:
+        """Whether the device still works on this channel's last question.
+
+        The run is not always this daemon's: any daemon may answer the command
+        that started it, and a run outlives a timeout and a restart.  The
+        device's own session is the one record they share, so ask it.
+        """
+        if new:
+            return False  # a fresh session, whatever the old one does
+        remembered = self.state.session_for(channel)
+        if not remembered or remembered.get("device") != device_name:
+            return False
+        device = self.config.device_named(device_name)
+        if device is None:
+            return False
+        try:
+            info = OpenCode(device.url, device.password).session(remembered["session"])
+        except OpenCodeError:
+            return False  # a device that does not answer says so when asked
+        return busy_since(info) is not None
 
     # -- permission cards -------------------------------------------------
 
@@ -420,10 +497,17 @@ class App:
                 "`/vigo devices` (only you see it) says what is there.",
             )
             return
-        if self.run_for(channel_id):
+        if not self.run_for(channel_id) and self._device_busy(
+                channel_id, pick.name, new=bool(options.get("new"))):
+            # Nothing runs here, yet the device still works: another daemon
+            # answered the last command, or this one restarted under it.  The
+            # question cannot wait for a run this daemon does not hold, and a
+            # prompt now would steer the agent that is already working.
+            log.info("ask: the device is still working on this channel's last question")
             self._say(
                 token,
-                "Something is already running in this channel; `/vigo stop` ends it.",
+                "⏳ the device is still working on the last question here; "
+                "`/vigo status` shows it, `/vigo stop` ends it.",
             )
             return
         title = f"Discord #{channel_name}" if channel_name else "Discord DM"
@@ -438,7 +522,19 @@ class App:
             title=title,
             hidden=bool(options.get("hidden")),
         )
-        threading.Thread(target=worker.run_it, name=f"ask-{channel_id}", daemon=True).start()
+        ahead = self.add_waiting(channel_id, worker)
+        if ahead is None:
+            log.info(f"ask: the line in this channel is full ({WAITING_MAX})")
+            self._say(
+                token,
+                f"❌ the line is full: {WAITING_MAX} questions wait in this channel. "
+                "Wait for them, or `/vigo stop` clears them.",
+            )
+            return
+        if ahead:
+            log.info(f"ask: queued in this channel ({ahead} ahead)")
+            self._say(token, f"🧾 Queued behind {ahead} question{'' if ahead == 1 else 's'}.")
+        self.start_next(channel_id)
 
     def _quick(self, options: dict, token: str, channel_id: str, pick) -> None:
         """One question, answered once: no session, no tools, nothing kept."""
@@ -511,17 +607,14 @@ class App:
 
     @property
     def build(self) -> str:
-        """The commit this daemon runs, short; empty when the checkout is not git."""
+        """The commit this daemon runs, short; empty when the checkout is not git.
+
+        Read once, on the way up: the process runs the code it imported, so the
+        value must not follow a later pull or commit in the checkout.
+        """
         if self._build is None:
             self._build = build_of(self.checkout)
         return self._build
-
-    @property
-    def head(self) -> str:
-        """The newest commit in this checkout: short hash and subject."""
-        if self._head is None:
-            self._head = head_of(self.checkout)
-        return self._head
 
     def _same_build(self, info: dict) -> bool:
         """Whether a peer runs what this one runs.
@@ -639,35 +732,74 @@ class App:
     def _status(self, channel_id: str) -> str:
         remembered = self.state.session_for(channel_id)
         running = self.run_for(channel_id)
-        if not remembered:
-            return "No question has been asked in this channel yet."
-        device = self.config.device_named(remembered["device"])
-        lines = [
-            "**This channel** has an OpenCode session",
-            f"“{remembered.get('title') or 'untitled'}”",
-        ]
-        if device:
-            client = OpenCode(device.url, device.password)
-            try:
-                info = client.session(remembered["session"])
-                tokens = info.get("tokens") or {}
-                lines.append(
-                    f"{text.tokens(int(tokens.get('input', 0)))} in / "
-                    f"{text.tokens(int(tokens.get('output', 0)))} out · "
-                    f"{text.money(float(info.get('cost') or 0))}"
-                )
-            except OpenCodeError as error:
-                log.info(f"status: the device does not answer ({error.message})")
-                lines.append("⚠️ the device does not answer")
+        info: dict = {}
+        lines: list[str] = []
+        if remembered:
+            device = self.config.device_named(remembered["device"])
+            lines = [
+                "**This channel** has an OpenCode session",
+                f"“{remembered.get('title') or 'untitled'}”",
+            ]
+            if device:
+                client = OpenCode(device.url, device.password)
+                try:
+                    info = client.session(remembered["session"])
+                    tokens = info.get("tokens") or {}
+                    lines.append(
+                        f"{text.tokens(int(tokens.get('input', 0)))} in / "
+                        f"{text.tokens(int(tokens.get('output', 0)))} out · "
+                        f"{text.money(float(info.get('cost') or 0))}"
+                    )
+                except OpenCodeError as error:
+                    log.info(f"status: the device does not answer ({error.message})")
+                    lines.append("⚠️ the device does not answer")
+        else:
+            lines = ["No question has been asked in this channel yet."]
+        busy = busy_since(info)
         if running:
-            lines.append(f"⏳ running for {text.duration(running.elapsed)}")
+            elapsed = f"⏳ running for {text.duration(running.elapsed)}"
+            if running.elapsed > self.config.timeout:
+                elapsed += " · still running on the device"
+            lines.append(elapsed)
+        elif busy is not None:
+            # No run here: another daemon answered the command that started
+            # it, or this one restarted under it.  The device is still working,
+            # so "idle" would be a lie it can be asked about.
+            working = time.time() - busy / 1000.0
+            lines.append(
+                f"⏳ still running on `{device.name if device else 'the device'}` "
+                f"for {text.duration(working)}; `/vigo stop` ends it"
+            )
         else:
             lines.append("idle")
+        line = self._line_text(channel_id)
+        if line:
+            lines.append("")
+            lines.extend(line)
         return "\n".join(lines)
+
+    def _line_text(self, channel_id: str) -> list[str]:
+        """The next three questions and the last three that ran, for status."""
+        with self.runs_lock:
+            waiting = list(self.waiting.get(channel_id) or [])
+            finished = list(self.finished.get(channel_id) or [])
+        lines: list[str] = []
+        if waiting:
+            lines.append(f"**Next up** ({len(waiting)} waiting):")
+            for number, worker in enumerate(waiting[:3], 1):
+                lines.append(f"{number}. “{text.shorten(worker.prompt, 80)}”")
+        if finished:
+            lines.append("**Finished:**")
+            lines.extend(f"“{text.shorten(prompt, 80)}”" for prompt in finished[-3:])
+        return lines
 
     def _devices(self, pick, detailed: bool = False) -> str:
         states = self.router.states(fresh=True)
         infos = self._peer_infos() if detailed else {}
+        # Read the checkout every time.  A commit moves it without a restart,
+        # so a value held from the first command would name the commit this
+        # daemon started on, not the newest one in the checkout.
+        latest = head_of(self.checkout) if detailed else ""
         lines = [self.router.describe(
             states, detailed=detailed, builds=self._builds(infos) if detailed else None,
         )]
@@ -675,9 +807,12 @@ class App:
         if behind:
             lines.append("")
             lines.extend(f"⚠️ {line}" for line in behind)
-        if detailed and self.head:
+        if latest:
             lines.append("")
-            lines.append(f"latest commit: {self.head}")
+            lines.append(f"latest commit: {latest}")
+            short = latest.split(" ", 1)[0]
+            if self.build and short != self.build:
+                lines.append(f"⚠️ this daemon runs {self.build}; restart it to run {short}")
         lines.append("")
         if pick.name:
             lines.append(
@@ -691,24 +826,30 @@ class App:
         return "\n".join(lines)
 
     def _stop(self, channel_id: str) -> str:
-        run = self.run_for(channel_id)
+        # One lock for the run and the line: a run that ends here must not
+        # start the next question while this command drops it.
+        with self.runs_lock:
+            run = self.runs.get(channel_id)
+            dropped = len(self.waiting.pop(channel_id, []))
+            if run:
+                run.stop.set()
+        note = f" Dropped {dropped} queued question{'s' if dropped != 1 else ''}." if dropped else ""
         remembered = self.state.session_for(channel_id)
-        if run:
-            run.stop.set()
         if not remembered:
-            return "Nothing is running in this channel." if not run else "Stopping it."
+            said = "Nothing is running in this channel." if not run else "Stopping it."
+            return said + note
         device = self.config.device_named(remembered["device"])
         if device is None:
-            return f"`{remembered['device']}` is not in the file any more."
+            return f"`{remembered['device']}` is not in the file any more." + note
         client = OpenCode(device.url, device.password)
         try:
             client.interrupt(remembered["session"])
-            return "⏹️ Stopped."
+            return "⏹️ Stopped." + note
         except OpenCodeError as error:
             if run:
-                return "⏹️ Stopping the run in this channel."
+                return "⏹️ Stopping the run in this channel." + note
             log.info(f"stop: nothing to stop ({error.message})")
-            return "Nothing to stop."
+            return "Nothing to stop." + note
 
     def _allow(self, options: dict) -> str:
         user = options.get("user")
@@ -739,10 +880,12 @@ class App:
             "**Vigo** — an OpenCode agent on your own machines, reached from Discord.",
             "",
             "`/vigo ask prompt:…` asks the device you last worked on. "
-            "`device:` names one, `new:true` starts a fresh session.",
+            "`device:` names one, `new:true` starts a fresh session; a question "
+            "asked while one runs waits its turn.",
             "`/vigo quick prompt:…` answers once, with no session and no tools.",
             "`/vigo devices` shows what is up and where a question would go.",
-            "`/vigo status` shows this channel's session; `/vigo stop` ends its run.",
+            "`/vigo status` shows this channel's session, what waits in it, and "
+            "what ran; `/vigo stop` ends its run and drops what waits.",
             "Every command that answers a question takes `hidden:true` to keep "
             "its answer to yourself; without it, the channel sees it. "
             "`devices`, `allow`, `deny` and `allowed` are always private.",
