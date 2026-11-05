@@ -232,6 +232,21 @@ class AppTest(unittest.TestCase):
             if run:
                 run.stop.set()
 
+    def test_upgrade_updates_the_device_it_names(self):
+        with TempDir() as directory:
+            app = self.make(directory)
+            interaction = self.use(app, commands.UPGRADE, options=[
+                {"name": "device", "type": 3, "value": "pc"},
+            ])
+            self.assertTrue(self.discord.wait_for(
+                lambda: any("pc" in str(edit["content"])
+                            for edit in self.discord.edits), 5))
+            said = self.discord.edits[-1]["content"]
+            answer = self.discord.answer_for(interaction)
+        self.assertEqual(answer["data"]["flags"], 64, "upgrade is never shown to a channel")
+        self.assertIn("pc", said)
+        self.assertNotIn("macbook", said, "only the named device is touched")
+
     def test_the_device_option_offers_the_names(self):
         with TempDir() as directory:
             app = self.make(directory)
@@ -350,9 +365,9 @@ class AppTest(unittest.TestCase):
         self.assertEqual(command["integration_types"], [0, 1])
         self.assertEqual(command["contexts"], [0, 1, 2])
         subcommands = [option["name"] for option in command["options"]]
-        self.assertEqual(subcommands, ["ask", "quick", "stop", "status", "devices",
+        self.assertEqual(subcommands, ["ask", "quick", "upgrade", "stop", "status", "devices",
                                        "allow", "deny", "allowed", "help"])
-        always_private = {"devices", "status", "allow", "deny", "allowed"}
+        always_private = {"devices", "status", "upgrade", "allow", "deny", "allowed"}
         for option in command["options"]:
             names = [inner["name"] for inner in (option.get("options") or [])]
             if option["name"] in always_private:

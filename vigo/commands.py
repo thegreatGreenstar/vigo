@@ -4,6 +4,7 @@ from __future__ import annotations
 
 ASK = "ask"
 QUICK = "quick"
+UPGRADE = "upgrade"
 STOP = "stop"
 STATUS = "status"
 DEVICES = "devices"
@@ -90,6 +91,19 @@ def spec(install: str = "both") -> list[dict]:
                             "required": False,
                         },
                         dict(hidden),
+                    ],
+                },
+                {
+                    "type": 1,
+                    "name": UPGRADE,
+                    "description": "Pull and restart a daemon that is behind. Only you.",
+                    "options": [
+                        {
+                            "type": 3,
+                            "name": "device",
+                            "description": "Which one; empty upgrades every daemon that is behind.",
+                            "required": False,
+                        },
                     ],
                 },
                 {
