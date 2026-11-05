@@ -40,7 +40,7 @@ class AppTest(unittest.TestCase):
         return self.app
 
     def said(self) -> list[str]:
-        """Everything the bot posted: a command edits, an answer follows up."""
+        """Everything the bot posted: commands edit the deferred message."""
         return [entry["content"] for entry in self.discord.edits + self.discord.followups]
 
     def use(self, app: App, sub: str, options: list | None = None,
@@ -201,18 +201,47 @@ class AppTest(unittest.TestCase):
                          "Discord's own 'thinking' is enough; only the answer is sent")
         self.assertEqual(self.said()[0].strip(), "just the answer")
 
-    def test_the_answer_is_its_own_message(self):
+    def test_the_answer_stays_in_the_deferred_message(self):
         self.device.script = [("idle", "the answer")]
         with TempDir() as directory:
             app = self.make(directory)
             self.use(app, commands.ASK,
                       options=[{"name": "prompt", "type": 3, "value": "hi"}])
             self.assertTrue(self.discord.wait_for(
-                lambda: any("the answer" in str(entry["content"])
-                            for entry in self.discord.followups), 10))
-        self.assertEqual(self.discord.edits, [], "the placeholder is not edited")
-        self.assertEqual(len(self.discord.deleted), 1, "the placeholder is removed")
-        self.assertEqual(self.discord.followups[0]["content"].strip(), "the answer")
+                lambda: self.discord.originals.get("tok", {}).get("content") == "the answer", 10))
+        original = self.discord.originals["tok"]
+        self.assertFalse(original["deleted"], "the answer is not deleted after it is posted")
+        self.assertEqual(self.discord.deleted, [], "nothing is deleted")
+        self.assertEqual(self.discord.followups, [], "one message: the deferred response itself")
+        self.assertEqual(len(self.discord.edits), 1, "the placeholder became the answer")
+        self.assertEqual(original["content"].strip(), "the answer")
+
+    def test_a_long_hidden_answer_stays_ephemeral(self):
+        self.device.script = [("idle", "x" * 4000)]
+        with TempDir() as directory:
+            app = self.make(directory)
+            self.use(app, commands.ASK, options=[
+                {"name": "prompt", "type": 3, "value": "hi"},
+                {"name": "hidden", "type": 5, "value": True},
+            ])
+            self.assertTrue(self.discord.wait_for(
+                lambda: len(self.discord.followups) == 2, 10))
+        self.assertTrue(self.discord.originals["tok"]["ephemeral"])
+        self.assertEqual({entry["flags"] for entry in self.discord.followups}, {64},
+                         "the overflow is ephemeral too")
+        self.assertEqual(self.discord.deleted, [])
+
+    def test_an_expired_interaction_still_gets_the_answer(self):
+        self.device.script = [("idle", "too late to edit")]
+        with TempDir() as directory:
+            app = self.make(directory)
+            self.discord.uneditable.add("tok")  # the 15 minutes ran out
+            self.use(app, commands.ASK,
+                      options=[{"name": "prompt", "type": 3, "value": "hi"}])
+            self.assertTrue(self.discord.wait_for(
+                lambda: any("too late to edit" in message["content"]
+                            for message in self.discord.messages.get(CHANNEL, [])), 10))
+        self.assertEqual(self.discord.deleted, [])
 
     def test_hidden_asks_are_ephemeral(self):
         self.device.script = [("idle", "quiet")]
@@ -316,7 +345,7 @@ class AppTest(unittest.TestCase):
 
     @staticmethod
     def _git(*args, cwd):
-        done = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True)
+        done = subprocess.run(["git", "-c", "commit.gpgsign=false", *args], cwd=cwd, capture_output=True, text=True)
         if done.returncode != 0:
             raise AssertionError(done.stderr)
         return done.stdout

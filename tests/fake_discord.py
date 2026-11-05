@@ -14,6 +14,7 @@ class FakeDiscord:
         self.lock = threading.Lock()
         self.acked: set[str] = set()
         self.responses: list[dict] = []
+        self.originals: dict[str, dict] = {}  # interaction token -> its message
         self.edits: list[dict] = []
         self.followups: list[dict] = []
         self.deleted: list[str] = []
@@ -25,6 +26,7 @@ class FakeDiscord:
         self.counter = 0
         self.gateway = ""
         self.forbidden: set[str] = set()  # channel ids that answer 403
+        self.uneditable: set[str] = set()  # interaction tokens whose message is gone
         self.guild_commands_puts = 0
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), self._handler())
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
@@ -164,15 +166,28 @@ class FakeDiscord:
                 body = self._body()
                 if "/interactions/" in path and path.endswith("/callback"):
                     interaction_id = path.split("/interactions/")[1].split("/")[0]
+                    token = path.split("/interactions/")[1].split("/")[1]
+                    kind = body.get("type")
+                    data = body.get("data") or {}
                     with fake.lock:
                         if interaction_id in fake.acked:
                             self._send(400, {"code": 40060,
                                              "message": "Interaction has already been acknowledged."})
                             return
                         fake.acked.add(interaction_id)
-                        fake.responses.append({"id": interaction_id, "type": body.get("type"),
-                                               "data": body.get("data") or {}})
-                    self._send(204 if body.get("type") == 5 else 200)
+                        fake.responses.append({"id": interaction_id, "type": kind,
+                                               "data": data})
+                        # A callback with content sends the message at once; a
+                        # deferral is a message with no content yet, which the
+                        # "is thinking" state marks.
+                        if kind in (4, 5):
+                            fake.originals[token] = {
+                                "content": str(data.get("content") or ""),
+                                "loading": kind == 5,
+                                "ephemeral": bool(data.get("flags")),
+                                "deleted": False,
+                            }
+                    self._send(204 if kind == 5 else 200)
                     return
                 if "/users/@me/channels" in path:
                     user = str(body.get("recipient_id"))
@@ -182,8 +197,23 @@ class FakeDiscord:
                     return
                 if "/webhooks/" in path:
                     token = path.split("/webhooks/")[1].split("/")[1]
+                    original = fake.originals.get(token)
+                    if original is not None and original["loading"]:
+                        # Discord's documented compatibility rule: the first
+                        # followup after a deferral edits the loading message
+                        # instead of creating a new one.
+                        with fake.lock:
+                            original["content"] = str(body.get("content") or "")
+                            original["loading"] = False
+                            fake.edits.append({"token": token,
+                                               "content": original["content"],
+                                               "components": body.get("components")})
+                        self._send(200, {"id": "original", "content": original["content"]})
+                        return
                     with fake.lock:
-                        fake.followups.append({"token": token, "content": body.get("content")})
+                        fake.followups.append({"token": token,
+                                               "content": body.get("content"),
+                                               "flags": body.get("flags")})
                     self._send(200, {"id": fake.next_id("msg"), "content": body.get("content")})
                     return
                 if "/channels/" in path and path.endswith("/messages"):
@@ -203,6 +233,11 @@ class FakeDiscord:
                 if path.endswith("/messages/@original"):
                     token = path.split("/webhooks/")[1].split("/")[1]
                     with fake.lock:
+                        original = fake.originals.get(token)
+                        if original is not None:
+                            original["content"] = ""
+                            original["loading"] = False
+                            original["deleted"] = True
                         fake.deleted.append(token)
                     self._send(204)
                     return
@@ -213,10 +248,19 @@ class FakeDiscord:
                 body = self._body()
                 if path.endswith("/messages/@original"):
                     token = path.split("/webhooks/")[1].split("/")[1]
+                    if token in fake.uneditable:
+                        self._send(404, {"code": 10015, "message": "Unknown Webhook"})
+                        return
                     with fake.lock:
-                        fake.edits.append({"token": token, "content": body.get("content"),
+                        original = fake.originals.setdefault(token, {
+                            "content": "", "loading": True, "ephemeral": False,
+                            "deleted": False,
+                        })
+                        original["content"] = str(body.get("content") or "")
+                        original["loading"] = False
+                        fake.edits.append({"token": token, "content": original["content"],
                                            "components": body.get("components")})
-                    self._send(200, {"id": "original", "content": body.get("content")})
+                    self._send(200, {"id": "original", "content": original["content"]})
                     return
                 if "/channels/" in path and "/messages/" in path:
                     channel = path.split("/channels/")[1].split("/")[0]

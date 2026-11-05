@@ -371,13 +371,15 @@ class App:
         if not reply.ok:
             log.debug("interaction already answered")
 
-    def _say(self, token: str, content: str) -> None:
+    def _say(self, token: str, content: str) -> bool:
         try:
             self.api.edit_original(token, {
                 "content": content, "allowed_mentions": {"parse": []},
             })
+            return True
         except DiscordError as error:
             log.error(f"cannot say it: {error.message}")
+            return False
 
     # -- the commands -----------------------------------------------------
 
@@ -386,7 +388,7 @@ class App:
         if sub == commands.ASK:
             self._ask(options, token, channel_id, channel_name, who, pick)
         elif sub == commands.QUICK:
-            self._quick(options, token, pick)
+            self._quick(options, token, channel_id, pick)
         elif sub == commands.STATUS:
             self._say(token, self._status(channel_id))
         elif sub == commands.DEVICES:
@@ -437,7 +439,7 @@ class App:
         )
         threading.Thread(target=worker.run_it, name=f"ask-{channel_id}", daemon=True).start()
 
-    def _quick(self, options: dict, token: str, pick) -> None:
+    def _quick(self, options: dict, token: str, channel_id: str, pick) -> None:
         """One question, answered once: no session, no tools, nothing kept."""
         prompt = str(options.get("prompt") or "").strip()
         if not prompt:
@@ -463,21 +465,38 @@ class App:
             self._say(token, "❌ the device would not answer.")
             return
         chunks = text.chunk(answer) or ["_nothing to say_"]
-        posted = 0
-        for piece in chunks:
+        hidden = bool(options.get("hidden"))
+        # The same shape as an ask: the answer edits the deferred response, so
+        # it stays where the question was asked and keeps its ephemeral state.
+        # A followup sent first would edit that same message and a delete would
+        # then remove the answer; only the overflow is a followup.
+        if not self._say(token, chunks[0]):
+            self._late_quick(channel_id, chunks[0], hidden)
+            return
+        extra = {"flags": 64} if hidden else {}
+        for piece in chunks[1:]:
             try:
                 self.api.followup(token, {
                     "content": piece, "allowed_mentions": {"parse": []},
+                    **extra,
                 })
-                posted += 1
             except DiscordError as error:
-                log.error(f"quick: cannot post the answer ({error.message})")
+                log.error(f"quick: cannot post the rest of the answer ({error.message})")
                 break
-        if not posted:
-            self._say(token, chunks[0])
-            return
-        self.api.delete_original(token)
         log.info(f"quick: answered on {pick.name}")
+
+    def _late_quick(self, channel_id: str, content: str, hidden: bool) -> None:
+        """The interaction's 15 minutes ran out: post it where the question was."""
+        if hidden:
+            log.error("quick: the answer is too late for an ephemeral message")
+            return
+        try:
+            self.api.send(channel_id, {
+                "content": content[:2000],
+                "allowed_mentions": {"parse": []},
+            })
+        except DiscordError as error:
+            log.error(f"quick: cannot post the answer at all ({error.message})")
 
     def peer_password(self) -> str:
         """The password a peer sends to this device: this device's own.
