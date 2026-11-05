@@ -274,13 +274,16 @@ class FakeOpenCode:
                                      "urls": [fake.url], "paths": {}, "capabilities": {}})
                     return
                 if path == "/api/event":
+                    # Subscribe before answering: the client is free to emit as
+                    # soon as it reads the headers, and an event sent before
+                    # this list holds the channel is an event nobody sees.
+                    channel: queue.Queue = queue.Queue()
+                    with fake.lock:
+                        fake.subscribers.append(channel)
                     self.send_response(200)
                     self.send_header("Content-Type", "text/event-stream")
                     self.send_header("Cache-Control", "no-cache")
                     self.end_headers()
-                    channel: queue.Queue = queue.Queue()
-                    with fake.lock:
-                        fake.subscribers.append(channel)
                     try:
                         self.wfile.write(b": ready\n\n")
                         self.wfile.flush()
@@ -292,7 +295,9 @@ class FakeOpenCode:
                             raw = f"data: {json.dumps(event)}\n\n".encode()
                             self.wfile.write(raw)
                             self.wfile.flush()
-                    except (BrokenPipeError, ConnectionResetError):
+                    except OSError:
+                        # A reader that went away: BrokenPipe on POSIX,
+                        # ConnectionAborted (10053) or Reset (10054) on Windows.
                         pass
                     finally:
                         with fake.lock:

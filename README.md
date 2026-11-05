@@ -555,7 +555,14 @@ starts, with an error in the log. It holds no conversation text.
 ```sh
 python3 -m unittest discover -s tests -t . -v   # the canonical run
 python3 -m tests.parallel                       # the same suite on threads
+tests/in-containers.sh                          # Linux 3.12-3.14, in podman
 ```
+
+`tests/in-containers.sh` runs the suite in `python:3.12`, `3.13` and `3.14`
+containers on the `podman machine` Linux VM, so the Linux half of the CI matrix
+is answered here first. It cannot answer Windows or macOS: `podman` on a Mac
+is always Linux, and Windows behaviour has already differed once (a socket read
+that `shutdown` does not wake there).
 
 The product code is typed: every parameter and return in `vigo/` carries an
 annotation, and a test fails on a missing one or on one that does not resolve.

@@ -68,6 +68,9 @@ Torn between two sizes: pick the smaller, and say so.
   3.12–3.14; a fix for a CI-only failure says what stays unverified.
 - A test does not sleep. `tests/fake_opencode.py` takes `("until", event)` in a script, so the test decides when a
   turn ends; a sleep makes the suite slower and flakier for no extra coverage.
+- Before pushing, run `tests/in-containers.sh`: the suite on Linux 3.12–3.14 in `podman`, which is the fastest CI
+  matrix half to answer. Windows and macOS stay CI-only — `podman` on a Mac is a Linux VM, and Windows has
+  already differed from Linux once (a socket read that `shutdown` does not wake there).
 - Anything a reader will copy and run (a command, a port, a link) is run before it ships.
 - `main` takes pull requests only. `.githooks/pre-push` refuses a push straight to it, and `install.sh` sets
   `core.hooksPath` so every clone runs it; GitHub's own protection is a paid feature on a private repo. Do not
