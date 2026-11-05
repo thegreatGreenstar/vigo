@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime
 import json
 import threading
 import time
@@ -26,10 +27,16 @@ class FakeDiscord:
         self.counter = 0
         self.gateway = ""
         self.forbidden: set[str] = set()  # channel ids that answer 403
+        self.no_dm: set[str] = set()  # user ids whose DM cannot be opened
         self.uneditable: set[str] = set()  # interaction tokens whose message is gone
         self.guild_commands_puts = 0
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), self._handler())
-        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        # A short poll: `shutdown()` waits for the loop to notice, and half a
+        # second per server is half a second per test.
+        self.thread = threading.Thread(
+            target=self.server.serve_forever,
+            kwargs={"poll_interval": 0.02}, daemon=True,
+        )
         self.thread.start()
 
     @property
@@ -61,12 +68,14 @@ class FakeDiscord:
             time.sleep(0.02)
         return False
 
-    def add_message(self, channel: str, content: str, author: str = "1") -> dict:
+    def add_message(self, channel: str, content: str, author: str = "1",
+                    bot: bool = False) -> dict:
         message = {
             "id": self.next_id("msg"),
             "channel_id": channel,
             "content": content,
-            "author": {"id": author},
+            "author": {"id": author, "bot": bot},
+            "timestamp": datetime.datetime.now(datetime.UTC).isoformat(),
         }
         with self.lock:
             self.messages.setdefault(channel, []).insert(0, message)
@@ -191,12 +200,18 @@ class FakeDiscord:
                     return
                 if "/users/@me/channels" in path:
                     user = str(body.get("recipient_id"))
+                    if user in fake.no_dm:
+                        self._send(403, {"code": 50007, "message": "Cannot send messages to this user"})
+                        return
                     with fake.lock:
                         channel = fake.dm_channels.setdefault(user, f"dm_{user}")
                     self._send(200, {"id": channel, "type": 1})
                     return
                 if "/webhooks/" in path:
                     token = path.split("/webhooks/")[1].split("/")[1]
+                    if token in fake.uneditable:
+                        self._send(404, {"code": 10015, "message": "Unknown Webhook"})
+                        return
                     original = fake.originals.get(token)
                     if original is not None and original["loading"]:
                         # Discord's documented compatibility rule: the first
@@ -221,9 +236,12 @@ class FakeDiscord:
                     if channel in fake.forbidden:
                         self._send(403, {"code": 50001, "message": "Missing Access"})
                         return
-                    message = fake.add_message(channel, str(body.get("content") or ""))
+                    message = fake.add_message(channel, str(body.get("content") or ""),
+                                               bot=True)
                     if body.get("components"):
                         message["components"] = body["components"]
+                    if body.get("allowed_mentions") is not None:
+                        message["allowed_mentions"] = body["allowed_mentions"]
                     self._send(200, message)
                     return
                 self._send(404, {"code": 0, "message": "no route"})

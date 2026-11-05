@@ -4,6 +4,7 @@ from __future__ import annotations
 
 ASK = "ask"
 QUICK = "quick"
+GOAL = "goal"
 UPGRADE = "upgrade"
 STOP = "stop"
 STATUS = "status"
@@ -61,6 +62,15 @@ def spec(install: str = "both") -> list[dict]:
                         },
                         {
                             "type": 5,
+                            "name": "goal",
+                            "description": (
+                                "Work toward it until it is done instead of answering once; "
+                                "empty decides from the wording."
+                            ),
+                            "required": False,
+                        },
+                        {
+                            "type": 5,
                             "name": "hidden",
                             "description": "Only you see this question and its answer.",
                             "required": False,
@@ -71,6 +81,31 @@ def spec(install: str = "both") -> list[dict]:
                             "description": "Start a fresh session instead of continuing this channel's.",
                             "required": False,
                         },
+                    ],
+                },
+                {
+                    "type": 1,
+                    "name": GOAL,
+                    "description": "Give this channel's agent a goal to keep working toward.",
+                    "options": [
+                        {
+                            "type": 3,
+                            "name": "objective",
+                            "description": (
+                                "What to achieve; pause, resume or clear control the "
+                                "one it already has."
+                            ),
+                            "required": True,
+                        },
+                        {
+                            "type": 3,
+                            "name": "device",
+                            "description": (
+                                "macbook or pc; empty stays on this channel's device."
+                            ),
+                            "required": False,
+                        },
+                        dict(hidden),
                     ],
                 },
                 {
@@ -184,13 +219,13 @@ def flatten(data: dict) -> tuple[str, dict]:
     return name, values
 
 
-def user_id(value) -> str:
+def user_id(value: object) -> str:
     if isinstance(value, dict):
         return str(value.get("id") or "")
     return ""
 
 
-def user_name(value) -> str:
+def user_name(value: object) -> str:
     if isinstance(value, dict):
         return str(value.get("global_name") or value.get("username") or value.get("id") or "they")
     return "they"
