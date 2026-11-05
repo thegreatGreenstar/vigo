@@ -368,6 +368,32 @@ error naming the problem, and nothing is overwritten. Prefer `stateChannel`: a
 DM works only when you and the bot share a server that lets you receive DMs
 from its members.
 
+## Protecting `main`
+
+`main` takes pull requests only, so a failing CI matrix refuses the merge. On a
+private repository GitHub's branch protection and rulesets are paid features,
+so the guard that exists today is a hook every clone installs (`install.sh`
+sets `core.hooksPath`, and `git config core.hooksPath .githooks` does it by
+hand):
+
+```sh
+VIGO_ALLOW_MAIN=1 git push      # the deliberate exception, and the only one
+```
+
+When the repository is public or on Pro, the same rule belongs on GitHub, where
+it also covers machines that never installed the hook:
+
+```sh
+gh api -X PUT repos/thegreatGreenstar/vigo/branches/main/protection --input - <<'JSON'
+{"required_status_checks": {"strict": true, "contexts": ["lint", "no secrets in the tree",
+  "ubuntu-latest · Python 3.12", "ubuntu-latest · Python 3.13", "ubuntu-latest · Python 3.14",
+  "macos-latest · Python 3.12", "macos-latest · Python 3.13", "macos-latest · Python 3.14",
+  "windows-latest · Python 3.12", "windows-latest · Python 3.13", "windows-latest · Python 3.14"]},
+ "enforce_admins": true, "required_pull_request_reviews": null, "restrictions": null,
+ "allow_force_pushes": false, "allow_deletions": false}
+JSON
+```
+
 ## Which device answers
 
 1. `device:` on the command, if you named one.
