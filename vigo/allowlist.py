@@ -235,11 +235,11 @@ class AllowList:
         try:
             entries = self.entries()
         except AllowError as error:
-            return f"⚠️ {error}"
+            return f"{error}"
         lines = [f"The allowlist is in {self.where}."]
         if entries:
             for entry in sorted(entries, key=lambda item: item.until or 0):
-                lines.append(f"• **{metadata_name(entry.name)}** (`{entry.id}`) — {entry.until_text()}")
+                lines.append(f"• **{metadata_name(entry.name)}** (`{entry.id}`), {entry.until_text()}")
         else:
             lines.append("• nobody is allowed for a time.")
         if self.config.users:

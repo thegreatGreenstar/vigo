@@ -182,19 +182,23 @@ def _restart_later(command: list[str], here: Path) -> None:
 def update_self(checkout: Path | None = None, restart: bool = True) -> dict:
     """Pull this checkout, and restart through a supervisor when one runs it."""
     here = Path(checkout or CHECKOUT)
+    before = build_of(here)
     code, said = _run(["git", "pull", "--ff-only"], here)
     if code != 0:
         why = _why(said) or f"git failed ({code})"
         log.info(f"update: git refused ({why})")
         if said:
             log.info("update: git said " + " ".join(said.split()))
-        return {"ok": False, "said": why, "version": __version__}
+        return {"ok": False, "said": why, "version": __version__, "before": before}
     command = _supervisor(here) if restart else None
     if command:
         threading.Thread(target=_restart_later, args=(command, here), daemon=True).start()
-    log.info(f"update: pulled ({'restarting' if command else 'restart it here'})")
+    after = build_of(here)
+    moved = f"{before or '?'} -> {after or '?'}"
+    log.info(f"update: pulled ({moved}; {'restarting' if command else 'restart it here'})")
     return {"ok": True, "said": _why(said) or "up to date",
-            "version": __version__, "restarted": bool(command)}
+            "version": __version__, "restarted": bool(command),
+            "before": before, "after": after}
 
 
 class PeerServer:
@@ -208,7 +212,12 @@ class PeerServer:
         self.server.restart = restart  # type: ignore[attr-defined]
         self.server.version = version  # type: ignore[attr-defined]
         self.server.build = build or build_of(checkout)  # type: ignore[attr-defined]
-        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        # A short poll: `shutdown()` waits for the loop to notice, and half a
+        # second per server is half a second per test.
+        self.thread = threading.Thread(
+            target=self.server.serve_forever,
+            kwargs={"poll_interval": 0.02}, daemon=True,
+        )
 
     def start(self) -> PeerServer:
         self.thread.start()

@@ -159,13 +159,13 @@ class Router:
                 else:
                     used = f"used {int(age // 3600)}h ago"
                 lines.append(
-                    f"`{name}` **up** — {state.health.hostname}, "
+                    f"`{name}` **up**, {state.health.hostname}, "
                     f"OpenCode {state.health.version}, {used}"
                     + (f", {builds[name]}" if builds and name in builds else "")
                     + f" · {state.device.directory}"
                 )
             elif detailed:
-                lines.append(f"`{name}` **down** — {state.error or 'no answer'}")
+                lines.append(f"`{name}` **down**, {state.error or 'no answer'}")
             else:
                 lines.append(f"`{name}` **down**")
         return "\n".join(lines)

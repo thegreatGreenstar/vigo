@@ -37,6 +37,23 @@ def _auth(password: str) -> str:
     return "Basic " + base64.b64encode(f"opencode:{password}".encode()).decode()
 
 
+def busy_since(info: dict) -> float | None:
+    """When the session's turn started, in milliseconds, while it still runs.
+
+    The device stamps `busy` when a turn starts and `idle` when it ends, so a
+    finished turn has an `idle` at least as new as its `busy`.  This is the
+    only record that knows: the run may belong to another daemon, and it
+    outlives this daemon's timeout and its restarts.
+    """
+    stamps = info.get("time") or {}
+    busy, idle = stamps.get("busy"), stamps.get("idle")
+    if not isinstance(busy, (int, float)):
+        return None
+    if isinstance(idle, (int, float)) and idle >= busy:
+        return None
+    return float(busy)
+
+
 class OpenCode:
     def __init__(self, base: str, password: str, timeout: float = 20.0):
         self.base = base.rstrip("/")
@@ -99,12 +116,14 @@ class OpenCode:
         return data.get("data", []) if isinstance(data, dict) else []
 
     def create_session(self, directory: str, title: str, model: dict | None = None,
-                       agent: str | None = None) -> dict:
+                       agent: str | None = None, metadata: dict | None = None) -> dict:
         payload: dict[str, Any] = {"title": title, "location": {"directory": directory}}
         if model:
             payload["model"] = model
         if agent:
             payload["agent"] = agent
+        if metadata:
+            payload["metadata"] = metadata
         data = self._call("POST", "/api/session", payload)
         return data.get("data", {}) if isinstance(data, dict) else {}
 
@@ -118,6 +137,38 @@ class OpenCode:
             {"text": text, "delivery": delivery},
         )
         return data.get("data", {}) if isinstance(data, dict) else {}
+
+    def command(self, session_id: str, name: str, text: str) -> dict:
+        """Run one of the device's slash commands, on a session.
+
+        `/goal <objective>` is the one this bot uses: it admits the objective
+        and starts the agent on it, and the device keeps it across turns.
+        """
+        data = self._call(
+            "POST",
+            f"/api/session/{session_id}/command",
+            {"name": name, "text": text},
+        )
+        return data.get("data", {}) if isinstance(data, dict) else {}
+
+    def set_goal(self, session_id: str, objective: str) -> dict:
+        return self.command(session_id, "goal", objective)
+
+    def goal(self, session_id: str) -> dict | None:
+        """The session's goal, or None when it has none.
+
+        `status` is `active`, `paused` or `complete`; a paused goal names its
+        reason, which is how a device that restarted under an active goal says
+        so.  None means no goal, and an empty dict a device that does not
+        answer: the caller must not read one as the other.
+        """
+        data = self._call(
+            "POST", "/api/rpc/opencode.goal/get", {"input": {"sessionID": session_id}},
+        )
+        goal = (data or {}).get("output") if isinstance(data, dict) else None
+        if goal is None:
+            return None
+        return goal if isinstance(goal, dict) else {}
 
     def interrupt(self, session_id: str) -> None:
         self._call("POST", f"/api/session/{session_id}/interrupt")
@@ -137,6 +188,19 @@ class OpenCode:
             "POST",
             f"/api/session/{session_id}/permission/{request_id}/reply",
             {"decision": decision, "message": message or None},
+        )
+
+    def forms(self, session_id: str) -> list[dict]:
+        """The forms this session still waits on."""
+        data = self._call("GET", f"/api/session/{session_id}/form")
+        return data.get("data", []) if isinstance(data, dict) else []
+
+    def reply_form(self, session_id: str, form_id: str, answer: dict) -> None:
+        """Answer a form.  One reply carries every field, so collect them first."""
+        self._call(
+            "POST",
+            f"/api/session/{session_id}/form/{form_id}/reply",
+            {"answer": answer},
         )
 
     def user_activity(self, session_id: str) -> float:

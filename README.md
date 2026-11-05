@@ -1,7 +1,7 @@
 # vigo
 
 Your OpenCode agent, on your own machines, reachable from Discord.You ask in a channel with `/vigo ask`, and the answer comes back there. The
-work runs on your Mac or your PC — whichever one you last used — against the
+work runs on your Mac or your PC, whichever one you last used, against the
 project directory that device points at. Every tool that needs a permission
 asks *you* in a DM, with a button. Nothing runs because someone typed
 something in a channel; only because you clicked.
@@ -20,15 +20,19 @@ Discord  <──gateway/HTTP──>  vigo (this program)  <──HTTP──>  op
 
 - `vigo` holds the Discord connection, and every device runs its own copy.
 - `opencode serve` is OpenCode's own API on that device. `vigo` creates a
-  session in the project directory, sends the prompt, and streams the answer
-  back as the message it keeps editing.
+  session in the project directory, sends the prompt, and turns the deferred
+  message into a short "got it" before the answer arrives as its own message.
 - Each Discord channel remembers one OpenCode session per device, so
-  follow-ups continue the same conversation.
+  follow-ups continue the same conversation. Both daemons and any restart
+  find that session rather than making another: the device marks the session
+  it made with the channel it belongs to, and a daemon whose own state has
+  forgotten adopts it. Only `/vigo ask new:true` (or a cleared session) starts
+  a fresh one.
 
 Only one daemon answers a given use: they all try to acknowledge it at once,
 Discord takes the first, and the rest are told it was already answered and
 stop. Whoever wins can drive every device, so it does not matter which one it
-is — and a device answers even when its own daemon is not running.
+is, and a device answers even when its own daemon is not running.
 
 ## What can and cannot happen
 
@@ -62,7 +66,7 @@ is — and a device answers even when its own daemon is not running.
 4. **Installation** → turn on **User Install** (and **Guild Install** if you
    want the bot in a server of your own). Under *Default Install Settings*, the
    user-install scopes are `applications.commands`.
-5. Add it to your own account — no server, no invite permission needed:
+5. Add it to your own account. No server and no invite permission are needed:
 
    ```
    https://discord.com/oauth2/authorize?client_id=<APP_ID>&integration_type=1&scope=applications.commands
@@ -70,13 +74,13 @@ is — and a device answers even when its own daemon is not running.
 
    In the Discord client it appears under **Settings → Apps**, and `/vigo`
    works in your DMs with it, in group DMs, and in the command picker of any
-   server you are in — even servers the bot is not a member of.
+   server you are in, even servers the bot is not a member of.
 6. Get **your** numeric user id: Settings → Advanced → Developer Mode on, then
-   right-click your avatar → **Copy User ID**. The username is not enough —
+   right-click your avatar → **Copy User ID**. The username is not enough.
    every check here is an id.
 
 If you also want to invite it to a server (its own avatar posting there), use
-the `bot` scope and these permissions — View Channels, Send Messages, Read
+the `bot` scope and these permissions: View Channels, Send Messages, Read
 Message History:
 
 ```
@@ -87,12 +91,12 @@ The command is registered globally on the application, so it serves both kinds
 of install at once. Discord takes up to an hour to show a changed command; the
 first start is usually a minute.
 
-**What a user install can and cannot do.** Answers, progress edits and extra
-messages all go through the interaction's own token, so they work in a channel
-where the bot is not a member. Two things need the bot in the channel: posting
-an answer that arrives *after* the interaction's 15 minutes, and posting a
-permission card in the channel when a DM is impossible. Both fall back with a
-line in the log; the normal paths do not need it.
+**What a user install can and cannot do.** The acknowledgement, the answer and
+extra messages all go through the interaction's own token, so they work in a
+channel where the bot is not a member. Two things need the bot in the channel:
+posting an answer that arrives *after* the interaction's 15 minutes, and posting
+a fallback line when a DM is impossible. Both fall back with a line in the log;
+the normal paths do not need it.
 
 ### 2. OpenCode on each device
 
@@ -151,12 +155,12 @@ Then fill it in:
 | `device` | this machine's entry; the same file runs on both, with this line changed |
 | `password` | the OpenCode password; a device may set its own with `password` in its entry |
 | `users` | ids that may always ask, besides the owner |
-| `install` | `both` (default), `user` or `guild`: which install kinds the command supports. Keep `both` — a user install can be used in servers too |
+| `install` | `both` (default), `user` or `guild`: which install kinds the command supports. Keep `both`, because a user install can be used in servers too |
 | `model` | provider, model id, optional `variant` |
 | `devices` | name, base URL and project directory of each machine |
 | `activityWindow` | seconds of "recent use" that make a device the one to use (0 disables) |
 | `timeout` | seconds before a run says the device is still working (30–3600); it keeps watching |
-| `editEvery` | seconds between progress edits of the Discord message |
+| `editEvery` | unused; an older settings file that names it still loads |
 | `stateChannel` | optional, but recommended: a private channel the bot can read, where the allowlist message lives; empty means the bot's DM with you |
 
 A key the file does not know stops the bot and names the key, and so does a
@@ -181,6 +185,21 @@ name (`python3.14 -m vigo`), or install the package into a 3.12+ interpreter
 Until it exits, that terminal is the bot. Run it on both devices; both can
 answer, and only one answers each question.
 
+### Saying something to the owner from a session
+
+The bot can DM you from the machine the settings live on, which is what an
+OpenCode session that finished a job needs — no Discord channel involved:
+
+```sh
+python3 -m vigo dm "the tests pass and the branch is ready"
+echo "longer text" | python3 -m vigo dm
+```
+
+It uses the same token from `tokenCommand`, sends to `owner`, and exits
+non-zero with the reason when Discord will not take it. `/vigo upgrade` uses
+the same path to tell you what it moved, naming each device and the commit it
+went from and to.
+
 ### 5. The other device
 
 The second machine needs the repo, Python 3.12 or newer, and its own entry in the settings. Clone it over SSH and run
@@ -193,7 +212,7 @@ cd vigo
 ```
 
 It checks the Python, makes `~/.config/vigo/vigo.json` from the example (never overwriting one), installs
-`~/.local/libexec/opencode-serve.sh`, and — where systemd exists — both user units, pointed at that checkout and that
+`~/.local/libexec/opencode-serve.sh`, and, where systemd exists, both user units, pointed at that checkout and that
 interpreter. Then:
 
 1. In the settings, set `device` to this machine's name, keep the **same** `devices` list as the other machine, and
@@ -209,7 +228,7 @@ interpreter. Then:
    OPENCODE_HOSTNAME=0.0.0.0 ./deploy/opencode-serve.sh
    ```
    or `systemctl --user enable --now opencode-serve vigo`.
-3. Reach each other over the **Tailscale** address — never the LAN address and never a port forwarded from the
+3. Reach each other over the **Tailscale** address, never the LAN address and never a port forwarded from the
    router. See "Reaching the other device".
 
 
@@ -255,12 +274,12 @@ ssh -N -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 \
 port would collide with this daemon's own. Keep the tunnel up with `deploy/dev.vigo.tunnel.plist` (macOS) or
 `deploy/vigo-tunnel.service` (Linux); both restart it when it drops.
 
-Either way the password still matters — it is the only check OpenCode makes — but the port is never reachable by
+Either way the password still matters, because it is the only check OpenCode makes, but the port is never reachable by
 anything that is not on the tailnet or holding the SSH key.
 
 ### 6. Start on login
 
-`./install.sh` puts both services in place, and they come up when you log in — not at boot, so nothing waits on a
+`./install.sh` puts both services in place, and they come up when you log in, not at boot, so nothing waits on a
 password and nothing runs before your Keychain is unlocked.
 
 - **macOS**: two LaunchAgents, `dev.vigo.opencode` and `dev.vigo.bot`, both with `RunAtLoad` and `KeepAlive`. Check
@@ -277,13 +296,13 @@ Tailscale is up, and the supervisor simply tries again.
 
 What the Developer Portal asks for, if it helps:
 
-- **Name**: `Vigo` — **Bot username**: `vigo`
+- **Name**: `Vigo`. **Bot username**: `vigo`
 - **About me**: *Vigo is my OpenCode agent on my own machines. I ask from a
   channel, the work runs on my Mac or PC, and every tool that needs a
   permission waits for my click. Nothing is stored: no message text, no logs of
   what was said.*
 - **Tags**: `AI`, `Productivity`, `Developer Tools`, `Utilities`
-- **Icon**: `art/vigo-icon-41.png` (512×512) — Aogo's blossom, petals shifted to
+- **Icon**: `art/vigo-icon-41.png` (512×512), Aogo's blossom, petals shifted to
   DeepSeek blue, **41** on the wing where Aogo had 55 (Opus 5.5), and **VI** on
   the hat tag where Aogo had AO. Rebuild it with `./art/make-icon.sh`;
   `art/recolor.py` and `art/badge.swift` are what it runs, and
@@ -293,12 +312,13 @@ What the Developer Portal asks for, if it helps:
 
 | Command | Who | What happens |
 | --- | --- | --- |
-| `/vigo ask prompt:<text> [device] [hidden] [new]` | approved users | asks the device you last worked on; the answer is public in the channel unless `hidden:true`, in which case only you see the question and answer |
+| `/vigo ask prompt:<text> [device] [goal:<true｜false>] [hidden] [new]` | approved users | asks the device you last worked on; the question is acknowledged at once and the answer follows as a new message, public in the channel unless `hidden:true`, in which case only you see the question and answer |
+| `/vigo goal objective:<text> [device] [hidden]` | approved users | gives the channel's agent an objective to keep working toward, with no question; `pause`, `resume` and `clear` control the goal it already has |
 | `/vigo quick prompt:<text> [device] [hidden]` | approved users | one answer, with no session and no tools |
 | `/vigo status` | approved users | the channel's session, its device, tokens and cost; the next three questions that wait, and the last three that ran |
 | `/vigo devices` | approved users | what is up, and which one a question would go to |
 | `/vigo stop` | owner | interrupts the channel's run, and drops the questions that wait behind it |
-| `/vigo upgrade [device]` | owner | pulls and restarts a daemon that runs a different commit; empty does every one of them |
+| `/vigo upgrade [device]` | owner | pulls and restarts a daemon that runs a different commit; empty does every one of them, and the owner gets a DM naming each device and the commit it moved from and to |
 | `/vigo allow user:<who> [for:<2h｜1d｜7d｜perm>]` | owner | lets someone ask, for a time; 1 day when unnamed |
 | `/vigo deny user:<who>` | owner | takes that allow back |
 | `/vigo allowed` | owner | who may ask, and until when |
@@ -310,23 +330,40 @@ could show it to a channel. `/vigo stop` takes `hidden` like the questions do.
 
 One question runs in a channel at a time. A question asked while one runs
 waits its turn, and the message it came from says how many run before it. The
-line holds ten; `/vigo stop` clears it. `/vigo status` names the next three and
-the last three that ran. A run that passes `timeout` says the device is still
-working and keeps watching: the answer still lands in its message, and the
-channel stays busy until it does.
+line holds ten. `/vigo stop` clears it. `/vigo status` names the next three and
+the last three that ran.
+
+The deferred message becomes "Got it, working on it" at once, and the answer
+is a new message when the agent is done, so Discord notifies you. The answer
+carries its first two paragraphs, at most one Discord message. A follow-up in
+the same session reaches the rest. A run that passes `timeout` says the device
+is still working and keeps watching. The answer still arrives, and the channel
+stays busy until it does. No progress line is posted. If the device is not
+working on it by then — nothing on the session is newer than the question — the
+run ends and says so, because a device that took the question and will not run
+it would hold the channel for ever with every later question behind it.
+
+An ask that is a task gives the agent a **goal**, and it works toward that
+until it is met instead of answering once. A question stays a question:
+`/vigo ask goal:true` or `goal:false` says which it is when the wording is read
+wrong. `/vigo goal objective:…` sets one without asking anything, and
+`/vigo goal pause`, `resume` and `clear` control the one the channel has.
+`/vigo status` names the goal and the state the device keeps for it, including
+a goal the device paused because it restarted under it.
+
 
 A run is not always the daemon's that answers `/vigo status`: both daemons get
 every command, Discord takes the first acknowledgement, and either may restart
 under a run. So `status` asks the device's own session, which is the record
-they share, and reports the device working when it is — even with no run in
+they share, and reports the device working when it is, even with no run in
 this process. A question asked then is refused with that reason instead of
 joining the agent's turn; `new:true` still starts a fresh session.
 
 The allowlist is kept in a message the bot owns: in `stateChannel` when the
 file names one, otherwise in the bot's DM with you. It is read before every
 decision, so an allow made from the Mac holds on the PC at once, and it
-survives restarts. If that message cannot be read — a channel the bot cannot
-see, or a message edited into something it cannot parse — changes stop with an
+survives restarts. If that message cannot be read, because a channel the bot cannot
+see, or a message edited into something it cannot parse, changes stop with an
 error naming the problem, and nothing is overwritten. Prefer `stateChannel`: a
 DM works only when you and the bot share a server that lets you receive DMs
 from its members.
@@ -341,23 +378,28 @@ from its members.
    start a server.
 
 Because the answer needs that device's OpenCode to be running, a question
-fails when no device is up — that is the honest answer, not a queue.
+fails when no device is up. That is the honest answer, not a queue.
 
 ## Permissions
 
 When the agent wants to run a command or write a file, OpenCode raises a
 permission request. `vigo` sends it to your DMs:
 
-> **🔐 Permission needed** on `macbook`
+> **Permission needed** on `macbook`
 > The agent asks to run `bash`:
 > > `git status`
 > **[Allow once] [Always allow] [Deny]**
 
 Clicks from anyone but the owner are refused and change nothing. The run
-waits until you answer; the channel message says it is waiting. `Always allow`
-saves the rule in OpenCode for that project.
+waits until you answer, and the channel message says approval is needed.
+`Always allow` saves the rule in OpenCode for that project.
 
-OpenCode's own permissions rules still apply — `vigo` does not loosen them.
+When the agent asks you a question of its own, it reaches the same DM as a card
+with a button for each choice and an **Other** button for a typed answer. The
+run waits for the answer, and other channels keep working. The card and its
+answer never appear in the channel.
+
+OpenCode's own permissions rules still apply. `vigo` does not loosen them.
 If a project's config allows everything, the bot will not ask, so decide what
 that project may do in its own `opencode.json`.
 
@@ -368,8 +410,8 @@ that project may do in its own `opencode.json`.
 - Use a password made for this, not one you reuse: it grants shell execution
   on that machine. **One per device**, so a secret that leaks reaches one
   machine and not both.
-- Keep `~/.config/vigo/vigo.json` at mode 0600 — the program refuses to
-  start otherwise — and never commit it. `git status` should never show it.
+- Keep `~/.config/vigo/vigo.json` at mode 0600, because the program refuses to
+  start otherwise, and never commit it. `git status` should never show it.
 - Invite the bot only to servers you control. Its commands are guild-scoped to
   each server it is in.
 - The bot stores nothing about what was said: no message text in the log, no
@@ -377,7 +419,7 @@ that project may do in its own `opencode.json`.
 
 ### Keeping the secrets off the disk
 
-Each secret — `token`, and every device's `password` — may be given three ways,
+Each secret, `token` and every device's `password`, may be given three ways,
 one of them only:
 
 | Key | What it is |
@@ -414,7 +456,7 @@ then the settings file holds no secret at all:
 whatever holds the secret has to hand that plaintext to `opencode serve` and to
 this bot when they start. The Enclave therefore protects the secret *at rest*
 (no plaintext on disk, the Keychain's own access control, no copy in a backup
-of the settings file) — not its use: a process running as you can read the
+of the settings file), not its use: a process running as you can read the
 environment of another. To keep the peer's password off this machine as well
 you would need a key exchange OpenCode does not have, so the *other* device's
 password is necessarily here; use a different one there so it unlocks nothing
@@ -445,13 +487,13 @@ so the settings file says:
 ```
 
 A `.cred` file decrypts only on the machine (and user, with `--user`) that
-sealed it — copying it to the other device gains nothing, which is the point.
+sealed it, copying it to the other device gains nothing, which is the point.
 
 ### The two devices cannot hold the same file
 
 Every daemon needs the password of *every* device, because it reaches each one
 over HTTP. So each machine can seal **its own** password and must hold the
-**peer's** password some other way — plainly in its 0600 settings file, or in a
+**peer's** password some other way, plainly in its 0600 settings file, or in a
 0600 file. That asymmetry is unavoidable without a key exchange OpenCode does
 not offer:
 
@@ -476,7 +518,7 @@ with the same caveat about the running process.
 | Where | What |
 | --- | --- |
 | `~/.config/vigo/vigo.json` | the settings, mode 0600 |
-| `~/.local/state/vigo/state.json` | channel → session, permission card tickets, the allowlist message's id; folder 0700, file 0600 |
+| `~/.local/state/vigo/state.json` | channel → the session it has on each device, permission card tickets, the allowlist message's id; folder 0700, file 0600 |
 | Discord | the answers, and the allowlist message |
 
 A state file that cannot be read is kept as `state.json.bad` and a fresh one
@@ -485,8 +527,15 @@ starts, with an error in the log. It holds no conversation text.
 ## Tests
 
 ```sh
-python3 -m unittest discover -s tests -t . -v
+python3 -m unittest discover -s tests -t . -v   # the canonical run
+python3 -m tests.parallel                       # the same suite on threads
 ```
+
+The parallel runner is standard library only: every test builds its own
+temporary directory and its own fakes on port 0, so nothing is shared and the
+cases can run beside each other. `--slowest 5` names where the time goes, and
+the canonical runner above stays what CI uses — a fault in the runner would
+show up there rather than hide here.
 
 No network and no Discord: a fake Discord REST API, a fake gateway and a fake
 OpenCode on 127.0.0.1. The suite covers the settings file and its refusals,
@@ -504,8 +553,10 @@ CI runs the same suite on Linux, macOS and Windows for Python 3.12, 3.13 and
 | --- | --- |
 | `closed with 4004` | the token is not the bot's; reset it and copy it again |
 | `closed with 4014` | the bot asked for an intent Discord does not allow it; the bot asks only for `GUILDS` |
-| `no device answers` | no `opencode serve` is reachable from this daemon — check the URL, the port, and the password |
+| `no device answers` | no `opencode serve` is reachable from this daemon: check the URL, the port, and the password |
 | `Permission needed` never arrives | the owner and the bot do not share a server that allows DMs, so the card falls back to the channel |
 | the answer says `still running` | the run passed `timeout`; it keeps watching, `/vigo status` shows it, `/vigo stop` ends it |
+| the answer says `never started` | the device admitted the question and its session never began the turn: `opencode serve` there is stuck, so restart it and ask again |
+| a goal says `paused` | the device restarted while the goal was active; `/vigo goal resume` starts it again |
 | a question says `Queued` | one run at a time per channel; it starts when the one before it ends, or `/vigo stop` clears it |
 | a channel has no session | the first ask creates one; `new:true` starts a fresh one on purpose |

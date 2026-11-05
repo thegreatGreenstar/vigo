@@ -35,6 +35,30 @@ class ChunkTest(unittest.TestCase):
         for piece in pieces:
             self.assertLessEqual(len(piece), 200)
 
+    def test_brief_keeps_two_paragraphs(self):
+        body = "one\n\n" + "two\n" * 50 + "\nthree"
+        kept = text.brief(body)
+        self.assertIn("one", kept)
+        self.assertIn("two", kept)
+        self.assertNotIn("three", kept)
+        self.assertIn("ask a follow-up", kept)
+
+    def test_brief_does_not_split_a_code_fence(self):
+        body = "before\n\n```python\nprint(1)\n\nprint(2)\n```\n\nafter"
+        kept = text.brief(body)
+        self.assertIn("print(1)", kept)
+        self.assertIn("print(2)", kept)
+        self.assertNotIn("after", kept)
+        self.assertEqual(kept.count("```"), 2)
+
+    def test_brief_stays_inside_one_message(self):
+        kept = text.brief("x" * 4000)
+        self.assertLessEqual(len(kept), text.LIMIT)
+        self.assertTrue(kept.endswith(text.BRIEF))
+
+    def test_brief_is_empty_for_an_empty_answer(self):
+        self.assertEqual(text.brief("  \n "), "")
+
     def test_tail_and_shorten(self):
         self.assertEqual(text.tail("abcdef", 4), "…def")
         self.assertEqual(text.shorten("abcdef", 4), "abc…")
