@@ -258,8 +258,20 @@ port would collide with this daemon's own. Keep the tunnel up with `deploy/dev.v
 Either way the password still matters — it is the only check OpenCode makes — but the port is never reachable by
 anything that is not on the tailnet or holding the SSH key.
 
+### 6. Start on login
 
-What the Developer Portal asks for, if it helps:
+`./install.sh` puts both services in place, and they come up when you log in — not at boot, so nothing waits on a
+password and nothing runs before your Keychain is unlocked.
+
+- **macOS**: two LaunchAgents, `dev.vigo.opencode` and `dev.vigo.bot`, both with `RunAtLoad` and `KeepAlive`. Check
+  them with `launchctl print gui/$(id -u)/dev.vigo.bot | head -20`, read their output in
+  `~/.local/state/vigo/*.err`, and stop one with `launchctl bootout gui/$(id -u)/dev.vigo.bot`.
+- **Linux**: two systemd user units. `systemctl --user enable --now opencode-serve vigo`; they start at login too
+  unless you run `loginctl enable-linger $USER`, which starts them before you log in and is only useful if the
+  password does not need your login keychain.
+
+Both restart themselves after a crash, which matters at login: OpenCode binds the tailnet address, so it fails until
+Tailscale is up, and the supervisor simply tries again.
 
 ## The Discord application, in words
 

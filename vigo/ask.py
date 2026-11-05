@@ -1,8 +1,8 @@
 """One question, asked on a device, answered in Discord.
 
-The message starts as a deferred answer, becomes a live progress line while
-the agent works, and ends as the answer itself.  A tool that needs permission
-asks its owner in a DM, and the run waits for the answer.
+The message is deferred, stays as Discord's own "thinking" indicator while the
+agent works, and is edited into the answer when it is ready.  A tool that needs
+permission asks its owner in a DM, and the run waits for the answer.
 """
 
 from __future__ import annotations
@@ -85,25 +85,32 @@ class Ask:
         if note:
             content += f"\n\n{note}"
         chunks = text.chunk(content) or ["_nothing to say_"]
-        # The answer is its own message, and the "thinking" placeholder goes
-        # away: an edit would leave an "edited" mark and no notification.
-        posted = 0
-        for piece in chunks:
-            try:
-                self.app.api.followup(self.token, {
-                    "content": piece,
-                    "allowed_mentions": {"parse": []},
-                })
-                posted += 1
-            except Exception as error:
-                log.error(f"ask: cannot post the answer ({error})")
-                break
-        if not posted:
-            if not self._edit(chunks[0]):
-                self._late_answer(chunks[0])
-            return
-        if not self.app.api.delete_original(self.token):
-            log.info("ask: the placeholder stayed; the answer was posted anyway")
+        # The deferred response is the message this run owns, so the answer
+        # goes into it: an edit keeps it where the question was asked and keeps
+        # the ephemeral state Discord deferred it with.  A followup must not be
+        # the first thing sent: Discord turns one sent before the deferred
+        # message has any content into an edit of it, so a later "delete the
+        # original" would delete the answer itself.  Only the overflow becomes
+        # followups, and they are ephemeral when the answer is.
+        if not self._edit(chunks[0]):
+            if self.hidden:
+                log.error("ask: the run outlived its ephemeral message; the answer is lost")
+            else:
+                log.info("ask: the deferred message is gone; posting the answer in the channel")
+                for piece in chunks:
+                    self._late_answer(piece)
+        else:
+            extra = {"flags": 64} if self.hidden else {}
+            for piece in chunks[1:]:
+                try:
+                    self.app.api.followup(self.token, {
+                        "content": piece,
+                        "allowed_mentions": {"parse": []},
+                        **extra,
+                    })
+                except Exception as error:
+                    log.error(f"ask: cannot post the rest of the answer ({error})")
+                    break
         log.info(
             f"ask: {self.device_name} · {text.duration(self.run.elapsed)} · "
             f"{steps} step(s) · context {text.tokens(context)} · "
@@ -123,6 +130,11 @@ class Ask:
             })
         except Exception as error:
             log.error(f"ask: cannot post the answer at all ({error})")
+
+    def _tell(self, content: str) -> None:
+        """An error from the run, visible even when the deferred message is gone."""
+        if not self._edit(content):
+            self._late_answer(content)
 
     # -- the session ------------------------------------------------------
 
@@ -219,7 +231,7 @@ class Ask:
             self._run()
         except Exception as error:  # a run always ends, and always unregisters
             log.error(f"ask: broke on {self.device_name}: {type(error).__name__}: {error}")
-            self._edit(f"❌ the run on `{self.device_name}` broke: {text.shorten(str(error), 300)}")
+            self._tell(f"❌ the run on `{self.device_name}` broke: {text.shorten(str(error), 300)}")
         finally:
             self.app.unregister_run(self.channel_id)
 
@@ -230,7 +242,7 @@ class Ask:
             session = self._open_session()
         except OpenCodeError as error:
             log.info(f"ask: cannot open a session ({error.message})")
-            self._edit("❌ the device would not open a session.")
+            self._tell("❌ the device would not open a session.")
             return
         self.run.session = session
         self.app.register_run(self.channel_id, self.run)
@@ -244,7 +256,7 @@ class Ask:
         except OpenCodeError as error:
             session_stop.set()
             log.info(f"ask: the prompt was refused ({error.message})")
-            self._edit("❌ the device would not take the question.")
+            self._tell("❌ the device would not take the question.")
             self.app.unregister_run(self.channel_id)
             return
 

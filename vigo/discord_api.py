@@ -150,15 +150,23 @@ class Discord:
         """
         return self._call("POST", f"/interactions/{interaction_id}/{token}/callback", payload)
 
-    def edit_original(self, token: str, payload: dict) -> Reply:
-        return self._call("PATCH", f"/webhooks/{self.app_id}/{token}/messages/@original", payload)
+    def edit_original(self, token: str, payload: dict) -> dict:
+        reply = self._call("PATCH", f"/webhooks/{self.app_id}/{token}/messages/@original", payload)
+        if not reply.ok:
+            raise self._error(reply, "cannot edit the answer", "interaction response")
+        return reply.body if isinstance(reply.body, dict) else {}
 
-    def followup(self, token: str, payload: dict) -> Reply:
-        return self._call("POST", f"/webhooks/{self.app_id}/{token}", payload)
+    def followup(self, token: str, payload: dict) -> dict:
+        """A message after the answer has been sent.
 
-    def delete_original(self, token: str) -> bool:
-        reply = self._call("DELETE", f"/webhooks/{self.app_id}/{token}/messages/@original")
-        return reply.ok
+        Discord treats the first one sent right after a deferral as an edit of
+        the deferred message, so callers only use this once the answer itself
+        is in that message.
+        """
+        reply = self._call("POST", f"/webhooks/{self.app_id}/{token}", payload)
+        if not reply.ok:
+            raise self._error(reply, "cannot post a followup", "interaction response")
+        return reply.body if isinstance(reply.body, dict) else {}
 
     # -- messages ---------------------------------------------------------
 

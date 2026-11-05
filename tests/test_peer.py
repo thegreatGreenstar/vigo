@@ -8,7 +8,7 @@ from vigo.peer import PeerClient, PeerServer, build_of, update_self
 
 
 def git(*args: str, cwd: Path) -> str:
-    done = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, check=True)
+    done = subprocess.run(["git", "-c", "commit.gpgsign=false", *args], cwd=cwd, capture_output=True, text=True, check=True)
     return done.stdout.strip()
 
 

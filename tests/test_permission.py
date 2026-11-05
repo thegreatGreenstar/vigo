@@ -35,7 +35,7 @@ class PermissionTest(unittest.TestCase):
         return self.app
 
     def said(self) -> list[str]:
-        """Everything the bot posted: a command edits, an answer follows up."""
+        """Everything the bot posted: a command edits, an answer edits its own."""
         return [entry["content"] for entry in self.discord.edits + self.discord.followups]
 
     def button(self, app, custom: str, who: str = OWNER):
