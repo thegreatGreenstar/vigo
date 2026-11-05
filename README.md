@@ -383,6 +383,9 @@ VIGO_ALLOW_MAIN=1 git push      # the deliberate exception, and the only one
 When the repository is public or on Pro, the same rule belongs on GitHub, where
 it also covers machines that never installed the hook:
 
+Only the full-matrix names are worth requiring: the `quick` jobs exist for
+drafts, and a draft cannot merge anyway.
+
 ```sh
 gh api -X PUT repos/thegreatGreenstar/vigo/branches/main/protection --input - <<'JSON'
 {"required_status_checks": {"strict": true, "contexts": ["lint", "no secrets in the tree",
@@ -592,7 +595,17 @@ gateway's handshake, heartbeats and resume, and two daemons answering one use
 exactly once.
 
 CI runs the same suite on Linux, macOS and Windows for Python 3.12, 3.13 and
-3.14, plus a lint and a check that no token is in the tree.
+3.14, plus a lint and a check that no token is in the tree. It does that in two
+stages, so a draft answers the cross-platform question quickly:
+
+| stage | what runs | why |
+| --- | --- | --- |
+| draft pull request | `quick`: one Python (3.14, the newest in the matrix) on all three OSes | a path, a socket or a clock that differs by platform shows up in one job per OS instead of three |
+| ready for review, or a push to `main` | `test`: all three OSes × 3.12, 3.13, 3.14 | version-specific breakage, which one Python cannot show |
+
+Lint and the secrets check are the same in both, because they are cheap and
+platform-free. Marking a draft ready runs the full matrix; converting it back
+to a draft runs the quick one again.
 ## Troubleshooting
 
 | What you see | What it means |

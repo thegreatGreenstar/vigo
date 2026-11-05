@@ -1,9 +1,19 @@
 name: tests
 
+# Two stages, so a draft answers the cross-platform question in one Python and
+# a pull request that is ready answers the version question too.
+#
+#   draft        quick: one Python (the newest in the matrix) on every OS
+#   ready        test:  every OS on every Python
+#   push to main test, because that is what the branch holds
+#
+# Lint and the secrets check are cheap and platform-free, so they run on both.
+
 on:
   push:
     branches: [main]
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
   workflow_dispatch:
 
 permissions:
@@ -13,9 +23,35 @@ concurrency:
   group: tests-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  # The newest Python in the matrix: what a draft runs everywhere.
+  QUICK_PYTHON: "3.14"
+
 jobs:
+  quick:
+    name: quick · ${{ matrix.os }}
+    if: github.event_name == 'pull_request' && github.event.pull_request.draft
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ env.QUICK_PYTHON }}
+
+      - name: Compile every file
+        run: python -m compileall -q vigo tests
+
+      - name: Run the tests
+        run: python -m unittest discover -s tests -t . -v
+
   test:
     name: ${{ matrix.os }} · Python ${{ matrix.python }}
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
