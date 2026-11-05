@@ -64,3 +64,34 @@ class UpdateTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PeerPasswordTest(unittest.TestCase):
+    """The peer server checks the password a peer will send: this device's own."""
+
+    def test_it_uses_this_devices_password_not_the_fallback(self):
+        from vigo.app import App
+        from vigo.config import Device, Config
+
+        settings = Config(
+            token="t", app_id="1", owner="2", device="fresh-device", password="",
+            devices={
+                "fresh-device": Device("fresh-device", "http://127.0.0.1:1", "/a", "mine"),
+                "rotten-device": Device("rotten-device", "http://127.0.0.1:2", "/b", "theirs"),
+            },
+        )
+        app = App(settings, api=None, state=None)
+        self.assertEqual(app.peer_password(), "mine")
+
+    def test_a_shared_password_is_still_used(self):
+        from vigo.app import App
+        from vigo.config import Device, Config
+
+        settings = Config(
+            token="t", app_id="1", owner="2", device="fresh-device", password="shared",
+            devices={
+                "fresh-device": Device("fresh-device", "http://127.0.0.1:1", "/a", "shared"),
+            },
+        )
+        app = App(settings, api=None, state=None)
+        self.assertEqual(app.peer_password(), "shared")
