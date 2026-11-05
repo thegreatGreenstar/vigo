@@ -462,15 +462,20 @@ class App:
             self._say(token, "❌ the device would not answer.")
             return
         chunks = text.chunk(answer) or ["_nothing to say_"]
-        self._say(token, chunks[0])
-        for extra in chunks[1:]:
+        posted = 0
+        for piece in chunks:
             try:
                 self.api.followup(token, {
-                    "content": extra, "allowed_mentions": {"parse": []},
+                    "content": piece, "allowed_mentions": {"parse": []},
                 })
+                posted += 1
             except DiscordError as error:
-                log.error(f"quick: cannot post the rest ({error.message})")
-                return
+                log.error(f"quick: cannot post the answer ({error.message})")
+                break
+        if not posted:
+            self._say(token, chunks[0])
+            return
+        self.api.delete_original(token)
         log.info(f"quick: answered on {pick.name}")
 
     def peer_password(self) -> str:

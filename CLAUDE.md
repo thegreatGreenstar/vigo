@@ -109,6 +109,13 @@ edit anything here.
 `deploy/` holds the service units and the launchers that unseal the password (Keychain on macOS, systemd-creds on
 Linux). `art/` holds the icon pipeline.
 
+## Commits
+
+Greenstar signs every commit by hand, with a YubiKey and Touch ID, so a commit is a cost he pays each time. Batch the
+work: **one commit per request, or fewer** — never one per change, and never while changes are still landing. Run the
+full suite once, stage everything, and give him the single message he should sign. If he cancels a signature, the work
+stays staged: leave it staged, do not retry, and do not commit again until he says so.
+
 ## Finishing
 
 - Status: **DONE**, **DONE_WITH_CONCERNS** (each with its severity), **BLOCKED** (what blocks it, what was tried), or

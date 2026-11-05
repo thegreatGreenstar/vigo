@@ -156,6 +156,10 @@ class Discord:
     def followup(self, token: str, payload: dict) -> Reply:
         return self._call("POST", f"/webhooks/{self.app_id}/{token}", payload)
 
+    def delete_original(self, token: str) -> bool:
+        reply = self._call("DELETE", f"/webhooks/{self.app_id}/{token}/messages/@original")
+        return reply.ok
+
     # -- messages ---------------------------------------------------------
 
     def open_dm(self, user_id: str) -> str:

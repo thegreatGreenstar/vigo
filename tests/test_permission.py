@@ -34,6 +34,10 @@ class PermissionTest(unittest.TestCase):
         self.app = App(settings, api=api, state=State(directory / "state.json"))
         return self.app
 
+    def said(self) -> list[str]:
+        """Everything the bot posted: a command edits, an answer follows up."""
+        return [entry["content"] for entry in self.discord.edits + self.discord.followups]
+
     def button(self, app, custom: str, who: str = OWNER):
         interaction = self.discord.next_id("int")
         app.handle_interaction({
@@ -87,7 +91,7 @@ class PermissionTest(unittest.TestCase):
             session, request, decision = self.device.permission_replies[0]
             self.assertEqual(decision, "once")
             self.assertTrue(self.discord.wait_for(
-                lambda: any("all clean" in str(edit["content"]) for edit in self.discord.edits), 10))
+                lambda: any("all clean" in str(content) for content in self.said()), 10))
             thread.join(5)
         self.assertFalse(thread.is_alive())
 
