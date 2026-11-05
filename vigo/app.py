@@ -9,7 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from . import ask as asking
-from . import commands, goal, log, text
+from . import commands, goal, lease as leasing, log, text
 from .allowlist import AllowError, AllowList
 from .config import Config, Device
 from .discord_api import Discord, DiscordError
@@ -947,6 +947,17 @@ class App:
         title = f"Discord #{channel_name}" if channel_name else "Discord DM"
         try:
             session = asking.open_session(self, client, device, channel_id, False, title)
+            if leasing.held_by_other(client, session, self.config.device):
+                # A goal starts a turn of its own, so it cannot land in one
+                # another daemon is running. It takes no lease, because it
+                # would have nothing to release it with.
+                log.info("goal: another daemon holds this channel's session")
+                self._say(
+                    token,
+                    "Another vigo is asking in this channel. "
+                    "`/vigo status` shows it, and `/vigo stop` ends it.",
+                )
+                return
             client.set_goal(session, objective)
         except OpenCodeError as error:
             log.info(f"goal: the device refused ({error.message})")

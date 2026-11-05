@@ -42,6 +42,16 @@ def gaps(node: ast.FunctionDef | ast.AsyncFunctionDef) -> list[str]:
     return missing
 
 
+# The names ruff moves out of `typing` (UP035): they live in `collections.abc`
+# and nothing at runtime cares, so only the linter would have caught it.
+ABC_NAMES = {
+    "Awaitable", "Callable", "Collection", "Container", "Coroutine", "Generator",
+    "Hashable", "ItemsView", "Iterable", "Iterator", "KeysView", "Mapping",
+    "MutableMapping", "MutableSequence", "MutableSet", "Reversible", "Sequence",
+    "Set", "Sized", "ValuesView",
+}
+
+
 class TypingTest(unittest.TestCase):
     def test_every_function_is_annotated(self):
         unannotated = []
@@ -51,6 +61,26 @@ class TypingTest(unittest.TestCase):
                 if missing:
                     unannotated.append(f"{path.name}: {node.name} ({', '.join(missing)})")
         self.assertEqual(unannotated, [], "these need annotations")
+
+    def test_abc_names_come_from_collections(self):
+        """The rule ruff caught in CI, checked here so a push does not need it."""
+        wrong = []
+        for path in sorted(PACKAGE.glob("*.py")):
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ImportFrom) and node.module == "typing":
+                    for name in node.names:
+                        if name.name in ABC_NAMES:
+                            wrong.append(f"{path.name}: {name.name}")
+        self.assertEqual(wrong, [], "import these from collections.abc")
+
+    def test_datetime_uses_the_utc_alias(self):
+        """UP017: `datetime.UTC` rather than `datetime.timezone.utc`."""
+        wrong = [
+            str(path) for path in sorted(PACKAGE.glob("*.py"))
+            if "datetime.timezone.utc" in path.read_text(encoding="utf-8")
+        ]
+        self.assertEqual(wrong, [])
 
     def test_every_annotation_resolves(self):
         """A name in an annotation that does not exist is a bug only a checker sees."""
