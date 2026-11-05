@@ -64,8 +64,9 @@ Torn between two sizes: pick the smaller, and say so.
   `from __future__ import annotations` makes them strings until something reads them. A full checker (mypy or
   pyright) is a follow-up: it needs one more CI dependency, and this test already stops the rot.
 - Run it with `python3 -m unittest discover -s tests -t .` from the repo root; `python3 -m tests.parallel` runs the
-  same suite on threads (stdlib only, ~1.6 s here). CI runs the canonical one on Linux, macOS and Windows for
-  3.12–3.14; a fix for a CI-only failure says what stays unverified.
+  same suite on threads (stdlib only, ~1.6 s here). CI is two-stage: a draft pull request runs one Python (3.14)
+  on Linux, macOS and Windows — the cross-platform question — and marking it ready runs every OS on 3.12–3.14 for
+  the version question. A fix for a CI-only failure says what stays unverified.
 - A test does not sleep. `tests/fake_opencode.py` takes `("until", event)` in a script, so the test decides when a
   turn ends; a sleep makes the suite slower and flakier for no extra coverage.
 - Before pushing, run `tests/in-containers.sh`: the suite on Linux 3.12–3.14 in `podman`, which is the fastest CI
