@@ -156,7 +156,10 @@ while IFS= read -r file; do
 done <"$tmp/tracked"
 tar -czf "$tmp/tree.tgz" -C "$here" -T "$files"
 
-gh codespace cp -c "$created" "$tmp/tree.tgz" "remote:/workspaces/vigo-ci.tgz"
+# `-e` lets the remote shell read the path.  gh 2.103.3 quotes a literal
+# remote path, and scp 10 opens that name with the quotes in it, so the upload
+# fails before the suite starts.
+gh codespace cp -e -c "$created" "$tmp/tree.tgz" "remote:/workspaces/vigo-ci.tgz"
 
 log=$tmp/run.log
 status=0
