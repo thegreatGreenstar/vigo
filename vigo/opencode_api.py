@@ -61,6 +61,35 @@ def busy_since(info: dict) -> float | None:
     return float(busy)
 
 
+def agents_on(active: dict[str, str], sessions: list[dict], session_id: str) -> int:
+    """How many agents a task has at work: its own, and every subagent under it.
+
+    A subagent is a session of its own, with `parentID` naming the session that
+    delegated the work, so the tree of the list says who runs.  `active` is the
+    device's answer to what runs now, by session id.  A session that does not
+    run is not counted, and neither is one that the list does not name.
+    """
+    if not session_id:
+        return 0
+    children: dict[str, list[str]] = {}
+    for info in sessions:
+        parent = info.get("parentID")
+        if isinstance(parent, str) and parent:
+            children.setdefault(parent, []).append(str(info.get("id") or ""))
+    count = 1 if active.get(session_id) == "running" else 0
+    seen = {session_id}
+    stack = list(children.get(session_id, []))
+    while stack:
+        child = stack.pop()
+        if child in seen:
+            continue
+        seen.add(child)
+        if active.get(child) == "running":
+            count += 1
+        stack.extend(children.get(child, []))
+    return count
+
+
 class OpenCode:
     def __init__(self, base: str, password: str, timeout: float = 20.0) -> None:
         self.base = base.rstrip("/")
@@ -105,11 +134,43 @@ class OpenCode:
         data = self._call("GET", "/api/agent")
         return [entry.get("id", "") for entry in (data or {}).get("data", []) if entry.get("id")]
 
+    def subagent_agent(self) -> str:
+        """The agent a delegated task runs under, or "" when the device offers none.
+
+        OpenCode marks each agent `primary` or `subagent`; `general` is its
+        general-purpose one.  A device without a subagent still gets the
+        session, and the default agent runs the work.
+        """
+        try:
+            data = self._call("GET", "/api/agent")
+        except OpenCodeError:
+            return ""
+        agents = [entry for entry in (data or {}).get("data", []) if isinstance(entry, dict)]
+        for agent in agents:
+            if agent.get("id") == "general":
+                return "general"
+        for agent in agents:
+            if agent.get("mode") == "subagent" and agent.get("id"):
+                return str(agent["id"])
+        return ""
+
     # -- sessions ---------------------------------------------------------
 
     def sessions(self, limit: int = 10) -> list[dict]:
         data = self._call("GET", f"/api/session?limit={int(limit)}&order=desc")
         return (data or {}).get("data", []) if isinstance(data, dict) else []
+
+    def active(self) -> dict[str, str]:
+        """Which sessions a turn runs in now, by id.
+
+        The device keeps this list for every session at once, so one call
+        costs less than a turn stamp of each session.  A session that is not
+        here is not running: the list is the device's own answer.
+        """
+        data = self._call("GET", "/api/session/active")
+        rows = data.get("data", {}) if isinstance(data, dict) else {}
+        return {str(key): str((value or {}).get("type") or "")
+                for key, value in (rows or {}).items() if isinstance(value, dict)}
 
     def session(self, session_id: str) -> dict:
         data = self._call("GET", f"/api/session/{session_id}")

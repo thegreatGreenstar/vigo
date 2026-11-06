@@ -46,6 +46,31 @@ class GatewayTest(unittest.TestCase):
         self.assertTrue(self.fake.wait_for(lambda: bool(self.fake.resumes), 8))
         self.assertEqual(self.fake.resumes[0]["session_id"], "sess_test")
 
+    def test_a_status_set_before_the_connection_goes_out_with_the_identify(self):
+        self.gateway = Gateway(self.fake.url, "token", 1,
+                               lambda event, data: None, self.states.append)
+        self.gateway.set_presence("idle")
+        threading.Thread(target=self.gateway.run, daemon=True).start()
+        self.assertTrue(self.fake.wait_for(lambda: self.states.count("ready") >= 1, 5))
+        self.assertTrue(self.fake.wait_for(lambda: bool(self.fake.presences), 5))
+        self.assertEqual(self.fake.presences[0]["status"], "idle")
+        self.assertEqual(self.fake.presences[0]["activities"], [])
+        self.assertIsNone(self.fake.presences[0]["since"])
+
+    def test_a_new_status_reaches_the_gateway(self):
+        self.start()
+        self.gateway.set_presence("dnd")
+        self.assertTrue(self.fake.wait_for(lambda: bool(self.fake.presences), 5))
+        self.assertEqual(self.fake.presences[-1]["status"], "dnd")
+
+    def test_the_status_is_sent_again_after_a_drop(self):
+        self.start()
+        self.gateway.set_presence("online")
+        self.assertTrue(self.fake.wait_for(lambda: len(self.fake.presences) >= 1, 5))
+        self.fake.drop()
+        self.assertTrue(self.fake.wait_for(lambda: len(self.fake.presences) >= 2, 8))
+        self.assertEqual(self.fake.presences[-1]["status"], "online")
+
 
 if __name__ == "__main__":
     unittest.main()

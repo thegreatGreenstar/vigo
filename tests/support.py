@@ -10,6 +10,7 @@ import time
 from pathlib import Path
 
 from vigo import config as configuration
+from vigo import ask as rules
 
 
 def base_settings(**overrides) -> dict:
@@ -40,6 +41,22 @@ def write_settings(directory: Path, settings: dict) -> Path:
         json.dump(settings, handle)
     os.chmod(path, 0o600)
     return path
+
+
+def question_of(prompt: str) -> str:
+    """What the device was asked, without the audience, self and rules lines.
+
+    A run sends what Vigo is, who reads the answer, the question, and the
+    subagent rule.  A test that checks the question wants that one part.
+    """
+    body = prompt
+    if body.startswith("[Discord] "):
+        body = body.split("\n\n", 1)[1]
+    if body.startswith(rules.SELF):
+        body = body[len(rules.SELF):].lstrip("\n")
+    if body.endswith(rules.RULES):
+        body = body[: -len(rules.RULES)]
+    return body.rstrip("\n")
 
 
 def load_settings(directory: Path, **overrides) -> configuration.Config:

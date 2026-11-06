@@ -65,6 +65,7 @@ class FakeGateway:
         self.identifies: list[dict] = []
         self.resumes: list[dict] = []
         self.heartbeats: list[int | None] = []
+        self.presences: list[dict] = []
         self.connection: socket.socket | None = None
         self.closed = False
         self.session_id = "sess_test"
@@ -177,5 +178,8 @@ class FakeGateway:
                     with self.lock:
                         self.heartbeats.append(message.get("d"))
                     _send_frame(connection, json.dumps({"op": 11, "d": None}).encode())
+                elif op == 3:
+                    with self.lock:
+                        self.presences.append(message.get("d") or {})
         except (ConnectionError, OSError):
             return

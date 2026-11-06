@@ -29,7 +29,16 @@ case "$1 $2" in
         echo "vigo-ci-abc123"
         exit 0 ;;
     "codespace view") echo "Available" ;;
-    "codespace cp") cp "$5" "$GH_COPY_DIR/tree.tgz"; exit 0 ;;
+    "codespace cp")
+        src=
+        for arg in "$@"; do
+            case "$arg" in
+                -*) ;;
+                remote:*) ;;
+                *) src=$arg ;;
+            esac
+        done
+        cp "$src" "$GH_COPY_DIR/tree.tgz"; exit 0 ;;
     "codespace ssh")
         echo "Linux · Python 3.12: OK (Ran 42 tests in 1.500s)"
         exit "${GH_SSH_EXIT:-0}" ;;
@@ -42,6 +51,8 @@ esac
 
 class Codespace(unittest.TestCase):
     def setUp(self) -> None:
+        if not (ROOT / ".git").exists():
+            self.skipTest("the codespace copy has no .git, and the script lists the tree")
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
         self.stub = pathlib.Path(self.directory.name)
@@ -81,6 +92,13 @@ class Codespace(unittest.TestCase):
         self.assertIn("codespace vigo-ci-abc123: OK", result.stdout)
         self.assertIn("macOS and Windows", result.stdout)
         self.assertTrue(any("--no-git" in call for call in self.calls()))
+
+    def test_the_tree_is_copied_with_the_expand_flag(self) -> None:
+        """gh 2.103.3 quotes a literal remote path, and scp 10 cannot open it."""
+        result = self.run_script()
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        copy = next(call for call in self.calls() if call.split()[1] == "cp")
+        self.assertIn("-e", copy.split())
 
     def test_the_codespace_is_deleted_when_the_run_fails(self) -> None:
         result = self.run_script(GH_SSH_EXIT="3")

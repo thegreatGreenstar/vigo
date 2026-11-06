@@ -12,7 +12,7 @@ from vigo.opencode_api import OpenCode
 from vigo.state import State
 from tests.fake_discord import FakeDiscord
 from tests.fake_opencode import FakeOpenCode
-from tests.support import TempDir, load_settings
+from tests.support import TempDir, load_settings, question_of
 
 CHANNEL = "chan_lease"
 OWNER = "145512144145512144"
@@ -161,7 +161,7 @@ class TwoDaemonsTest(unittest.TestCase):
             self.assertTrue(self.pc.wait_for(
                 lambda: any("the second answer" in content for content in self.posted(self.pc)),
                 10))
-        self.assertEqual([asked for _session, asked in self.device.prompts],
+        self.assertEqual([question_of(asked) for _session, asked in self.device.prompts],
                          ["why first?", "why second?"], "one prompt each, in order")
 
     def test_a_question_says_why_when_another_daemon_holds_the_channel(self):
