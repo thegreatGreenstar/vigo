@@ -34,6 +34,32 @@ Discord takes the first, and the rest are told it was already answered and
 stop. Whoever wins can drive every device, so it does not matter which one it
 is, and a device answers even when its own daemon is not running.
 
+### GitHub work
+
+An answer that reports work on GitHub reads the way the maintainers of the
+project report it on GitHub: the verdict in the first sentence, then the facts
+that matter with their numbers (a pull request or issue, a commit, a file and
+line, a count of tests), then what still waits for a person. It is short. In
+that project the replies run to about fifty words, and a list of four facts is
+the long one.
+
+The agent is told this with every question and every goal, so the shape and the
+size travel with the work. vigo adds the one part a machine does better: a
+first line with the work itself, in the order it was made. It stands where the
+byline stands in those replies, provenance before the verdict, and it cannot
+forget an artifact the prose mentions.
+
+```
+GitHub: [PR #1251](https://github.com/scarletnx/ScarletNX/pull/1251) · [commit aaf1a0d](…)
+
+the fix is right, and the test it lacked is on top of the branch.
+```
+
+That line holds only what the answer already names: nothing is fetched from
+GitHub, so a private project stays private, and a device with no `gh` still
+reports. A link the answer puts on its own first line is not repeated, so the
+line is always an addition.
+
 ## What can and cannot happen
 
 - **Who may ask** is decided by the daemon from its own state, never from the

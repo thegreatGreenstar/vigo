@@ -13,7 +13,7 @@ from vigo.peer import PeerServer, build_of
 from vigo.state import State
 from tests.fake_discord import FakeDiscord
 from tests.fake_opencode import FakeOpenCode
-from tests.support import TempDir, load_settings
+from tests.support import TempDir, load_settings, question_of
 
 OWNER = "145512144145512144"
 STRANGER = "888888888888888888"
@@ -183,7 +183,55 @@ class AppTest(unittest.TestCase):
         self.assertNotIn("asked by", final)
         self.assertNotIn("macbook", final, "the answer carries no footer")
         self.assertEqual(final.strip(), "hello world")
-        self.assertEqual(self.device.prompts[0][1], "say hi")
+        self.assertEqual(question_of(self.device.prompts[0][1]), "say hi")
+
+    def test_a_github_answer_leads_with_its_work(self):
+        self.device.script = [
+            ("idle", "the fix is right.\n\nOpened https://github.com/scarletnx/ScarletNX/pull/1243."),
+        ]
+        with TempDir() as directory:
+            app = self.make(directory)
+            self.use(app, commands.ASK,
+                     options=[{"name": "prompt", "type": 3, "value": "open the pull request"}])
+            self.assertTrue(self.discord.wait_for(
+                lambda: any("the fix is right" in str(content)
+                            for content in self.said()), 10))
+        self.assertTrue(
+            self.discord.followups[-1]["content"].startswith(
+                "GitHub: [PR #1243](https://github.com/scarletnx/ScarletNX/pull/1243)"),
+            "the pull request names itself before the prose about it")
+
+    def test_the_manner_is_told_with_a_question(self):
+        """The shape and the size travel with the question."""
+        self.device.script = [("idle", "fine")]
+        with TempDir() as directory:
+            app = self.make(directory)
+            self.use(app, commands.ASK,
+                     options=[{"name": "prompt", "type": 3, "value": "why is CI red?"}])
+            self.assertTrue(self.discord.wait_for(
+                lambda: any("fine" in content for content in self.said()), 10))
+        told = [said for _session, said in self.device.prompts]
+        self.assertTrue(told, "the question was asked")
+        for said in told:
+            self.assertTrue(said.endswith(asking.MANNER), said[-60:])
+        self.assertIn("about fifty words", asking.MANNER)
+        self.assertIn("a list of four facts is the long one", asking.MANNER)
+
+    def test_the_manner_is_told_with_a_goal(self):
+        """A goal is worked on across turns, so the objective carries it too."""
+        self.device.script = [("idle", "done")]
+        with TempDir() as directory:
+            app = self.make(directory)
+            self.use(app, commands.ASK, options=[
+                {"name": "prompt", "type": 3, "value": "fix the failing test"},
+                {"name": "goal", "type": 5, "value": True},
+            ])
+            self.assertTrue(self.discord.wait_for(
+                lambda: any("done" in content for content in self.said()), 10))
+        told = [said for _session, _name, said in self.device.commands]
+        self.assertTrue(told, "a goal was set")
+        for said in told:
+            self.assertTrue(said.endswith(asking.MANNER), said[-60:])
 
     def test_a_second_ask_in_the_channel_waits_its_turn(self):
         finishing = threading.Event()
@@ -197,12 +245,12 @@ class AppTest(unittest.TestCase):
             self.use(app, commands.ASK,
                       options=[{"name": "prompt", "type": 3, "value": "second"}])
             self.assertTrue(any("Queued" in str(content) for content in self.said()))
-            self.assertEqual([asked for _session, asked in self.device.prompts], ["first"],
+            self.assertEqual([question_of(asked) for _session, asked in self.device.prompts], ["first"],
                              "the second question waits for the first")
             finishing.set()
             self.assertTrue(self.discord.wait_for(
                 lambda: len(self.device.prompts) == 2, 15))
-        self.assertEqual([asked for _session, asked in self.device.prompts], ["first", "second"])
+        self.assertEqual([question_of(asked) for _session, asked in self.device.prompts], ["first", "second"])
 
     def test_a_run_past_the_timeout_keeps_the_channel_busy(self):
         finishing = threading.Event()
@@ -283,8 +331,12 @@ class AppTest(unittest.TestCase):
     # -- goals ------------------------------------------------------------
 
     def goals(self):
-        """What the device was told, in order: (name, text) per command."""
-        return [(name, text) for _session, name, text in self.device.commands]
+        """What the device was told, in its own words: (name, text) per command.
+
+        The manner every prompt carries is stripped the same way a question's
+        is, because this answers what the person's request became.
+        """
+        return [(name, question_of(text)) for _session, name, text in self.device.commands]
 
     def test_a_task_ask_gives_the_agent_a_goal(self):
         self.device.script = [("idle", "done")]
@@ -297,7 +349,8 @@ class AppTest(unittest.TestCase):
                 lambda: any("done" in str(content) for content in self.said()), 10))
             session = app.state.session_for(CHANNEL)["session"]
         self.assertEqual(self.goals(), [("goal", "fix the failing test")])
-        self.assertEqual(self.device.goals[session]["objective"], "fix the failing test")
+        self.assertEqual(question_of(self.device.goals[session]["objective"]),
+                         "fix the failing test")
 
     def test_a_question_ask_only_asks(self):
         self.device.script = [("idle", "because the table moved")]
@@ -308,7 +361,7 @@ class AppTest(unittest.TestCase):
             self.assertTrue(self.discord.wait_for(
                 lambda: any("because" in str(content) for content in self.said()), 10))
         self.assertEqual(self.goals(), [], "a question is answered, not chased")
-        self.assertEqual([asked for _session, asked in self.device.prompts],
+        self.assertEqual([question_of(asked) for _session, asked in self.device.prompts],
                          ["why is CI red?"])
 
     def test_ask_goal_true_turns_a_question_into_a_goal(self):
@@ -334,7 +387,7 @@ class AppTest(unittest.TestCase):
             self.assertTrue(self.discord.wait_for(
                 lambda: any("renamed" in str(content) for content in self.said()), 10))
         self.assertEqual(self.goals(), [])
-        self.assertEqual([asked for _session, asked in self.device.prompts],
+        self.assertEqual([question_of(asked) for _session, asked in self.device.prompts],
                          ["rename it to devices"])
 
     def test_the_goal_command_sets_it_without_asking(self):
@@ -346,7 +399,8 @@ class AppTest(unittest.TestCase):
             written = self.said()[-1]
             session = app.state.session_for(CHANNEL)["session"]
         self.assertEqual(self.goals(), [("goal", "keep the build green")])
-        self.assertEqual(self.device.goals[session]["objective"], "keep the build green")
+        self.assertEqual(question_of(self.device.goals[session]["objective"]),
+                         "keep the build green")
         self.assertIn("goal is set", written)
 
     def test_the_goal_command_controls_the_goal_the_channel_has(self):
@@ -472,7 +526,7 @@ class AppTest(unittest.TestCase):
                       options=[{"name": "prompt", "type": 3, "value": "why is the build slow?"}])
             self.assertTrue(self.discord.wait_for(
                 lambda: any("the second answer" in str(content) for content in self.said()), 20))
-        self.assertEqual([asked for _session, asked in self.device.prompts],
+        self.assertEqual([question_of(asked) for _session, asked in self.device.prompts],
                          ["why is CI red?", "why is the build slow?"])
 
     def test_an_answer_the_channel_already_has_is_not_posted_again(self):
@@ -552,7 +606,7 @@ class AppTest(unittest.TestCase):
             self.device.finished_turn(session)
             self.assertTrue(self.discord.wait_for(
                 lambda: any("the second answer" in str(content) for content in self.posted()), 10))
-        self.assertEqual([asked for _session, asked in self.device.prompts],
+        self.assertEqual([question_of(asked) for _session, asked in self.device.prompts],
                          ["why first?", "why second?"], "no turn was shared")
 
     def test_a_question_gives_up_when_the_device_stays_busy(self):
@@ -574,7 +628,7 @@ class AppTest(unittest.TestCase):
                 lambda: any("did not run" in str(content) for content in self.said()), 10))
             self.assertTrue(self.discord.wait_for(
                 lambda: app.run_for(CHANNEL) is None, 5))
-        self.assertEqual([asked for _session, asked in self.device.prompts], ["why first?"],
+        self.assertEqual([question_of(asked) for _session, asked in self.device.prompts], ["why first?"],
                          "nothing was sent into another turn")
 
     def test_the_second_question_holds_the_channel_while_it_works(self):
