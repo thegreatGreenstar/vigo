@@ -333,52 +333,44 @@ Tailscale is up, and the supervisor simply tries again.
 `python:3.14-slim` with git and an SSH client, mounts the checkout, the settings and the state at their real paths,
 and takes its three secrets from podman. `opencode serve` stays on the host, so the container holds only the daemon.
 
-The SSH split of the host cannot enter a Linux VM: the Secure Enclave push key and the YubiKey signing key stay on
-the machine. A container therefore needs its own GitHub account and its own key, with no passphrase, and the key
-comes from a podman secret.
+The Secure Enclave push key and the Keychain cannot enter a Linux VM. The container has one authentication key with
+no passphrase, `~/.ssh/vigo_container_ed25519`, added to VIGO-VI. The key is read/write on that account. The
+container's `ssh_config` maps `github.com` and the checkout's `github-read` and `github-write` aliases to that key,
+so the clone needs no remote change.
 
 ```sh
 podman build -t localhost/vigo deploy/container
 security find-generic-password -s vigo-token -w | podman secret create vigo-token -
-security find-generic-password -s vigo-macbook -w | podman secret create vigo-opencode -
-podman secret create vigo-ssh-key ~/.ssh/vigo_ed25519
+security find-generic-password -s vigo-opencode -w | podman secret create vigo-opencode -
+podman secret create vigo-ssh-key ~/.ssh/vigo_container_ed25519
 ```
 
-The Keychain cannot be called from inside the container, so two settings change:
+The Keychain cannot be called from inside the container, so the settings read the secrets from the environment, and
+the peer listens on every interface inside the container:
 
 ```jsonc
 "tokenCommand": "printenv VIGO_TOKEN",
 "passwordCommand": "printenv VIGO_OPENCODE_PASSWORD",
-```
-
-and the checkout's remote names Vigo's account, which the one key reaches:
-
-```sh
-git remote set-url origin git@github.com:<the-vigo-account>/vigo.git
-git remote set-url --push origin git@github.com:<the-vigo-account>/vigo.git
-```
-
-The second line matters: the host split gives this clone a separate push URL, and that one would still point at the
-Secure Enclave key.
-
-On Linux the container uses the host's network, so `127.0.0.1:4096` and an SSH tunnel work as they do now. On macOS
-the container is in the podman machine and its `127.0.0.1` is the VM. Name the Mac as `host.containers.internal`,
-also for a tunnel port, and publish the peer port:
-
-```jsonc
-// the two device entries
-{ "name": "macbook", "url": "http://host.containers.internal:4096", "directory": "/Users/you/Projects/ScarletNX" },
-{ "name": "pc", "url": "http://host.containers.internal:4097", "directory": "C:/Users/…" },
-// and at the top level of the file
-"peerPort": 4098,
 "peerHost": "0.0.0.0"
 ```
 
-`peerHost` is `0.0.0.0` because the published port arrives on the container's own interface, not on its loopback.
+Keep the host settings as `vigo.host.json` before the change. The host `vigo` command then needs the two values in its
+environment:
 
 ```sh
-VIGO_PEER_PORT=4098 deploy/container/run.sh
+export VIGO_TOKEN=$(security find-generic-password -s vigo-token -w)
+export VIGO_OPENCODE_PASSWORD=$(security find-generic-password -s vigo-opencode -w)
 ```
+
+On macOS the container is in the podman machine, so a device URL names the host address that the VM can reach. That
+is `host.containers.internal` for a service on the host's loopback, or the host's Tailscale address for one bound
+there. The published peer port must use that address too, because the other device asks it there:
+
+```sh
+VIGO_PEER_PORT=4098 VIGO_PEER_BIND=100.64.0.5 deploy/container/run.sh
+```
+
+`peerHost` is `0.0.0.0` because the published port arrives on the container's own interface, not on its loopback.
 
 To start it at login, install the unit for the platform: `deploy/container/vigo-container.service` for systemd,
 
@@ -387,9 +379,21 @@ install -D -m 644 deploy/container/vigo-container.service ~/.config/systemd/user
 systemctl --user enable --now vigo-container
 ```
 
-or `deploy/container/dev.vigo.container.plist.in` for launchd, which its header fills in and loads. The supervisor
-starts the script again when the bot ends, which is what `/vigo upgrade` does: the bot ends its own process there and
-the new code starts. A bare `run.sh` is a one-shot, for a test.
+or `deploy/container/dev.vigo.container.plist.in` for launchd. Fill in the two paths and add `VIGO_PEER_PORT` and
+`VIGO_PEER_BIND` to its environment. Stop the host job first, and move its plist out of `LaunchAgents` so a login
+starts one daemon only:
+
+```sh
+launchctl bootout gui/$(id -u)/dev.vigo.bot
+mv ~/Library/LaunchAgents/dev.vigo.bot.plist ~/Library/LaunchAgents/dev.vigo.bot.plist.off
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.vigo.container.plist
+```
+
+Roll back with the reverse: boot out the container, move the host plist back, and restore `vigo.host.json`.
+
+The supervisor starts the script again when the bot ends, which is what `/vigo upgrade` does: the bot ends its own
+process there and the new code starts. A bare `run.sh` is a one-shot, for a test. A rebuild must keep the
+`github-read` and `github-write` hosts in `ssh_config`, or a pull inside the container fails.
 
 ## The Discord application, in words
 
