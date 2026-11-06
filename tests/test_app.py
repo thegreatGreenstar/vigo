@@ -319,6 +319,36 @@ class AppTest(unittest.TestCase):
                 lambda: len(self.device.prompts) == 2, 15))
         self.assertEqual(self.asked(), ["first", "second"])
 
+    def test_a_queued_question_says_it_still_runs_in_its_own_line(self):
+        """Past `timeout` the note ends the queued line, and no message arrives beside it."""
+        first, second = threading.Event(), threading.Event()
+        self.addCleanup(first.set)
+        self.addCleanup(second.set)
+        self.device.script = [("until", first), ("idle", "the first answer")]
+        with TempDir() as directory:
+            app = self.make(directory)
+            app.config = dataclasses.replace(app.config, timeout=0.2)
+            self.use(app, commands.ASK, token="tok_first",
+                     options=[{"name": "prompt", "type": 3, "value": "first"}])
+            self.assertTrue(self.device.wait_for_prompt())
+            self.use(app, commands.ASK, token="tok_second",
+                     options=[{"name": "prompt", "type": 3, "value": "second"}])
+            queued = self.discord.originals["tok_second"]["content"]
+            self.assertTrue(queued.startswith("Queued behind 1 question"), queued)
+            self.device.script = [("until", second), ("idle", "the second answer")]
+            first.set()
+            note = "Still running on the device. `/vigo stop` ends it."
+            self.assertTrue(self.discord.wait_for(
+                lambda: self.discord.originals["tok_second"]["content"]
+                == f"{queued}\n\n{note}", 10),
+                "the queued line grows the note at its end")
+            second.set()
+            self.assertTrue(self.discord.wait_for(
+                lambda: any("the second answer" in said for said in self.said()), 15))
+        self.assertFalse([said for said in self.discord.followups
+                          if note in str(said.get("content") or "")],
+                         "the note is not a message of its own")
+
     def test_a_run_past_the_timeout_keeps_the_channel_busy(self):
         finishing = threading.Event()
         self.addCleanup(finishing.set)
