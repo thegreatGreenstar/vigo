@@ -1,5 +1,7 @@
 """A direct message that replies to one of vigo's messages is an ask."""
 
+import dataclasses
+import threading
 import unittest
 
 from vigo import commands
@@ -102,6 +104,35 @@ class ReplyTest(unittest.TestCase):
         acks = sum(said.startswith("Got it") or ("Queued behind" in said)
                    for said in self.said())
         self.assertEqual(acks, 1)
+
+    def test_a_queued_reply_says_it_still_runs_in_its_own_line(self):
+        """Past `timeout` the note ends the queued message, and no second message arrives."""
+        first, second = threading.Event(), threading.Event()
+        self.addCleanup(first.set)
+        self.addCleanup(second.set)
+        self.device.script = [("idle", "the first answer")]
+        app = self.make()
+        app.config = dataclasses.replace(app.config, timeout=0.2)
+        self.ask(app)
+        self.assertTrue(self.wait_for("the first answer"))
+        self.settle(app)
+        self.device.script = [("until", first), ("idle", "the second answer")]
+        self.reply(app, self.last_answer(app), text="the second question")
+        self.assertTrue(self.discord.wait_for(lambda: len(self.device.prompts) == 2, 10))
+        self.device.script = [("until", second), ("idle", "the third answer")]
+        self.reply(app, self.last_answer(app), text="the third question")
+        queued = next((message["content"] for message in self.discord.messages[DM]
+                       if message["content"].startswith("Queued behind 1 question")), "")
+        self.assertTrue(queued, "the second question waits in the line")
+        note = "Still running on the device. `/vigo stop` ends it."
+        first.set()
+        self.assertTrue(self.discord.wait_for(
+            lambda: any(content == f"{queued}\n\n{note}" for content in self.said()), 10),
+            "the queued message grows the note at its end")
+        self.assertFalse([said for said in self.said() if said.strip() == note],
+                         "the note is not a message of its own")
+        second.set()
+        self.assertTrue(self.wait_for("the third answer"))
 
     def test_a_reply_that_is_only_a_file_asks_about_it(self):
         """A log dropped without words is the question: read this."""

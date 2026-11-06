@@ -413,7 +413,7 @@ What the Developer Portal asks for, if it helps:
 | --- | --- | --- |
 | `/vigo ask prompt:<text> [file] [device] [hidden] [new]` | approved users | asks the device you last worked on; the question is acknowledged at once and the answer follows as a new message, public in the channel unless `hidden:true`, in which case only you see the question and answer. A task gets a goal, which the device works toward in a session of its own. A file attached with it, or a reply to an answer that carries one, is fetched and read on that device: a log or a dump never has to be pasted |
 | `/vigo goal objective:<text> [device] [hidden]` | approved users | gives the device an objective to keep working toward, with no question, in a session of its own; `pause`, `resume` and `clear` control the goal it already has |
-| `/vigo quick prompt:<text> [device] [hidden]` | approved users | one answer, with no session and no tools; the message stays as thinking until the answer is ready, then becomes it, with no line before |
+| `/vigo quick prompt:<text> [device] [hidden]` | approved users | one answer, with no session and no tools; the message stays as thinking until the answer is ready, then becomes it, with no line before, and the device is told the same two-paragraph limit as a question |
 | `/vigo status` | approved users | the channel's session, its device, tokens and cost, and the subagents at work under it; every question that waits, and the last three that ran |
 | `/vigo queue [public]` | owner | every channel that runs or waits, on this daemon and the other ones, every task in each line, and how many agents work on each task; `public:true` shows the channel a redacted copy |
 | `/vigo devices` | approved users | what is up, and which one a question would go to |
@@ -468,12 +468,14 @@ written, however many paragraphs it has, and a longer one arrives in the
 messages that carry it, in order, with each code fence closed. Only a runaway
 answer stops at four messages, and its last one says so, naming the session
 where the rest is when there is one.
-A run that passes `timeout` says the device
-is still working and keeps watching. The answer still arrives, and the channel
-stays busy until it does. No progress line is posted. If the device is not
-working on it by then — nothing on the session is newer than the question — the
-run ends and says so, because a device that took the question and will not run
-it would hold the channel for ever with every later question behind it.
+A run that passes `timeout` adds a note to the end of the line the question
+already shows, the queued line or the got-it line, so the question keeps one
+message, and the run keeps watching. No second message arrives for it. The
+answer still arrives, and the channel stays busy until it does. No progress
+line is posted. If the device is not working on it by then — nothing on the
+session is newer than the question — the run ends and says so, because a device
+that took the question and will not run it would hold the channel for ever with
+every later question behind it.
 
 When a turn fails, the answer names what the person can act on: the model is
 rate limited, the account has no quota left, the session is out of context, or
@@ -829,7 +831,7 @@ to a draft runs the quick one again.
 | `no device answers` | no `opencode serve` is reachable from this daemon: check the URL, the port, and the password |
 | `Permission needed` never arrives | the owner and the bot do not share a server that allows DMs, so the card falls back to the channel |
 | `/vigo upgrade` says `git refused` and the log names `usekeychain` | the daemon's `ssh` is Homebrew's, which has no `UseKeychain`; the bot's launchd job sets `GIT_SSH_COMMAND=/usr/bin/ssh`, and `./install.sh` writes that again |
-| the answer says `still running` | the run passed `timeout`; it keeps watching, `/vigo status` shows it, `/vigo stop` ends it |
+| a question says `still running` | the run passed `timeout`, so the line that question already shows, queued or got-it, ends with the note; the run keeps watching, `/vigo status` shows it, `/vigo stop` ends it |
 | the answer says `never started` | the device admitted the question and its session never began the turn: `opencode serve` there is stuck, so restart it and ask again |
 | the answer says the model is rate limited, or has no quota left | the plan is spent for now: wait, or `/vigo quick` for a one-off that starts no session, and the log holds the device's own words |
 | the answer says the device returned no text | the turn produced nothing: the machine slept under it, or the session never ran. Ask again; a run that crossed a sleep ends like this |

@@ -4,8 +4,9 @@ The deferred message becomes a short "got it" at once, so the person knows the
 question arrived.  The answer is a new message when the agent is done: an edit
 would carry no notification.  A tool that needs permission, or a question the
 agent asks, goes to its owner in a DM, and the run waits for the answer.  Past
-``timeout`` the deferred message says the device is still working, and the run
-keeps watching: the channel is still busy, so the next question waits.
+``timeout`` the line the question already shows — the queued line or the got-it
+line — gains a note that the device is still working, and the run keeps
+watching: the channel is still busy, so the next question waits.
 """
 
 from __future__ import annotations
@@ -54,6 +55,20 @@ SELF = (
     "the owner may approve a tool. The question arrived from Discord and your "
     "answer is posted there."
 )
+# How long an answer may be, told to every answer that reaches Discord: a
+# question, a goal, and a one-off alike.  A channel reads many of these, so the
+# work that matters goes first and the rest stays where it was done.
+BRIEF = (
+    "Keep the answer to two short paragraphs at most: say what you did and what "
+    "matters, and leave the rest out. Be only as long as the answer needs: one "
+    "line is right when one line is the answer."
+)
+# What a turn of a session can offer that a one-off cannot: there is a place the
+# rest of the answer stays, and a way to ask for it.
+STAYS = (
+    "The whole answer stays in the session, and the person asks again when they "
+    "want more."
+)
 RULES = (
     f"You may hand parts of this work to subagents, at most {SUBTASKS} at a time, "
     "only where it helps: use fewer when fewer are enough, and none when none is. "
@@ -69,10 +84,7 @@ RULES = (
     "comment starts with it: \"From Vigo (an agent): <the reply>\". Never sign "
     "it with the name of the model that ran you: the model varies, and Vigo "
     "does not.\n\n"
-    "Keep the answer to two short paragraphs at most: say what you did and what "
-    "matters, and leave the rest out. Be only as long as the answer needs: one "
-    "line is right when one line is the answer. The whole answer stays in the "
-    "session, and the person asks again when they want more."
+    f"{BRIEF} {STAYS}"
 )
 
 # One answer may take a few messages: Discord takes 2000 characters in each,
@@ -269,6 +281,8 @@ class Ask:
         self.prompted_at = 0.0
         self.before = ""   # the session's newest message when we asked
         self.forms: set[str] = set()
+        self.shown = ""    # the line this question already shows in Discord, if any
+        self.message_id = ""  # that line's message, when it is not the interaction's own
 
     # -- the message ------------------------------------------------------
 
@@ -291,6 +305,31 @@ class Ask:
             return True
         except Exception as error:
             log.debug(f"ask: cannot edit the message ({error})")
+            return False
+
+    def _append(self, content: str) -> bool:
+        """Add a line to the end of the line this question already shows.
+
+        A question has one line in the channel: the queued line, or the got-it
+        line.  A note about the same question belongs at the end of it, not in
+        a second message beside it.  False when there is no line to edit, or
+        Discord will not take the edit: the caller says it another way then.
+        """
+        if not self.shown:
+            return False
+        text = f"{self.shown}\n\n{content}"[:2000]
+        if not self.reply_in_channel:
+            return self._edit(text)
+        if not self.message_id:
+            return False
+        try:
+            self.app.api.edit(self.channel_id, self.message_id, {
+                "content": text,
+                "allowed_mentions": {"parse": []},
+            })
+            return True
+        except Exception as error:
+            log.info(f"ask: cannot edit the question's line ({error})")
             return False
 
     def _final(self, body: str, outcome: str, cost: float, tokens: dict,
@@ -716,7 +755,12 @@ class Ask:
                 if verdict == "never started":
                     outcome = "never started"
                     break
-                self._tell("Still running on the device. `/vigo stop` ends it.")
+                # The note goes at the end of the line this question already
+                # shows: a second message beside it splits one question into
+                # two, and the person reads the queued line as stale.
+                note = "Still running on the device. `/vigo stop` ends it."
+                if not self._append(note):
+                    self._tell(note)
             if succeeded_at and now - succeeded_at > 3.0:
                 outcome = "succeeded"
                 break

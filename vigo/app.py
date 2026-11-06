@@ -923,20 +923,26 @@ class App:
             self._post(channel_id, f"The line is full: {WAITING_MAX} questions wait in this "
                                    "channel. Wait for them, or `/vigo stop` clears them.")
             return
+        phrase = self._describe(prompt, pick.name)
+        line = self._asked(phrase, ahead) if ahead else self._ack(phrase)
         if ahead:
             log.info(f"reply: queued in this channel ({ahead} ahead)")
-            self._post(channel_id, self._asked(self._describe(prompt, pick.name), ahead),
-                       record=True)
         else:
             log.info("reply: a question from a reply")
-            self._post(channel_id, self._ack(self._describe(prompt, pick.name)), record=True)
+        # The line is the question's own: a note about the run past `timeout`
+        # goes at its end, so the run edits this message rather than posting a
+        # second one beside it.
+        worker.message_id = self._post(channel_id, line, record=True)
+        worker.shown = line if worker.message_id else ""
         self.start_next(channel_id)
 
-    def _post(self, channel_id: str, content: str, record: bool = False) -> None:
+    def _post(self, channel_id: str, content: str, record: bool = False) -> str:
         """Say something where there is no interaction to edit.
 
         With `record`, a reply to it is the next question, and the daemon that
-        posted it is the only one that will act on that reply.
+        posted it is the only one that will act on that reply.  The answer is
+        the message's id, or "" when Discord would not take it, so the caller
+        can edit that message later.
         """
         try:
             posted = self.api.send(channel_id, {
@@ -945,9 +951,11 @@ class App:
             })
         except DiscordError as error:
             log.error(f"reply: cannot say it ({error.message})")
-            return
-        if record and isinstance(posted, dict) and posted.get("id"):
-            self.state.remember_answer(str(posted["id"]), channel_id)
+            return ""
+        message_id = str(posted.get("id") or "") if isinstance(posted, dict) else ""
+        if record and message_id:
+            self.state.remember_answer(message_id, channel_id)
+        return message_id
 
     def register_commands(self) -> None:
         """Put the command on the application itself.
@@ -1254,11 +1262,15 @@ class App:
         # person would see "Got it" and never the answer.  The phrase costs a
         # second, and a lost answer costs the whole question.
         phrase = self._describe(prompt, pick.name)
+        line = self._asked(phrase, ahead) if ahead else self._ack(phrase)
         if ahead:
             log.info(f"ask: queued in this channel ({ahead} ahead)")
-            self._say(token, self._asked(phrase, ahead))
-        else:
-            self._say(token, self._ack(phrase))
+        # The message is the question's own line: the run past `timeout` adds
+        # its note to the end of it instead of posting a message beside it.
+        # When the edit does not land there is no line to grow, and the note
+        # goes out on its own.
+        if self._say(token, line):
+            worker.shown = line
         self.start_next(channel_id)
 
     def _objective(self, prompt: str) -> str:
