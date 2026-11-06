@@ -3,11 +3,21 @@ name: tests
 # Two stages, so a draft answers the cross-platform question in one Python and
 # a pull request that is ready answers the version question too.
 #
-#   draft        quick: one Python (the newest in the matrix) on every OS
-#   ready        test:  every OS on every Python
+#   draft        quick: one Python (the newest in the matrix) on macOS and Windows
+#   ready        test:  every Python (3.12, 3.13, 3.14) on macOS and Windows
 #   push to main test, because that is what the branch holds
 #
-# Lint and the secrets check are cheap and platform-free, so they run on both.
+# Linux is not in this file.  It runs in a Codespace:
+#
+#   tests/ci-codespace.sh          # 3.12, 3.13 and 3.14, ruff, the secrets check
+#
+# Codespaces inherited hours are already paid for, and its devcontainer holds
+# the three Pythons (`.devcontainer/`).  Codespaces is Linux only, so this file
+# keeps the two platforms no codespace can answer: macOS and Windows, where a
+# path, a clock or a socket is the question.
+#
+# Lint and the secrets check are cheap and platform-free, so they stay on a
+# runner and run on every push and pull request, with no codespace made.
 
 on:
   push:
@@ -24,7 +34,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # The newest Python in the matrix: what a draft runs everywhere.
+  # The newest Python in the matrix: what a draft runs on both runners.
   QUICK_PYTHON: "3.14"
 
 jobs:
@@ -35,7 +45,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v7
 
@@ -56,7 +66,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [macos-latest, windows-latest]
         python: ["3.12", "3.13", "3.14"]
     steps:
       - uses: actions/checkout@v7
@@ -82,7 +92,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install the linter
-        run: python -m pip install --disable-pip-version-check ruff==0.17.3
+        run: python -m pip install --disable-pip-version-check ruff==0.17.4
 
       - name: Lint
         run: ruff check --output-format=github .

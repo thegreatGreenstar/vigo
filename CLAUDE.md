@@ -64,14 +64,18 @@ Torn between two sizes: pick the smaller, and say so.
   `from __future__ import annotations` makes them strings until something reads them. A full checker (mypy or
   pyright) is a follow-up: it needs one more CI dependency, and this test already stops the rot.
 - Run it with `python3 -m unittest discover -s tests -t .` from the repo root; `python3 -m tests.parallel` runs the
-  same suite on threads (stdlib only, ~1.6 s here). CI is two-stage: a draft pull request runs one Python (3.14)
-  on Linux, macOS and Windows — the cross-platform question — and marking it ready runs every OS on 3.12–3.14 for
-  the version question. A fix for a CI-only failure says what stays unverified.
+  same suite on threads (stdlib only, ~1.6 s here). CI is two-stage: a draft pull request runs one Python (3.14) on
+  macOS and Windows, and marking it ready runs both on 3.12 to 3.14 for the version question. A fix for a CI-only
+  failure says what stays unverified.
+- Linux is a Codespace, not a runner. `tests/ci-codespace.sh` copies this tree into one, runs 3.12, 3.13 and 3.14,
+  ruff and the secrets check there, and deletes it. Nobody runs that for you, so a Linux fault reaches `main` when
+  you skip it. Codespaces is Linux only, which is why macOS and Windows stay in the workflow.
 - A test does not sleep. `tests/fake_opencode.py` takes `("until", event)` in a script, so the test decides when a
   turn ends; a sleep makes the suite slower and flakier for no extra coverage.
-- Before pushing, run `tests/in-containers.sh`: the suite on Linux 3.12–3.14 in `podman`, which is the fastest CI
-  matrix half to answer. Windows and macOS stay CI-only — `podman` on a Mac is a Linux VM, and Windows has
-  already differed from Linux once (a socket read that `shutdown` does not wake there).
+- Before pushing, run `tests/ci-codespace.sh`: the Linux half of the matrix, ruff and the secrets check, on a clean
+  Linux machine, with no VM on this one. `tests/in-containers.sh` answers the same Linux half in `podman` here.
+  Windows and macOS stay in the workflow: `podman` on a Mac is a Linux VM, and Windows has already differed from
+  Linux once (a socket read that `shutdown` does not wake there).
 - Anything a reader will copy and run (a command, a port, a link) is run before it ships.
 - `main` takes pull requests only. `.githooks/pre-push` refuses a push straight to it, and `install.sh` sets
   `core.hooksPath` so every clone runs it; GitHub's own protection is a paid feature on a private repo. Do not
@@ -161,13 +165,17 @@ user cost. Batch on both anyway: the history is shared, and the Mac reads what t
 ## Pull requests
 
 Every change reaches `main` through a pull request, and the first push opens it **as a draft**. A draft runs the quick
-stage: one Python, the newest in the matrix, on Linux, macOS and Windows. That is where a path, a socket or a clock that
-differs by platform shows up, in three jobs instead of nine.
+stage: one Python, the newest in the matrix, on macOS and Windows. That is where a path, a socket or a clock that
+differs by platform shows up, in two jobs instead of six.
 
-Mark the pull request **ready for review** once that stage is green. Ready runs the full matrix, every OS on 3.12,
-3.13 and 3.14, and that is the matrix a merge waits for. Converting back to a draft runs the quick stage again.
+Mark the pull request **ready for review** once that stage is green. Ready runs the full matrix, macOS and Windows on
+3.12, 3.13 and 3.14, and that is the matrix a merge waits for. Converting back to a draft runs the quick stage again.
+
+Linux is the third platform and no job covers it: run `tests/ci-codespace.sh` before the push, and put its answer in
+the body. Say what it could not answer when it could not run.
 
 ```sh
+tests/ci-codespace.sh                  # Linux 3.12 to 3.14, ruff, the secrets check
 gh pr create --draft --base main --title "…" --body-file …
 gh pr checks <number> --watch          # the quick stage
 gh pr ready <number>                   # the full matrix
@@ -176,8 +184,8 @@ gh pr merge <number> --merge           # the owner runs this, never the agent
 
 Do not open a pull request ready, and do not merge with a red matrix. The agent never merges into `main`, whatever
 the colour of the matrix; the owner does, every time. Inside an internal fork, the agent may merge branches it created
-in the same session onto each other. The reason the stages exist is to answer the platform question in three jobs
-before paying for nine.
+in the same session onto each other. The reason the stages exist is to answer the platform question in two jobs
+before paying for six.
 
 ## Finishing
 
