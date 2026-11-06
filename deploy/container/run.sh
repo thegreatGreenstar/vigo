@@ -35,7 +35,7 @@ if ! podman info >/dev/null 2>&1; then
     # is undone on the next start of the unit; booting the unit out stops both.
     if [ "$(uname -s)" = Darwin ]; then
         echo "vigo: the podman machine is not answering; starting it" >&2
-        podman machine start >/dev/null 2>&1 || true
+        podman machine start || true
     fi
     if ! podman info >/dev/null 2>&1; then
         echo "vigo: podman is not answering; on macOS run: podman machine start" >&2
