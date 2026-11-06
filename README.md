@@ -389,6 +389,10 @@ mv ~/Library/LaunchAgents/dev.vigo.bot.plist ~/Library/LaunchAgents/dev.vigo.bot
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.vigo.container.plist
 ```
 
+The podman machine is a VM, and the Homebrew package does not start it at login. The launcher starts it when
+`podman info` does not answer, then exits with the command to run if it still does not, so the unit retries through a
+login instead of staying down. Booting the unit out stops both the container and the machine it started.
+
 Roll back with the reverse: boot out the container, move the host plist back, and restore `vigo.host.json`.
 
 The supervisor starts the script again when the bot ends, which is what `/vigo upgrade` does: the bot ends its own
