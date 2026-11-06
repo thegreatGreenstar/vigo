@@ -1402,7 +1402,8 @@ class App:
         # deferred message stays as "thinking" and becomes the answer itself.
         try:
             answer = client.generate_text(
-                prompt, model=self.config.model.as_ref(), timeout=float(self.config.timeout)
+                f"{asking.SELF}\n\n{prompt}",
+                model=self.config.model.as_ref(), timeout=float(self.config.timeout),
             )
         except OpenCodeError as error:
             log.info(f"quick: the device refused ({error.message})")
