@@ -776,14 +776,19 @@ on Windows and says why.
 ```sh
 python3 -m unittest discover -s tests -t . -v   # the canonical run
 python3 -m tests.parallel                       # the same suite on threads
+tests/ci-local.sh                               # what CI runs, as far as this machine can
 tests/in-containers.sh                          # Linux 3.12-3.14, in podman
 ```
 
+`tests/ci-local.sh` runs the CI steps here: the suite on each host Python 3.12 to 3.14 that is installed, ruff
+0.17.3 in a container, the secrets check, and the Linux matrix in podman. It names what it cannot answer, which is
+Windows and any Python that is not installed. It takes about a minute and a half on this Mac.
+
 `tests/in-containers.sh` runs the suite in `python:3.12`, `3.13` and `3.14`
 containers on the `podman machine` Linux VM, so the Linux half of the CI matrix
-is answered here first. It cannot answer Windows or macOS: `podman` on a Mac
-is always Linux, and Windows behaviour has already differed once (a socket read
-that `shutdown` does not wake there).
+is answered here first. It cannot answer Windows: `podman` on a Mac is always
+Linux, and Windows behaviour has already differed once (a socket read that
+`shutdown` does not wake there).
 
 The product code is typed: every parameter and return in `vigo/` carries an
 annotation, and a test fails on a missing one or on one that does not resolve.
