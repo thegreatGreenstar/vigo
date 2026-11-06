@@ -1248,15 +1248,18 @@ class App:
                 "Wait for them, or `/vigo stop` clears them.",
             )
             return
-        # The work starts before the device writes the line that names it: a
-        # phrase is worth a second, but not a second of the run.
-        self.start_next(channel_id)
+        # The acknowledgement goes out before the run starts.  Discord folds
+        # the first follow-up after a deferral into the loading message, so an
+        # answer that beat the acknowledgement would be overwritten by it: the
+        # person would see "Got it" and never the answer.  The phrase costs a
+        # second, and a lost answer costs the whole question.
         phrase = self._describe(prompt, pick.name)
         if ahead:
             log.info(f"ask: queued in this channel ({ahead} ahead)")
             self._say(token, self._asked(phrase, ahead))
         else:
             self._say(token, self._ack(phrase))
+        self.start_next(channel_id)
 
     def _objective(self, prompt: str) -> str:
         """The goal an ask becomes, or "" when it is a question.
