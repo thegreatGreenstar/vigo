@@ -28,7 +28,25 @@ INSTALLS = {
 }
 
 
-def spec(install: str = "both") -> list[dict]:
+def _device_option(devices: list[str] | None, tail: str) -> dict:
+    """The device option, naming the devices this daemon knows.
+
+    Discord allows 100 characters for an option description, so a long list is
+    counted instead of named.  The names come from the settings, never from
+    this file: a device that is down is still known, and one that was removed
+    is gone at once.
+    """
+    names = [name for name in (devices or []) if name]
+    if not names:
+        text = f"A device from the settings; {tail}"
+    elif len(", ".join(names)) + len(tail) + 2 <= 100:
+        text = f"{', '.join(names)}; {tail}"
+    else:
+        text = f"One of the {len(names)} devices in the settings; {tail}"
+    return {"type": 3, "name": "device", "description": text, "required": False}
+
+
+def spec(install: str = "both", devices: list[str] | None = None) -> list[dict]:
     integration_types, contexts = INSTALLS.get(install, INSTALLS["both"])
     hidden = {
         "type": 5,
@@ -61,12 +79,7 @@ def spec(install: str = "both") -> list[dict]:
                             "description": "A log or other file to read, with the question.",
                             "required": False,
                         },
-                        {
-                            "type": 3,
-                            "name": "device",
-                            "description": "macbook or pc; empty picks where you last worked.",
-                            "required": False,
-                        },
+                        _device_option(devices, "empty picks where you last worked."),
                         {
                             "type": 5,
                             "name": "hidden",
@@ -95,14 +108,8 @@ def spec(install: str = "both") -> list[dict]:
                             ),
                             "required": True,
                         },
-                        {
-                            "type": 3,
-                            "name": "device",
-                            "description": (
-                                "macbook or pc; empty stays on this channel's device."
-                            ),
-                            "required": False,
-                        },
+                        _device_option(
+                            devices, "empty stays on this channel's device."),
                         dict(hidden),
                     ],
                 },
@@ -117,12 +124,7 @@ def spec(install: str = "both") -> list[dict]:
                             "description": "What to ask.",
                             "required": True,
                         },
-                        {
-                            "type": 3,
-                            "name": "device",
-                            "description": "macbook or pc; empty picks where you last worked.",
-                            "required": False,
-                        },
+                        _device_option(devices, "empty picks where you last worked."),
                         dict(hidden),
                     ],
                 },

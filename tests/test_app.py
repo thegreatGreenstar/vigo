@@ -411,6 +411,25 @@ class AppTest(unittest.TestCase):
         self.assertEqual([inner["name"] for inner in ask["options"]],
                          ["prompt", "file", "device", "hidden", "new"])
 
+    def test_the_device_option_names_the_devices_in_the_settings(self):
+        """No alias is written in the code: the settings say which devices exist."""
+        spec = commands.spec(devices=["alpha", "beta"])
+        ask = next(option for option in spec[0]["options"]
+                   if option["name"] == commands.ASK)
+        device = next(inner for inner in ask["options"] if inner["name"] == "device")
+        self.assertEqual(device["description"],
+                         "alpha, beta; empty picks where you last worked.")
+        self.assertNotIn("macbook", str(spec))
+
+    def test_a_long_device_list_is_counted_rather_than_named(self):
+        devices = ["a" * 30, "b" * 30, "c" * 30]
+        spec = commands.spec(devices=devices)
+        ask = next(option for option in spec[0]["options"]
+                   if option["name"] == commands.ASK)
+        device = next(inner for inner in ask["options"] if inner["name"] == "device")
+        self.assertLessEqual(len(device["description"]), 100)
+        self.assertIn("3 devices", device["description"])
+
     def test_a_task_ask_gives_the_subagent_a_goal(self):
         self.device.script = [("idle", "done")]
         with TempDir() as directory:
