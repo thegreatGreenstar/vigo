@@ -1235,7 +1235,8 @@ class AppTest(unittest.TestCase):
             self.use(app, commands.ASK,
                       options=[{"name": "prompt", "type": 3, "value": "why is CI red?"}])
             self.assertTrue(self.discord.wait_for(
-                lambda: len(self.discord.followups) > 1, 10))
+                lambda: "".join(entry["content"] for entry in self.discord.followups)
+                == "x" * 4000, 10))
         parts = [entry["content"] for entry in self.discord.followups]
         self.assertGreater(len(parts), 1)
         for part in parts:
@@ -1265,7 +1266,8 @@ class AppTest(unittest.TestCase):
                 {"name": "hidden", "type": 5, "value": True},
             ])
             self.assertTrue(self.discord.wait_for(
-                lambda: len(self.discord.followups) > 1, 10))
+                lambda: "".join(entry["content"] for entry in self.discord.followups)
+                == "x" * 4000, 10))
         self.assertTrue(self.discord.originals["tok"]["ephemeral"])
         for entry in self.discord.followups:
             self.assertEqual(entry["flags"], 64, "every part stays ephemeral")
