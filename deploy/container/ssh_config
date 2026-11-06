@@ -9,7 +9,8 @@
 #
 # A key with no passphrase is correct here.  No agent and no Keychain can enter
 # the container, and this key can do only what Vigo's own account may do.
-Host github.com
+Host github.com github-read github-write
+    HostName github.com
     User git
     IdentityFile /run/secrets/vigo-ssh-key
     IdentitiesOnly yes
