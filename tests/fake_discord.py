@@ -25,6 +25,7 @@ class FakeDiscord:
         self.global_command_puts = 0
         self.dm_channels: dict[str, str] = {}
         self.counter = 0
+        self.bot_id = "1"  # the author of every message this bot posts here
         self.gateway = ""
         self.forbidden: set[str] = set()  # channel ids that answer 403
         self.no_dm: set[str] = set()  # user ids whose DM cannot be opened
@@ -116,6 +117,9 @@ class FakeDiscord:
                 query = parse_qs(parts.query)
                 if path.endswith("/gateway/bot"):
                     self._send(200, {"url": fake.gateway, "shards": 1})
+                    return
+                if path.endswith("/users/@me"):
+                    self._send(200, {"id": fake.bot_id, "username": "vigo", "bot": True})
                     return
                 if "/guilds/" in path and path.endswith("/commands"):
                     guild = path.split("/guilds/")[1].split("/")[0]

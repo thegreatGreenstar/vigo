@@ -1400,9 +1400,11 @@ class App:
         client = OpenCode(device.url, device.password)
         # No "got it" line: a one-off has nothing to follow up on, so the
         # deferred message stays as "thinking" and becomes the answer itself.
+        # It is told how short to stay, as a question is: the channel reads it
+        # too, and a one-off is the answer people read most often.
         try:
             answer = client.generate_text(
-                f"{asking.SELF}\n\n{prompt}",
+                f"{asking.SELF}\n\n{asking.BRIEF}\n\n{prompt}",
                 model=self.config.model.as_ref(), timeout=float(self.config.timeout),
             )
         except OpenCodeError as error:
@@ -1986,11 +1988,26 @@ class App:
             log.info(f"stop: nothing to stop ({error.message})")
             return "Nothing to stop." + note
 
+    def _bot_id(self) -> str:
+        """This bot's own user id, or "" when Discord will not say.
+
+        It is asked only when a person is allowed or denied: one request, and
+        a failure leaves the check out rather than refusing a valid allow.
+        """
+        try:
+            return str(self.api.me().get("id") or "")
+        except (DiscordError, OSError):
+            return ""
+
     def _allow(self, options: dict) -> str:
         user = options.get("user")
         target = commands.user_id(user)
         if not target:
             return "Name the person to allow."
+        if target == self.config.owner:
+            return "That is the owner, who may always ask."
+        if target == self._bot_id():
+            return "That is this bot. Only a person can ask."
         chosen = str(options.get("for") or "1d")
         if chosen not in commands.SECONDS:
             return f"`{chosen}` is not one of the times."
@@ -2004,6 +2021,10 @@ class App:
         target = commands.user_id(user)
         if not target:
             return "Name the person."
+        if target == self.config.owner:
+            return "That is the owner, who may always ask."
+        if target == self._bot_id():
+            return "That is this bot. Only a person can ask."
         try:
             _done, said = self.allow.deny(target)
             return said
