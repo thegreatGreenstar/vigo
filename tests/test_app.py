@@ -941,6 +941,18 @@ class AppTest(unittest.TestCase):
         return asking.Ask(app, token="tok", channel_id=CHANNEL, user_id=OWNER,
                           device_name="macbook", prompt=prompt, new=False, title="test")
 
+    def test_a_question_says_what_vigo_is(self):
+        """The model has no other way to know it is Vigo."""
+        self.device.script = [("idle", "done")]
+        with TempDir() as directory:
+            app = self.make(directory)
+            self.use(app, commands.ASK,
+                      options=[{"name": "prompt", "type": 3,
+                                "value": "explain how Vigo works"}])
+            self.assertTrue(self.discord.wait_for(
+                lambda: any("done" in str(content) for content in self.said()), 10))
+        self.assertIn(asking.SELF, self.device.prompts[0][1])
+
     def test_quick_answers_once_and_starts_no_session(self):
         with TempDir() as directory:
             app = self.make(directory)
@@ -949,8 +961,11 @@ class AppTest(unittest.TestCase):
             self.assertTrue(self.discord.wait_for(
                 lambda: any("one-off answer" in str(content)
                             for content in self.said()), 10))
-        self.assertEqual(self.device.generated, ["what is a pointer"],
+        self.assertEqual(len(self.device.generated), 1,
                          "the question is the only thing the device is asked")
+        self.assertTrue(self.device.generated[0].startswith(asking.SELF),
+                        "a one-off is told what Vigo is too")
+        self.assertTrue(self.device.generated[0].endswith("what is a pointer"))
         self.assertEqual(self.device.sessions, {}, "a one-off is not a session")
         self.assertEqual(self.device.prompts, [])
         self.assertEqual([entry["content"] for entry in self.discord.edits],

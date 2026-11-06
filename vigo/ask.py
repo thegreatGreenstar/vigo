@@ -44,6 +44,16 @@ END_EVENTS = {
 # Three is a ceiling, not a target: one subagent is as right as three when one
 # is what the work needs.
 SUBTASKS = 3
+# What every piece of work is told about the thing it is part of: the model has
+# no other way to know it is Vigo, and a question like "explain how Vigo works"
+# was answered with "which Vigo?" because the prompt held only the question.
+SELF = (
+    "You are Vigo, a Discord bot that drives OpenCode agents on the owner's own "
+    "machines. A daemon runs on each device, and each daemon can reach every "
+    "device's `opencode serve`, so one question is answered on one of them; only "
+    "the owner may approve a tool. The question arrived from Discord and your "
+    "answer is posted there."
+)
 RULES = (
     f"You may hand parts of this work to subagents, at most {SUBTASKS} at a time, "
     "only where it helps: use fewer when fewer are enough, and none when none is. "
@@ -270,7 +280,7 @@ class Ask:
         everyone reads it, and the message cannot tell that it is the wrong
         place for a key or for someone else's details.
         """
-        return "\n\n".join(part for part in (self.note, self.prompt, RULES) if part)
+        return "\n\n".join(part for part in (self.note, SELF, self.prompt, RULES) if part)
 
     def _edit(self, content: str) -> bool:
         try:
@@ -669,7 +679,7 @@ class Ask:
             self.prompted_at = time.time() * 1000.0
             self.before = self._newest_id(session)
             if self.goal:
-                self.client.set_goal(session, f"{self.goal}\n\n{RULES}")
+                self.client.set_goal(session, f"{SELF}\n\n{self.goal}\n\n{RULES}")
             else:
                 self.client.prompt(session, self.question())
         except OpenCodeError as error:
