@@ -97,14 +97,13 @@ Torn between two sizes: pick the smaller, and say so.
 
 Five outside sources shaped this repo. Their changes are not tracked automatically, so a session that touches the
 areas below reads them again first, and updates this table when it does.
-
 | Source | What we take from it | Last checked | At |
 | --- | --- | --- | --- |
-| [DraChimeraVee/discord-bots](https://github.com/DraChimeraVee/discord-bots) (AogoWimsy, XujiWimsy) | the shape of the whole thing: owner approves, drafts and permission cards, a stranger is refused, an allowlist of ids, nothing stored about what was said, stderr without contents | 2026-11-04 | `475b229619` |
+| [DraChimeraVee/discord-bots](https://github.com/DraChimeraVee/discord-bots) (AogoWimsy, XujiWimsy) | the shape of the whole thing: owner approves, drafts and permission cards, a stranger is refused, an allowlist of ids, nothing stored about what was said, stderr without contents, and what an answer may carry out of a machine | 2026-11-05 | `34ce9c69a9f0` |
 | [OpenCode v2 API](https://opencode.ai/v2/openapi.json) and docs | every endpoint used: `/api/info`, sessions, prompt, message, permission reply, `session.command` (`goal`), the `opencode.goal` RPC, the form list and reply the question tool uses, `experimental/generate/text`, `/api/event` SSE, `serve --hostname/--port`, `OPENCODE_PASSWORD` | 2026-11-05 | `opencode v2.2.5` |
 | [DeepSeek dsh-superagent-prototype](https://github.com/deepseek-ai/dsh-superagent-prototype) | the authorization stance: the host decides from its own state, and message text is input to a decision, never a grant | 2026-11-04 | `8c32a9dc5d` |
 | [Accord/CLAUDE.md](https://accord.dravee.dev/Accord/CLAUDE.md) | the structure of this contract: task sizing, tests ship with the change, completion status, self-rating, confusion protocol, safety | 2026-11-05 | commit `a18354b1` |
-| [scarletnx/ScarletNX](https://github.com/scarletnx/ScarletNX), Aogo's replies on its pull requests and issues | how GitHub work is reported: the verdict in the first sentence, the facts that matter with their numbers, what waits for a maintainer, the artifacts named before the prose (`vigo/github.py`, `MANNER` in `vigo/ask.py`). The replies measured 2026-11-05: 19 comments, median 47 words and one line, four bullets at most, so the size is named and not left to taste | 2026-11-05 | `#1218`, `#1246`, `#1143` |
+| [scarletnx/ScarletNX](https://github.com/scarletnx/ScarletNX), Aogo's replies on its pull requests and issues | how GitHub work is reported: the verdict in the first sentence, the facts that matter with their numbers, what waits for a maintainer, the artifacts named before the prose (`vigo/github.py`, `RULES` in `vigo/ask.py`). The mark is `From Vigo (an agent)`, once: a pull request and an issue end with it, a comment starts with it, and it never names the model that ran the turn (`#1277` signed one as the model's name). The replies measured 2026-11-05: 19 comments, median 47 words and one line, four bullets at most, so the rule carries that size | 2026-11-05 | `#1218`, `#1246`, `#1143`, `#1277` |
 
 Re-read one when a task touches it:
 
@@ -138,6 +137,7 @@ edit anything here.
 | `vigo/goal.py` | when an ask is work to be done, and when it is a question |
 | `vigo/notify.py` | a DM to the owner: the update the daemon pulled, or `vigo dm` |
 | `vigo/lease.py` | one channel's run at a time across daemons, kept in the session's metadata |
+| `vigo/presence.py` | the status Discord shows (online, idle, do not disturb, invisible) from what the daemon and the servers do |
 
 A direct message that replies to a message vigo posted is an ask in that DM's session. Only the daemon that posted
 the referenced message acts on the reply, which is how the two daemons agree on one answerer. It runs through the same
@@ -146,7 +146,8 @@ asks for `DIRECT_MESSAGES` only: no privileged intent, and no guild message is r
 somebody else's message are ignored, and a stranger is refused.
 
 `deploy/` holds the service units and the launchers that unseal the password (Keychain on macOS, systemd-creds on
-Linux). `art/` holds the icon pipeline.
+Linux). `deploy/container/` holds the rootless container: the image, the launcher, the SSH client configuration and
+the service files. `art/` holds the icon pipeline.
 
 ## Commits
 

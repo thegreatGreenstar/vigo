@@ -1,10 +1,20 @@
+import os
 import subprocess
 import tempfile
 import unittest
 from pathlib import Path
 
 from vigo import __version__
-from vigo.peer import PeerClient, PeerServer, _launchd_workdir, _why, build_of, update_self
+from vigo.peer import (
+    PeerClient,
+    PeerServer,
+    _in_container,
+    _launchd_workdir,
+    _supervisor,
+    _why,
+    build_of,
+    update_self,
+)
 
 
 def git(*args: str, cwd: Path) -> str:
@@ -29,6 +39,11 @@ class PeerTest(unittest.TestCase):
         with self.assertRaises(OSError):
             PeerClient(self.url, "wrong").info()
 
+    def test_a_daemon_that_is_not_there_is_an_oserror(self):
+        """Every caller asks with `except OSError`, including `/vigo queue`."""
+        with self.assertRaises(OSError):
+            PeerClient("http://127.0.0.1:1", "pw", timeout=1.0).info()
+
     def test_an_unknown_route_is_refused(self):
         with self.assertRaises(OSError):
             PeerClient(self.url, "pw")._call("GET", "/vigo/secrets")
@@ -39,6 +54,15 @@ class PeerTest(unittest.TestCase):
         info = PeerClient(f"http://127.0.0.1:{server.server.server_address[1]}", "pw").info()
         self.assertEqual(info["build"], "abc1234")
         self.assertEqual(info["version"], __version__)
+
+    def test_it_reports_what_it_runs_and_waits_on(self):
+        """`/vigo queue` on the other daemon reads this: an empty one is an empty list."""
+        self.assertEqual(PeerClient(self.url, "pw").info()["queue"], [])
+        tasks = [{"channel": "c1", "title": "Discord DM", "running": None, "waiting": ["one"]}]
+        server = PeerServer("127.0.0.1", 0, "macbook", "pw", queue=lambda: tasks).start()
+        self.addCleanup(server.stop)
+        info = PeerClient(f"http://127.0.0.1:{server.server.server_address[1]}", "pw").info()
+        self.assertEqual(info["queue"], tasks)
 
 
 class UpdateTest(unittest.TestCase):
@@ -137,7 +161,20 @@ class SupervisorTest(unittest.TestCase):
     def test_a_job_without_one_is_not_this_checkout(self):
         self.assertEqual(_launchd_workdir("state = running\n"), "")
 
+    def test_a_container_is_restarted_by_its_supervisor(self):
+        """No systemd and no launchd run inside one; the unit outside does."""
+        with tempfile.TemporaryDirectory() as directory:
+            self.assertEqual(
+                _supervisor(Path(directory), container=True),
+                ["sh", "-c", f"kill -KILL {os.getpid()}"],
+            )
+
     def test_a_checkout_no_supervisor_runs_is_not_restarted(self):
+        if _in_container():
+            # In a container the unit outside does restart it, and this test
+            # would start the thread that ends the suite.  The test above covers
+            # the command itself.
+            self.skipTest("a container is restarted by the unit that runs it")
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             origin = root / "origin.git"

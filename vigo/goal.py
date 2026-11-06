@@ -4,7 +4,7 @@ A goal is durable: the device keeps it, works toward it across turns, and says
 it is met (`/goal <objective>` in the agent, and `opencode.goal` behind it).
 A question is not a goal. "Why did CI fail?" wants an answer now, and made into
 an objective it becomes work the agent keeps doing after the answer is given.
-So the wording decides, and `/vigo ask goal:true|false` overrides it:
+So the wording decides, with no option to say which it is:
 
 - a request is a task: "can you fix the tests", "please rename this"
 - a question is not: anything that ends with "?", or opens with a question word

@@ -43,11 +43,15 @@ line, a count of tests), then what still waits for a person. It is short. In
 that project the replies run to about fifty words, and a list of four facts is
 the long one.
 
-The agent is told this with every question and every goal, so the shape and the
-size travel with the work. vigo adds the one part a machine does better: a
-first line with the work itself, in the order it was made. It stands where the
-byline stands in those replies, provenance before the verdict, and it cannot
-forget an artifact the prose mentions.
+A pull request and an issue the agent writes end with the line `From Vigo (an
+agent)`, and a comment starts with it. One mark only, and never the name of the
+model that ran the turn. The model changes from question to question, and the
+agent that asked it does not.
+
+The agent is told to write it that way. vigo adds the one part a machine does
+better: a first line with the work itself, in the order it was made. It stands
+where the byline stands in those replies, provenance before the verdict, and it
+cannot forget an artifact the prose mentions.
 
 ```
 GitHub: [PR #1251](https://github.com/scarletnx/ScarletNX/pull/1251) · [commit aaf1a0d](…)
@@ -55,10 +59,12 @@ GitHub: [PR #1251](https://github.com/scarletnx/ScarletNX/pull/1251) · [commit 
 the fix is right, and the test it lacked is on top of the branch.
 ```
 
-That line holds only what the answer already names: nothing is fetched from
-GitHub, so a private project stays private, and a device with no `gh` still
-reports. A link the answer puts on its own first line is not repeated, so the
-line is always an addition.
+The line is not a second report: the agent says what it did and what is left,
+in its own words, and the line only names the work it points at. That line
+holds only what the answer already names: nothing is fetched from GitHub, so a
+private project stays private, and a device with no `gh` still reports. A link
+the answer puts on its own first line is not repeated, so the line is always an
+addition.
 
 ## What can and cannot happen
 
@@ -120,10 +126,12 @@ first start is usually a minute.
 
 **What a user install can and cannot do.** The acknowledgement, the answer and
 extra messages all go through the interaction's own token, so they work in a
-channel where the bot is not a member. Two things need the bot in the channel:
-posting an answer that arrives *after* the interaction's 15 minutes, and posting
-a fallback line when a DM is impossible. Both fall back with a line in the log;
-the normal paths do not need it.
+channel where the bot is not a member. One thing needs the bot in the channel:
+a fallback line when a DM is impossible. An answer that arrives *after* the
+interaction's 15 minutes goes to the channel with the bot's own token, and when
+that is refused — the bot is not a member, or the answer was `hidden` and its
+message expired — it goes to the owner's DM instead, said to be late. A goal
+that runs for an hour therefore still reaches the person who asked for it.
 
 ### 2. OpenCode on each device
 
@@ -319,6 +327,70 @@ password and nothing runs before your Keychain is unlocked.
 Both restart themselves after a crash, which matters at login: OpenCode binds the tailnet address, so it fails until
 Tailscale is up, and the supervisor simply tries again.
 
+### Running the daemon in a container
+
+`deploy/container/` holds a rootless podman setup for the daemon. It uses
+`python:3.14-slim` with git and an SSH client, mounts the checkout, the settings and the state at their real paths,
+and takes its three secrets from podman. `opencode serve` stays on the host, so the container holds only the daemon.
+
+The SSH split of the host cannot enter a Linux VM: the Secure Enclave push key and the YubiKey signing key stay on
+the machine. A container therefore needs its own GitHub account and its own key, with no passphrase, and the key
+comes from a podman secret.
+
+```sh
+podman build -t localhost/vigo deploy/container
+security find-generic-password -s vigo-token -w | podman secret create vigo-token -
+security find-generic-password -s vigo-macbook -w | podman secret create vigo-opencode -
+podman secret create vigo-ssh-key ~/.ssh/vigo_ed25519
+```
+
+The Keychain cannot be called from inside the container, so two settings change:
+
+```jsonc
+"tokenCommand": "printenv VIGO_TOKEN",
+"passwordCommand": "printenv VIGO_OPENCODE_PASSWORD",
+```
+
+and the checkout's remote names Vigo's account, which the one key reaches:
+
+```sh
+git remote set-url origin git@github.com:<the-vigo-account>/vigo.git
+git remote set-url --push origin git@github.com:<the-vigo-account>/vigo.git
+```
+
+The second line matters: the host split gives this clone a separate push URL, and that one would still point at the
+Secure Enclave key.
+
+On Linux the container uses the host's network, so `127.0.0.1:4096` and an SSH tunnel work as they do now. On macOS
+the container is in the podman machine and its `127.0.0.1` is the VM. Name the Mac as `host.containers.internal`,
+also for a tunnel port, and publish the peer port:
+
+```jsonc
+// the two device entries
+{ "name": "macbook", "url": "http://host.containers.internal:4096", "directory": "/Users/you/Projects/ScarletNX" },
+{ "name": "pc", "url": "http://host.containers.internal:4097", "directory": "C:/Users/…" },
+// and at the top level of the file
+"peerPort": 4098,
+"peerHost": "0.0.0.0"
+```
+
+`peerHost` is `0.0.0.0` because the published port arrives on the container's own interface, not on its loopback.
+
+```sh
+VIGO_PEER_PORT=4098 deploy/container/run.sh
+```
+
+To start it at login, install the unit for the platform: `deploy/container/vigo-container.service` for systemd,
+
+```sh
+install -D -m 644 deploy/container/vigo-container.service ~/.config/systemd/user/
+systemctl --user enable --now vigo-container
+```
+
+or `deploy/container/dev.vigo.container.plist.in` for launchd, which its header fills in and loads. The supervisor
+starts the script again when the bot ends, which is what `/vigo upgrade` does: the bot ends its own process there and
+the new code starts. A bare `run.sh` is a one-shot, for a test.
+
 ## The Discord application, in words
 
 What the Developer Portal asks for, if it helps:
@@ -339,10 +411,11 @@ What the Developer Portal asks for, if it helps:
 
 | Command | Who | What happens |
 | --- | --- | --- |
-| `/vigo ask prompt:<text> [device] [goal:<true｜false>] [hidden] [new]` | approved users | asks the device you last worked on; the question is acknowledged at once and the answer follows as a new message, public in the channel unless `hidden:true`, in which case only you see the question and answer |
-| `/vigo goal objective:<text> [device] [hidden]` | approved users | gives the channel's agent an objective to keep working toward, with no question; `pause`, `resume` and `clear` control the goal it already has |
-| `/vigo quick prompt:<text> [device] [hidden]` | approved users | one answer, with no session and no tools |
-| `/vigo status` | approved users | the channel's session, its device, tokens and cost; the next three questions that wait, and the last three that ran |
+| `/vigo ask prompt:<text> [file] [device] [hidden] [new]` | approved users | asks the device you last worked on; the question is acknowledged at once and the answer follows as a new message, public in the channel unless `hidden:true`, in which case only you see the question and answer. A task gets a goal, which the device works toward in a session of its own. A file attached with it, or a reply to an answer that carries one, is fetched and read on that device: a log or a dump never has to be pasted |
+| `/vigo goal objective:<text> [device] [hidden]` | approved users | gives the device an objective to keep working toward, with no question, in a session of its own; `pause`, `resume` and `clear` control the goal it already has |
+| `/vigo quick prompt:<text> [device] [hidden]` | approved users | one answer, with no session and no tools; the message stays as thinking until the answer is ready, then becomes it, with no line before |
+| `/vigo status` | approved users | the channel's session, its device, tokens and cost, and the subagents at work under it; every question that waits, and the last three that ran |
+| `/vigo queue [public]` | owner | every channel that runs or waits, on this daemon and the other ones, every task in each line, and how many agents work on each task; `public:true` shows the channel a redacted copy |
 | `/vigo devices` | approved users | what is up, and which one a question would go to |
 | `/vigo stop` | owner | interrupts the channel's run, and drops the questions that wait behind it |
 | `/vigo upgrade [device]` | owner | pulls and restarts a daemon that runs a different commit; empty does every one of them, and the owner gets a DM naming each device and the commit it moved from and to |
@@ -351,37 +424,104 @@ What the Developer Portal asks for, if it helps:
 | `/vigo allowed` | owner | who may ask, and until when |
 | `/vigo help` | anyone | what the bot does |
 
-`/vigo status`, `devices`, `upgrade`, `allow`, `deny` and `allowed` are
-always ephemeral: only the person who ran it sees the answer, and no option
-could show it to a channel. `/vigo stop` takes `hidden` like the questions do.
+`/vigo status`, `devices`, `upgrade`, `allow`, `deny` and `allowed` are always
+ephemeral: only the person who ran it sees the answer, and no option could show
+it to a channel. `/vigo queue` is ephemeral too, unless the owner passes
+`public:true`. `/vigo stop` takes `hidden` like the questions do.
+
+The public queue is the one the channel reads: no channel is named, no device
+is named, and a task that holds a path, an address, an id or a device name is
+shown as `redacted task`. What stays is the shape of the work, which is each
+line's state, how many tasks wait behind it, and how many agents work on it.
+
+A line says how many **agents** work on its task: the task's own agent while it
+runs, and every subagent under it. The device answers that from the sessions it
+runs now, because a subagent is a session of its own under the task's session.
+A task with nothing at work shows no count, and a device that does not answer
+leaves the count out rather than showing a wrong one. `/vigo status` names the
+subagents at work under the channel's session.
 
 One question runs in a channel at a time. A question asked while one runs
 waits its turn, and the message it came from says how many run before it. The
-line holds ten. `/vigo stop` clears it. `/vigo status` names the next three and
-the last three that ran.
+line holds ten. `/vigo stop` clears it. A **task** asks for neither: it always
+goes through the line, and it can start while the device is still answering a
+question, because a task runs in a session of its own. A question is what the
+device's busy conversation would make steer, so a question that arrives while
+another daemon's run holds that session is refused with that reason instead.
+`/vigo status` names every task in this channel's line and the last three that ran, and `/vigo queue` names every
+channel that runs or waits, on this daemon and on the others, so a task waiting
+somewhere else is found without knowing where to look. A daemon that does not
+answer its peer port is said to be silent, never left out. A line lives in the
+memory of the daemon that took its questions, so a restart drops what waited,
+and those questions have to be asked again.
 
-The deferred message becomes "Got it, working on it" at once, and the answer
-is a new message when the agent is done, so Discord notifies you. The answer
-carries its first two paragraphs, at most one Discord message. A follow-up in
-the same session reaches the rest. A run that passes `timeout` says the device
+The deferred message becomes "Got it, " plus one short phrase the device wrote
+for the request — "fixing the failing CI job", "explaining why CI is red" — so
+the channel learns what was understood, not the question read back. The phrasing
+follows the work, and a device that will not write one leaves the line saying
+only that the question arrived. The answer is a new message when the agent is done, so Discord notifies
+you. A request is acknowledged as "working on" and a question as "looking
+into", so the channel can tell what was taken on. The device is told to keep
+the answer to two short paragraphs and leave the rest out, and the code does not
+cut it shorter than Discord requires: an answer that fits a message arrives as
+written, however many paragraphs it has, and a longer one arrives in the
+messages that carry it, in order, with each code fence closed. Only a runaway
+answer stops at four messages, and its last one says so, naming the session
+where the rest is when there is one.
+A run that passes `timeout` says the device
 is still working and keeps watching. The answer still arrives, and the channel
 stays busy until it does. No progress line is posted. If the device is not
 working on it by then — nothing on the session is newer than the question — the
 run ends and says so, because a device that took the question and will not run
 it would hold the channel for ever with every later question behind it.
 
+When a turn fails, the answer names what the person can act on: the model is
+rate limited, the account has no quota left, the session is out of context, or
+the provider refused the key. The device's own words stay in the log, never in
+the channel. A turn that produced nothing at all — the machine slept under it,
+or the session never ran — says that, instead of reading like an empty answer.
+
+An ask may hand parts of its work to subagents — **up to three at a time, only
+where it helps**: fewer when fewer are enough, none when none is. Both a
+question and a goal say so. The **plan** is your OpenCode subscription: one
+account, and both machines draw on it, so its concurrency and its rate limits
+are shared. Vigo starts at most ten agents at work at once across every device
+it drives — ten, not more, because a burst past the plan's limits comes back as
+failed turns instead of answers. An "agent" there is a session whose turn is
+running: a conversation answering a question, a task's own session, or a
+session OpenCode made for a subagent. A question that would be the eleventh is
+refused, saying how many run, and `/vigo status` names the count when more than
+one agent runs.
+
 In a direct message, reply to a message the bot posted and the reply is the
 next question in the same session. Its answer is posted in the DM as a message.
 A plain message is not a question. A reply to somebody else's message is
 ignored, and somebody who may not ask is told so.
 
-An ask that is a task gives the agent a **goal**, and it works toward that
-until it is met instead of answering once. A question stays a question:
-`/vigo ask goal:true` or `goal:false` says which it is when the wording is read
-wrong. `/vigo goal objective:…` sets one without asking anything, and
+An ask that is a task gives the device a **goal**, and it works toward that
+until it is met instead of answering once. No option says which it is: the
+wording decides, and a request ("can you fix the tests") is a task while a
+question ("why is CI red?") is not. When the wording is read wrong, say it with
+`/vigo goal objective:…`, which sets a goal without asking anything.
 `/vigo goal pause`, `resume` and `clear` control the one the channel has.
 `/vigo status` names the goal and the state the device keeps for it, including
-a goal the device paused because it restarted under it.
+a goal the device paused because it restarted under it. The answer to a goal
+says where it stands when the turn ends: **the goal is met**, still active with
+its round, or paused with the device's reason. A goal keeps working across
+turns, so that line is the one that says it is finished.
+
+A task does not run in the conversation's session. It gets a session of its
+own, named for the channel and the first words of the task, and it runs under
+the device's subagent agent (`general` in OpenCode) instead of the default one.
+A goal goes the same way, whether the wording of an ask made it or
+`/vigo goal objective:…` set it: it runs in a session of its own under that
+subagent agent, so the conversation keeps answering questions while the goal
+works. A channel that already holds a goal keeps its session, so a second
+objective steers the work that runs instead of starting another.
+OpenCode lists that session, so the person can open it there and carry on with
+the work directly, and the answer names it once. The channel remembers the
+session the work is in, so a follow-up and `/vigo status` reach it. A question
+keeps the conversation's session and no worker.
 
 
 Two daemons answer every channel, one on each machine, and each keeps its own
@@ -391,7 +531,8 @@ heartbeat that the run bumps every few seconds while it works. A run that finds
 a claim held by the other daemon waits for it and then asks. A claim whose
 heartbeat has not moved for twenty seconds is dead and is taken over, so a crash
 or a restart costs one turn and not the channel. `/vigo goal` reads the same
-claim and refuses while somebody else holds the session.
+claim on the session the channel already has, and refuses while somebody else
+holds it.
 
 A run is not always the daemon's that answers `/vigo status`: both daemons get
 every command, Discord takes the first acknowledgement, and either may restart
@@ -399,6 +540,17 @@ under a run. So `status` asks the device's own session, which is the record
 they share, and reports the device working when it is, even with no run in
 this process. A question asked then is refused with that reason instead of
 joining the agent's turn; `new:true` still starts a fresh session.
+
+The question carries one line the device would not otherwise know: who asked
+and who reads the answer. A public answer is read by everyone in the channel,
+and the line says so and asks the agent to keep credentials, keys and other
+people's private details out of it. An answer only the asker sees says nothing
+more, because the person asking may see what they asked about.
+
+A public answer is also checked before it goes out: a value shaped like a key,
+a token or a private key block is replaced with `[redacted: …]`, and the answer
+says one was removed. `hidden:true` shows the answer whole. Paths, e-mails and
+hostnames are left alone, because an answer about a machine has to name them.
 
 The allowlist is kept in a message the bot owns: in `stateChannel` when the
 file names one, otherwise in the bot's DM with you. It is read before every
@@ -449,6 +601,22 @@ JSON
 
 Because the answer needs that device's OpenCode to be running, a question
 fails when no device is up. That is the honest answer, not a queue.
+
+## The status it shows
+
+The bot's Discord status says what it is doing instead of staying green:
+
+- **Offline** (invisible) when no OpenCode server answers. Nothing can be
+  asked, so the bot looks offline.
+- **Do not disturb** when every server that answers is at work on a turn,
+  including the turn the bot is thinking in. A question would wait behind that
+  work. This is what thinking looks like, not a session list that is full.
+- **Online** while it answers a quick command, while a question waits, and for
+  two minutes after its last answer.
+- **Idle** otherwise.
+
+Only a change is sent, and the gateway sends the current status again after a
+reconnect.
 
 ## Permissions
 
@@ -655,8 +823,11 @@ to a draft runs the quick one again.
 | `closed with 4014` | the bot asked for an intent Discord does not allow it; the bot asks only for `DIRECT_MESSAGES` |
 | `no device answers` | no `opencode serve` is reachable from this daemon: check the URL, the port, and the password |
 | `Permission needed` never arrives | the owner and the bot do not share a server that allows DMs, so the card falls back to the channel |
+| `/vigo upgrade` says `git refused` and the log names `usekeychain` | the daemon's `ssh` is Homebrew's, which has no `UseKeychain`; the bot's launchd job sets `GIT_SSH_COMMAND=/usr/bin/ssh`, and `./install.sh` writes that again |
 | the answer says `still running` | the run passed `timeout`; it keeps watching, `/vigo status` shows it, `/vigo stop` ends it |
 | the answer says `never started` | the device admitted the question and its session never began the turn: `opencode serve` there is stuck, so restart it and ask again |
+| the answer says the model is rate limited, or has no quota left | the plan is spent for now: wait, or `/vigo quick` for a one-off that starts no session, and the log holds the device's own words |
+| the answer says the device returned no text | the turn produced nothing: the machine slept under it, or the session never ran. Ask again; a run that crossed a sleep ends like this |
 | a goal says `paused` | the device restarted while the goal was active; `/vigo goal resume` starts it again |
 | a question says `Queued` | one run at a time per channel; it starts when the one before it ends, or `/vigo stop` clears it |
 | a channel has no session | the first ask creates one; `new:true` starts a fresh one on purpose |
