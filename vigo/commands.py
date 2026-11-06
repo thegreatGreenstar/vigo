@@ -8,6 +8,7 @@ GOAL = "goal"
 UPGRADE = "upgrade"
 STOP = "stop"
 STATUS = "status"
+QUEUE = "queue"
 DEVICES = "devices"
 ALLOW = "allow"
 DENY = "deny"
@@ -55,18 +56,15 @@ def spec(install: str = "both") -> list[dict]:
                             "required": True,
                         },
                         {
-                            "type": 3,
-                            "name": "device",
-                            "description": "macbook or pc; empty picks where you last worked.",
+                            "type": 11,
+                            "name": "file",
+                            "description": "A log or other file to read, with the question.",
                             "required": False,
                         },
                         {
-                            "type": 5,
-                            "name": "goal",
-                            "description": (
-                                "Work toward it until it is done instead of answering once; "
-                                "empty decides from the wording."
-                            ),
+                            "type": 3,
+                            "name": "device",
+                            "description": "macbook or pc; empty picks where you last worked.",
                             "required": False,
                         },
                         {
@@ -86,7 +84,7 @@ def spec(install: str = "both") -> list[dict]:
                 {
                     "type": 1,
                     "name": GOAL,
-                    "description": "Give this channel's agent a goal to keep working toward.",
+                    "description": "Give the device a goal to keep working toward, in a session of its own.",
                     "options": [
                         {
                             "type": 3,
@@ -154,6 +152,19 @@ def spec(install: str = "both") -> list[dict]:
                 },
                 {
                     "type": 1,
+                    "name": QUEUE,
+                    "description": "What runs and what waits, in every channel and on every daemon.",
+                    "options": [
+                        {
+                            "type": 5,
+                            "name": "public",
+                            "description": "The channel sees it too, with every task that names a person, a path or a machine redacted.",
+                            "required": False,
+                        },
+                    ],
+                },
+                {
+                    "type": 1,
                     "name": DEVICES,
                     "description": "Which devices answer, and which one a question would go to. Only you ever see this.",
                 },
@@ -207,15 +218,31 @@ def relevant(commands: list[dict]) -> list[dict]:
 
 
 def flatten(data: dict) -> tuple[str, dict]:
-    """The subcommand's name and its options, as Discord sends them."""
+    """The subcommand's name and its options, as Discord sends them.
+
+    A file arrives as the id of an attachment, and its name, size and link are
+    in the payload's `resolved` part.  The id alone names nothing anyone can
+    read, so the attachment is resolved here and the option carries what a
+    reader of the question needs.
+    """
     options = data.get("options") or []
     if not options:
         return "", {}
     chosen = options[0]
     name = chosen.get("name", "")
+    files = (data.get("resolved") or {}).get("attachments") or {}
     values: dict = {}
     for option in chosen.get("options") or []:
-        values[option.get("name", "")] = option.get("value")
+        value = option.get("value")
+        if option.get("type") == 11:
+            found = files.get(str(value)) or {}
+            value = {
+                "filename": found.get("filename"),
+                "url": found.get("url"),
+                "size": found.get("size"),
+                "content_type": found.get("content_type"),
+            }
+        values[option.get("name", "")] = value
     return name, values
 
 

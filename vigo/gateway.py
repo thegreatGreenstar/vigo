@@ -14,6 +14,7 @@ import os
 import socket
 import ssl
 import struct
+import threading
 import time
 import urllib.parse
 from collections.abc import Callable
@@ -34,6 +35,7 @@ OP_BINARY = 0x2
 OP_CLOSE = 0x8
 OP_PING = 0x9
 OP_PONG = 0xA
+OP_PRESENCE = 0x3
 
 
 class GatewayClosed(Exception):
@@ -56,6 +58,9 @@ class WebSocket:
         self.timeout = timeout
         self.sock: socket.socket | None = None
         self.buffer = b""
+        # A presence update is written from another thread than the heartbeat
+        # and the dispatches, and two sends must not interleave their frames.
+        self.send_lock = threading.Lock()
 
     def connect(self) -> None:
         raw = socket.create_connection((self.host, self.port), timeout=self.timeout)
@@ -151,7 +156,10 @@ class WebSocket:
         mask = os.urandom(4)
         header += mask
         masked = bytes(byte ^ mask[index % 4] for index, byte in enumerate(payload))
-        self.sock.sendall(bytes(header) + masked)
+        with self.send_lock:
+            if self.sock is None:  # closed while this frame was built
+                raise GatewayClosed("not connected")
+            self.sock.sendall(bytes(header) + masked)
 
     def send_json(self, value: object) -> None:
         self.send(OP_TEXT, json.dumps(value).encode())
@@ -163,11 +171,12 @@ class WebSocket:
             self.send(OP_CLOSE, struct.pack("!H", code))
         except OSError:
             pass
-        try:
-            self.sock.close()
-        except OSError:
-            pass
-        self.sock = None
+        with self.send_lock:
+            try:
+                self.sock.close()
+            except OSError:
+                pass
+            self.sock = None
 
 
 class Gateway:
@@ -190,11 +199,39 @@ class Gateway:
         self.seq: int | None = None
         self.stopped = False
         self.ws: WebSocket | None = None
+        # The status Discord shows, kept here because Discord forgets it when
+        # the connection drops: a reconnect sends it again from this value.
+        self.presence: str | None = None
 
     def stop(self) -> None:
         self.stopped = True
         if self.ws:
             self.ws.close()
+
+    def set_presence(self, status: str) -> None:
+        """Show this daemon with `status`: online, idle, dnd or invisible.
+
+        A status set before the connection is up is kept and sent as soon as
+        Discord allows it after the identify.
+        """
+        self.presence = status
+        self._send_presence()
+
+    def _send_presence(self) -> None:
+        if self.presence is None or self.ws is None:
+            return
+        try:
+            self.ws.send_json({
+                "op": OP_PRESENCE,
+                "d": {
+                    "since": None,
+                    "activities": [],
+                    "status": self.presence,
+                    "afk": False,
+                },
+            })
+        except (OSError, GatewayClosed) as error:  # the next reconnect sends it
+            log.info(f"gateway: no presence ({error})")
 
     def run(self) -> None:
         backoff = 1.0
@@ -280,6 +317,9 @@ class Gateway:
                     self._resume(interval)
                 else:
                     self._identify()
+                # Discord starts every connection without a status, so the one
+                # this daemon holds is sent with the identify or the resume.
+                self._send_presence()
                 identified = True
                 self.on_state("up")
             elif op == 11:

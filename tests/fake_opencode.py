@@ -10,6 +10,8 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlsplit
 
+from vigo.opencode_api import busy_since
+
 
 class FakeOpenCode:
     def __init__(self, name: str = "macbook", password: str = "pw",
@@ -35,6 +37,8 @@ class FakeOpenCode:
         self.counter = 0
         self.script: list[tuple] = []
         self.activity_ms = 0.0
+        self.description = "fixing the thing"
+        self.answer = "one-off answer"
         self.hang_events = threading.Event()
         self.permission_waiters: dict[str, threading.Event] = {}
         self.form_waiters: dict[str, threading.Event] = {}
@@ -79,17 +83,26 @@ class FakeOpenCode:
             self.messages.setdefault(session, []).append(message)
         return message
 
-    def new_session(self, title: str = "test", metadata: dict | None = None) -> str:
+    def new_session(self, title: str = "test", metadata: dict | None = None,
+                    agent: str = "", parent: str = "") -> str:
         session = self.next_id("ses")
         with self.lock:
             self.sessions[session] = {
                 "id": session, "projectID": "proj", "cost": 0, "tokens": {},
                 "time": {"created": time.time() * 1000, "updated": time.time() * 1000},
                 "title": title, "location": {"directory": self.directory},
-                "metadata": dict(metadata or {}),
+                "metadata": dict(metadata or {}), "agent": agent or "build",
             }
+            if parent:
+                self.sessions[session]["parentID"] = parent
             self.messages.setdefault(session, [])
         return session
+
+    def running(self) -> dict[str, dict]:
+        """What `/api/session/active` answers: the sessions a turn runs in."""
+        with self.lock:
+            return {session: {"type": "running"} for session, info in self.sessions.items()
+                    if busy_since(info) is not None}
 
     def started_turn(self, session: str) -> None:
         """Mark the session busy, as the device does while an agent works."""
@@ -206,6 +219,14 @@ class FakeOpenCode:
                 waiter.wait(10.0)
                 self.emit("form.replied", {"id": form["id"], "sessionID": session,
                                            "answer": {}})
+            elif action == "fail":
+                # The device's turn failed: the reason is what the person
+                # needs, and the event carries it the way the device writes it.
+                self.emit("session.execution.failed", {
+                    "sessionID": session,
+                    "message": step[1] if len(step) > 1 else "the turn failed",
+                })
+                return
             elif action == "idle":
                 self.add_message(session, "assistant",
                                  content=[{"type": "text", "text": step[1] if len(step) > 1 else "done"}],
@@ -303,6 +324,19 @@ class FakeOpenCode:
                         with fake.lock:
                             fake.subscribers.remove(channel)
                     return
+                if path == "/api/agent":
+                    self._send(200, {
+                        "location": {"directory": fake.directory},
+                        "data": [
+                            {"id": "build", "mode": "primary", "name": "Build"},
+                            {"id": "general", "mode": "subagent", "name": "General"},
+                            {"id": "explore", "mode": "subagent", "name": "Explore"},
+                        ],
+                    })
+                    return
+                if path == "/api/session/active":
+                    self._send(200, {"data": fake.running()})
+                    return
                 if path == "/api/session":
                     with fake.lock:
                         listed = list(fake.sessions.values())
@@ -361,13 +395,19 @@ class FakeOpenCode:
                 path = urlsplit(self.path).path
                 body = self._body()
                 if path == "/api/experimental/generate/text":
+                    said = str(body.get("prompt") or "")
                     with fake.lock:
-                        fake.generated.append(str(body.get("prompt") or ""))
-                    self._send(200, {"data": {"text": "one-off answer"}})
+                        fake.generated.append(said)
+                    # Vigo asks for a short phrase for the acknowledgement
+                    # before the answer itself; this fake tells them apart by
+                    # the instruction's first words.
+                    text = fake.description if said.startswith("In one short phrase") else fake.answer
+                    self._send(200, {"data": {"text": text}})
                     return
                 if path == "/api/session":
                     title = body.get("title") or "test"
-                    session = fake.new_session(title, body.get("metadata"))
+                    session = fake.new_session(title, body.get("metadata"),
+                                               str(body.get("agent") or ""))
                     self._send(200, {"data": fake.sessions[session]})
                     return
                 if path == "/api/rpc/opencode.goal/get":

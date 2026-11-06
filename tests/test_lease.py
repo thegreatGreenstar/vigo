@@ -12,7 +12,7 @@ from vigo.opencode_api import OpenCode
 from vigo.state import State
 from tests.fake_discord import FakeDiscord
 from tests.fake_opencode import FakeOpenCode
-from tests.support import question_of, TempDir, load_settings
+from tests.support import TempDir, load_settings, question_of
 
 CHANNEL = "chan_lease"
 OWNER = "145512144145512144"

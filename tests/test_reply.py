@@ -8,7 +8,7 @@ from vigo.discord_api import Discord
 from vigo.state import State
 from tests.fake_discord import FakeDiscord
 from tests.fake_opencode import FakeOpenCode
-from tests.support import question_of, TempDir, load_settings
+from tests.support import TempDir, load_settings, question_of
 
 OWNER = "145512144145512144"
 STRANGER = "888888888888888888"
@@ -59,13 +59,15 @@ class ReplyTest(unittest.TestCase):
             ]},
         })
 
-    def reply(self, app: App, to: str, *, who: str = OWNER, text: str = "and then?") -> None:
+    def reply(self, app: App, to: str, *, who: str = OWNER, text: str = "and then?",
+              attachments: list | None = None) -> None:
         app.handle_message({
             "id": self.discord.next_id("msg"),
             "channel_id": DM,
             "content": text,
             "author": {"id": who, "bot": False},
             "message_reference": {"message_id": to},
+            **({"attachments": attachments} if attachments else {}),
         })
 
     def last_answer(self, app: App) -> str:
@@ -97,9 +99,59 @@ class ReplyTest(unittest.TestCase):
         posted = [message["content"] for message in self.discord.messages[DM]]
         self.assertTrue(any("the second answer" in content for content in posted),
                         "the answer is a message in the DM, not an edit")
-        acks = sum(("Got it, working on it." in said) or ("Queued behind" in said)
+        acks = sum(said.startswith("Got it") or ("Queued behind" in said)
                    for said in self.said())
         self.assertEqual(acks, 1)
+
+    def test_a_reply_that_is_only_a_file_asks_about_it(self):
+        """A log dropped without words is the question: read this."""
+        self.device.script = [("idle", "the first answer")]
+        app = self.make()
+        self.ask(app)
+        self.assertTrue(self.wait_for("the first answer"))
+        self.settle(app)
+        self.device.script = [("idle", "the log shows it")]
+        self.reply(app, self.last_answer(app), text="", attachments=[{
+            "id": "att_1", "filename": "010015100B514000.log", "size": 136458,
+            "url": "https://cdn.discordapp.com/attachments/1/2/log?ex=signed",
+        }])
+        self.assertTrue(self.wait_for("the log shows it"))
+        told = self.device.prompts[-1][1]
+        self.assertIn("“010015100B514000.log”, 133 KB", told)
+        self.assertIn("https://cdn.discordapp.com/attachments/1/2/log?ex=signed", told)
+        self.assertIn("curl -L -o /tmp/vigo-attached", told)
+
+    def test_a_stranger_gets_no_answer_about_a_file(self):
+        self.device.script = [("idle", "the first answer")]
+        app = self.make()
+        self.ask(app)
+        self.assertTrue(self.wait_for("the first answer"))
+        self.settle(app)
+        asked = len(self.device.prompts)
+        self.reply(app, self.last_answer(app), who=STRANGER, text="", attachments=[{
+            "id": "att_1", "filename": "x.log", "size": 1,
+            "url": "https://cdn.discordapp.com/attachments/1/2/x.log",
+        }])
+        self.assertEqual(len(self.device.prompts), asked, "no device took it")
+        self.assertTrue(any("approved" in said for said in self.said()))
+
+    def test_a_long_answer_to_a_reply_arrives_whole(self):
+        """The answer the owner reads in a DM is not cut mid-sentence."""
+        self.device.script = [("idle", "the first answer")]
+        app = self.make()
+        self.ask(app)
+        self.assertTrue(self.wait_for("the first answer"))
+        self.settle(app)
+        self.device.script = [("idle", "y" * 4000)]
+        self.reply(app, self.last_answer(app))
+        self.assertTrue(self.discord.wait_for(
+            lambda: sum(len(message["content"]) for message in self.discord.messages[DM]
+                        if set(message["content"]) == {"y"}) >= 4000, 10))
+        self.settle(app)
+        posted = [message["content"] for message in self.discord.messages[DM]
+                  if set(message["content"]) == {"y"}]
+        self.assertGreater(len(posted), 1, "the answer takes more than one message")
+        self.assertEqual("".join(posted), "y" * 4000, "the DM holds every word of it")
 
     def test_a_plain_dm_is_ignored(self):
         app = self.make()

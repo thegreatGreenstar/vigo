@@ -20,6 +20,7 @@ import subprocess
 import sys
 import threading
 import time
+from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -41,12 +42,17 @@ class PeerClient:
         self.timeout = timeout
 
     def _call(self, method: str, path: str) -> dict:
-        status, _, raw = httpc.call(
-            f"{self.base}{path}", method,
-            headers={"Authorization": _auth(self.password)},
-            body=b"{}" if method == "POST" else None,
-            timeout=self.timeout,
-        )
+        try:
+            status, _, raw = httpc.call(
+                f"{self.base}{path}", method,
+                headers={"Authorization": _auth(self.password)},
+                body=b"{}" if method == "POST" else None,
+                timeout=self.timeout,
+            )
+        except httpc.HttpError as error:
+            # Every caller asks "is that daemon there?" with `except OSError`:
+            # a refused connection or a timeout is that answer, not a crash.
+            raise OSError(str(error)) from error
         if not 200 <= status < 300:
             raise OSError(f"the daemon said {status}")
         parsed = httpc.parse_json(raw)
@@ -85,7 +91,8 @@ class _Handler(BaseHTTPRequestHandler):
             return
         self._send(200, {"device": self.server.device,
                          "version": self.server.version or __version__,
-                         "build": self.server.build})
+                         "build": self.server.build,
+                         "queue": self.server.queue()})
 
     def do_POST(self) -> None:
         if not self._allowed():
@@ -150,14 +157,31 @@ def _launchd_workdir(printed: str) -> str:
     return ""
 
 
-def _supervisor(checkout: Path) -> list[str] | None:
+def _in_container() -> bool:
+    """Whether this process runs in a container.
+
+    Podman and Docker each leave their own mark, so nothing has to be set in
+    the settings or in the environment.  A container has no systemd and no
+    launchd inside it, which is why this is checked before either.
+    """
+    return any(Path(mark).exists() for mark in ("/run/.containerenv", "/.dockerenv"))
+
+
+def _supervisor(checkout: Path, container: bool | None = None) -> list[str] | None:
     """The command that restarts this daemon, when a supervisor runs it here.
 
     systemd says so itself on Linux.  launchd says so for any job, so it is
     only this checkout's job when the working directory matches: a job that
-    serves another clone is left alone.
+    serves another clone is left alone.  A container has neither inside it, so
+    the unit or agent that runs the container starts it again after this
+    process ends.  `container` is None for the real check; a test gives a value.
     """
     here = checkout.resolve()
+    in_container = _in_container() if container is None else container
+    if in_container:
+        # SIGKILL, because a signal with a default action is ignored by PID 1,
+        # which the bot is when the image's entry point starts it.
+        return ["sh", "-c", f"kill -KILL {os.getpid()}"]
     if _run(["systemctl", "--user", "is-active", "--quiet", "vigo.service"],
             here, timeout=10.0)[0] == 0:
         return ["systemctl", "--user", "restart", "vigo.service"]
@@ -204,7 +228,8 @@ def update_self(checkout: Path | None = None, restart: bool = True) -> dict:
 class PeerServer:
     def __init__(self, host: str, port: int, device: str, password: str,
                  checkout: Path | None = None, restart: bool = True,
-                 version: str = "", build: str = "") -> None:
+                 version: str = "", build: str = "",
+                 queue: Callable[[], list] | None = None) -> None:
         self.server = ThreadingHTTPServer((host, port), _Handler)
         self.server.device = device  # type: ignore[attr-defined]
         self.server.password = password  # type: ignore[attr-defined]
@@ -212,6 +237,9 @@ class PeerServer:
         self.server.restart = restart  # type: ignore[attr-defined]
         self.server.version = version  # type: ignore[attr-defined]
         self.server.build = build or build_of(checkout)  # type: ignore[attr-defined]
+        # What this daemon runs and waits on, for `/vigo queue` on the other
+        # one.  A daemon that holds nothing yet answers with an empty list.
+        self.server.queue = queue or (lambda: [])  # type: ignore[attr-defined]
         # A short poll: `shutdown()` waits for the loop to notice, and half a
         # second per server is half a second per test.
         self.thread = threading.Thread(

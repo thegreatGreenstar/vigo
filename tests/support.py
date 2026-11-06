@@ -9,8 +9,8 @@ import tempfile
 import time
 from pathlib import Path
 
-from vigo import ask as rules
 from vigo import config as configuration
+from vigo import ask as rules
 
 
 def base_settings(**overrides) -> dict:
@@ -44,13 +44,17 @@ def write_settings(directory: Path, settings: dict) -> Path:
 
 
 def question_of(prompt: str) -> str:
-    """What the device was asked, without the manner every prompt carries.
+    """What the device was asked, without the audience line and the rules line.
 
-    A test that checks the question wants the question, not the instruction
-    about how the answer is written; the manner has its own test.
+    A run sends three things: who reads the answer, the question, and the
+    subagent rule.  A test that checks the question wants the middle one.
     """
-    suffix = "\n\n" + rules.MANNER
-    return prompt[: -len(suffix)] if prompt.endswith(suffix) else prompt
+    body = prompt
+    if body.startswith("[Discord] "):
+        body = body.split("\n\n", 1)[1]
+    if body.endswith(rules.RULES):
+        body = body[: -len(rules.RULES)]
+    return body.rstrip("\n")
 
 
 def load_settings(directory: Path, **overrides) -> configuration.Config:

@@ -9,16 +9,16 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from . import ask as asking
-from . import commands, goal, lease as leasing, log, text
+from . import commands, goal, lease as leasing, log, presence as showing, text
 from .allowlist import AllowError, AllowList
 from .config import Config, Device
 from .discord_api import Discord, DiscordError
 from .gateway import Gateway
 from . import __version__
 from .notify import send_owner
-from .opencode_api import OpenCode, OpenCodeError, busy_since
+from .opencode_api import OpenCode, OpenCodeError, agents_on, busy_since
 from .peer import PeerClient, PeerServer, build_of, head_of, update_self
-from .router import Pick, Router
+from .router import DeviceState, Pick, Router
 from .state import State
 
 # Interactions arrive without intents. Direct messages are read only so that a
@@ -30,7 +30,74 @@ INTENTS = DIRECT_MESSAGES
 
 WAITING_MAX = 10   # questions a channel may hold behind the one that runs
 FINISHED_MAX = 10  # the last questions that ran, which `/vigo status` can name
+AGENTS_MAX = 10    # agents at work on the plan at once, across every device
 GOAL_WORDS = ("pause", "resume", "clear")  # `/vigo goal` control, not objectives
+
+
+def describe_prompt(prompt: str) -> str:
+    """The instruction that asks a device for one short phrase about the work."""
+    return (
+        "In one short phrase of at most eight words, say what this request is "
+        "about, starting with a verb that ends in -ing, with no quotes and no "
+        f"full stop:\n\n{prompt}"
+    )
+
+
+def ask_note(owner: bool, hidden: bool, where: str) -> str:
+    """What the device is told of who asked and who will read the answer.
+
+    The device sees no Discord, so without this line an answer written for one
+    person can land in a channel where everyone reads it, with nothing saying
+    that is the wrong place for a key or for someone else's details.  An
+    answer only the asker sees says nothing more: the person asking may see
+    what they asked about.
+    """
+    who = "the owner" if owner else "someone the owner allowed"
+    if hidden or not where:
+        return f"[Discord] {who} asked this, and only the asker sees the answer."
+    return (
+        f"[Discord] {who} asked this, and everyone in #{where} sees the answer. "
+        "Keep credentials, keys and other people's private details out of it."
+    )
+
+
+def _first_file(items: object) -> dict | None:
+    """The first file on a message: what a question about it needs.
+
+    A message can carry several; a log and its screenshot are one thing to
+    read, and the first is the one the person meant.
+    """
+    for item in items if isinstance(items, list) else []:
+        if isinstance(item, dict) and item.get("url"):
+            return item
+    return None
+
+
+def _attached(prompt: str, attached: object) -> str:
+    """The question with the file the person uploaded, and how to reach it.
+
+    A file is never in the question: Discord gives a link, signed and short
+    lived, and the agent fetches it on the device it works on.  A log that a
+    person drops is often megabytes, so the instruction says how a log is read
+    instead of inviting a `cat`.  The link expires and stays out of the answer.
+    """
+    if not isinstance(attached, dict):
+        return prompt
+    url = str(attached.get("url") or "")
+    if not url:
+        return prompt
+    name = text.shorten(str(attached.get("filename") or "a file"), 60)
+    size = attached.get("size")
+    said = f"The question has a file: “{name}”"
+    if isinstance(size, int) and size >= 1024:
+        said += f", {size // 1024} KB"
+    said += (
+        f". Fetch it with `curl -L -o /tmp/vigo-attached \"{url}\"`, then read it the way a "
+        "log is read: `wc -l` first, then `grep -n` for the error, the address or the "
+        "service, and `head` and `tail` around the hit. Never `cat` a file whole. The link "
+        "expires, and it is not part of the answer."
+    )
+    return f"{prompt}\n\n{said}" if prompt.strip() else said
 
 
 def _strip(command: dict) -> dict:
@@ -78,6 +145,25 @@ def _select(custom_id: str, options: list[dict], maximum: int, placeholder: str)
     }
 
 
+def _holds_goal(client: OpenCode, session: str) -> bool | None:
+    """Whether that session already holds a goal, or None when the device will not say.
+
+    A goal the channel already has is steered, never doubled: the session that
+    holds it keeps the work, and a second session would leave the first one
+    running with nobody watching it.
+    """
+    try:
+        held = client.goal(session)
+    except OpenCodeError as error:
+        log.info(f"goal: cannot read the goal ({error.message})")
+        return None
+    if held is None:
+        return False  # the session has no goal
+    if not held:
+        return None  # an empty answer is a device that did not say
+    return True
+
+
 def _answer_text(value: object) -> str:
     if isinstance(value, list):
         return ", ".join(str(item) for item in value) or "(nothing)"
@@ -100,6 +186,17 @@ class App:
         self.runs_lock = threading.Lock()
         self.pool = ThreadPoolExecutor(max_workers=8, thread_name_prefix="vigo")
         self.started = time.time()
+        # The status Discord shows, and the handlers that are still writing
+        # an answer.  A quick answer or a status read is work too, and it is
+        # not in `runs`: the counter makes it visible to the presence.
+        self.presence = showing.Presence(self._show_presence)
+        self.gateway: Gateway | None = None
+        self.in_flight = 0
+        self.in_flight_lock = threading.Lock()
+        self.busy_at = 0.0        # when the servers' busy sessions were read
+        self.busy_up = 0          # how many answered then
+        self.busy_working = False  # whether this daemon was working then
+        self.busy_servers = 0     # how many of those had a session at work
 
     # -- runs -------------------------------------------------------------
 
@@ -126,6 +223,7 @@ class App:
                 done.append(ended.prompt)
                 del done[:-FINISHED_MAX]
         if ended is not None:
+            self.presence.touch()
             self.start_next(channel)
 
     def start_next(self, channel: str) -> None:
@@ -157,6 +255,7 @@ class App:
 
     def shutdown(self) -> None:
         """Stop every run and the worker pool; used on the way out and by tests."""
+        self.presence.stopped = True
         with self.runs_lock:
             runs = list(self.runs.values())
             self.waiting.clear()  # a stopping run must not start the next one
@@ -167,6 +266,141 @@ class App:
     def run_for(self, channel: str) -> asking.Run | None:
         with self.runs_lock:
             return self.runs.get(channel)
+
+    # -- the status Discord shows ----------------------------------------
+
+    def _begin_work(self) -> None:
+        with self.in_flight_lock:
+            self.in_flight += 1
+
+    def _end_work(self) -> None:
+        """The answer is out: count the work as done, and stay online a while."""
+        with self.in_flight_lock:
+            self.in_flight -= 1
+        self.presence.touch()
+
+    def _working(self) -> bool:
+        """Whether this daemon answers something now, or holds a line of work."""
+        with self.in_flight_lock:
+            if self.in_flight:
+                return True
+        with self.runs_lock:
+            return bool(self.runs or self.waiting)
+
+    def _show_presence(self, status: str) -> None:
+        """Put the status on the gateway, which sends it again after a reconnect."""
+        gateway = self.gateway
+        if gateway is not None:
+            gateway.set_presence(status)
+
+    def _busy_servers(self, states: dict[str, DeviceState], up: int,
+                      working: bool, now: float) -> int:
+        """How many answering servers have a session at work.
+
+        A listing of each server's sessions is the only record of a turn that
+        another daemon started, and it is not free: the answer is kept for
+        `BUSY_EVERY` seconds, and thrown away when the count of servers that
+        answer changes or this daemon starts or stops thinking.  That last part
+        is what turns the light red as soon as an ask runs.
+        """
+        if (up == self.busy_up and working == self.busy_working
+                and now - self.busy_at < (showing.BUSY_WORKING if working
+                                          else showing.BUSY_EVERY)):
+            return self.busy_servers
+        busy = 0
+        for state in states.values():
+            if not state.up:
+                continue
+            device = state.device
+            try:
+                sessions = OpenCode(
+                    device.url, device.password, timeout=2.0,
+                ).sessions(limit=100)
+            except OpenCodeError as error:
+                log.debug(f"presence: {device.name}: busy is not known ({error.message})")
+                continue
+            if any(busy_since(info) is not None for info in sessions):
+                busy += 1
+        self.busy_up = up
+        self.busy_working = working
+        self.busy_at = now
+        self.busy_servers = busy
+        return busy
+
+    def _refresh_presence(self) -> None:
+        """Look at the daemon and the servers, and show the fit status."""
+        states = self.router.states()
+        up = sum(1 for state in states.values() if state.up)
+        working = self._working()
+        last = self.presence.last
+        now = self.presence.now()
+        busy = 0
+        if up and (working or last is None or now - last > showing.ONLINE_FOR):
+            busy = self._busy_servers(states, up, working, now)
+        self.presence.show(showing.status_for(
+            working=working, up=up, busy=busy, last=last, now=now,
+        ))
+
+    def _watch_presence(self) -> None:
+        """Keep the status in step, without letting a probe stop the bot."""
+        while not self.presence.stopped:
+            try:
+                self._refresh_presence()
+            except Exception as error:  # a status never takes the bot down
+                log.debug(f"presence: {type(error).__name__}: {error}")
+            self.presence.wait(showing.TICK)
+
+    def _running_agents(self) -> int:
+        """Agents at work on the plan: a busy session on any device is one.
+
+        One subscription pays for both machines, so the count is over both: ten
+        at once is the concurrency this keeps to.  A device that does not answer
+        cannot be counted, and its work is the ask's problem, not this guard's.
+        """
+        total = 0
+        for device in self.config.devices.values():
+            try:
+                sessions = OpenCode(device.url, device.password).sessions(limit=100)
+            except OpenCodeError:
+                continue
+            total += sum(1 for info in sessions if busy_since(info) is not None)
+        return total
+
+    def _describe(self, prompt: str, device_name: str) -> str:
+        """A short phrase for what was taken on, written by the device.
+
+        The acknowledgement used to quote the question, which told a channel
+        what it had just read.  A phrase written for the request says what vigo
+        understood, in words that fit it, and differs as the work does.  A
+        device that will not answer leaves the line saying only that the
+        question arrived.
+        """
+        device = self.config.device_named(device_name)
+        if device is None:
+            return ""
+        try:
+            said = OpenCode(device.url, device.password).generate_text(
+                describe_prompt(prompt), model=self.config.model.as_ref(), timeout=8.0,
+            )
+        except OpenCodeError as error:
+            log.info(f"ack: the device did not describe it ({error.message})")
+            return ""
+        phrase = " ".join(str(said or "").split()).strip("\"'` ")
+        phrase = phrase.rstrip(".").strip()
+        if not phrase or len(phrase) > 90:
+            return ""
+        return phrase[0].lower() + phrase[1:]
+
+    def _ack(self, phrase: str) -> str:
+        """The line that says the question arrived, naming the work when known."""
+        return f"Got it, {phrase}. I'll follow up here." if phrase else "Got it. I'll follow up here."
+
+    def _asked(self, phrase: str, ahead: int) -> str:
+        """The line for a question that waits its turn, naming the work."""
+        count = f"{ahead} question{'' if ahead == 1 else 's'}"
+        if phrase:
+            return f"Queued behind {count}: {phrase}."
+        return f"Queued behind {count}. I'll follow up here."
 
     def _device_busy(self, channel: str, device_name: str, new: bool) -> bool:
         """Whether the device still works on this channel's last question.
@@ -616,6 +850,14 @@ class App:
             self.pool.submit(self.handle_message, data)
 
     def handle_message(self, data: dict) -> None:
+        """A message, with the status kept in step around the answer."""
+        self._begin_work()
+        try:
+            self._handle_message(data)
+        finally:
+            self._end_work()
+
+    def _handle_message(self, data: dict) -> None:
         """A reply to a message vigo posted in a DM is that person's next question.
 
         The answer to a question is a message, so replying to it carries the
@@ -637,7 +879,8 @@ class App:
         reference = str((data.get("message_reference") or {}).get("message_id") or "")
         channel_id = str(data.get("channel_id") or "")
         prompt = str(data.get("content") or "").strip()
-        if not who or not reference or not channel_id or not prompt:
+        attached = _first_file(data.get("attachments"))
+        if not who or not reference or not channel_id or (not prompt and not attached):
             return  # a plain message is not a question
         try:
             allowed = who == self.config.owner or self.allow.may_ask(who)
@@ -668,10 +911,11 @@ class App:
             channel_id=channel_id,
             user_id=who,
             device_name=pick.name,
-            prompt=prompt,
+            prompt=_attached(prompt, attached),
             new=False,
             title="Discord DM",
             reply_in_channel=True,
+            note=ask_note(who == self.config.owner, False, ""),
         )
         ahead = self.add_waiting(channel_id, worker)
         if ahead is None:
@@ -681,11 +925,11 @@ class App:
             return
         if ahead:
             log.info(f"reply: queued in this channel ({ahead} ahead)")
-            self._post(channel_id, f"Queued behind {ahead} question{'' if ahead == 1 else 's'}. "
-                                   "I'll follow up here.", record=True)
+            self._post(channel_id, self._asked(self._describe(prompt, pick.name), ahead),
+                       record=True)
         else:
             log.info("reply: a question from a reply")
-            self._post(channel_id, "Got it, working on it. I'll follow up here.", record=True)
+            self._post(channel_id, self._ack(self._describe(prompt, pick.name)), record=True)
         self.start_next(channel_id)
 
     def _post(self, channel_id: str, content: str, record: bool = False) -> None:
@@ -741,6 +985,14 @@ class App:
     # -- interactions -----------------------------------------------------
 
     def handle_interaction(self, payload: dict) -> None:
+        """A command, with the status kept in step around the answer."""
+        self._begin_work()
+        try:
+            self._handle_interaction(payload)
+        finally:
+            self._end_work()
+
+    def _handle_interaction(self, payload: dict) -> None:
         token = str(payload.get("token") or "")
         interaction_id = str(payload.get("id") or "")
         kind = payload.get("type")
@@ -786,8 +1038,8 @@ class App:
             )
             log.info(f"denied {sub or 'a use'} from {who}")
             return
-        if sub in (commands.STOP, commands.UPGRADE, commands.STATUS, commands.ALLOW,
-                   commands.DENY, commands.ALLOWED, commands.DEVICES) and not owner:
+        if sub in (commands.STOP, commands.UPGRADE, commands.STATUS, commands.QUEUE,
+                   commands.ALLOW, commands.DENY, commands.ALLOWED, commands.DEVICES) and not owner:
             self._answer_now(
                 interaction_id, token,
                 f"Only this bot's owner can use `/vigo {sub}`.",
@@ -796,8 +1048,8 @@ class App:
             return
         if sub not in (
             commands.ASK, commands.QUICK, commands.GOAL, commands.UPGRADE,
-            commands.STOP, commands.STATUS, commands.DEVICES, commands.ALLOW,
-            commands.DENY, commands.ALLOWED,
+            commands.STOP, commands.STATUS, commands.QUEUE, commands.DEVICES,
+            commands.ALLOW, commands.DENY, commands.ALLOWED,
         ):
             self._answer_now(interaction_id, token, "`/vigo help` lists what it does.", ephemeral=True)
             return
@@ -821,11 +1073,6 @@ class App:
         # which one it is.
         if not self._defer(interaction_id, token, ephemeral=self._ephemeral(sub, options)):
             return
-
-        # Say it was received before probing a device: a fresh probe can take
-        # seconds, and the person should not wait on a silent "thinking" line.
-        if sub in (commands.ASK, commands.QUICK):
-            self._say(token, "Got it, working on it. I'll follow up here.")
 
         pick = self.router.pick(explicit)
         try:
@@ -863,8 +1110,12 @@ class App:
 
         `devices` names the machines, `status` names the session and its cost,
         and the three allowlist commands name other people, so those are always
-        private: no option could show them to a channel by accident.
+        private: no option could show them to a channel by accident.  `queue`
+        is private too, unless the owner asks for the public form, which names
+        no channel, no task and no device.
         """
+        if sub == commands.QUEUE:
+            return not bool(options.get("public"))
         if sub in (commands.DEVICES, commands.STATUS, commands.UPGRADE, commands.ALLOW,
                    commands.DENY, commands.ALLOWED):
             return True
@@ -917,6 +1168,8 @@ class App:
             self._goal(options, token, channel_id, channel_name, pick)
         elif sub == commands.STATUS:
             self._say(token, self._status(channel_id))
+        elif sub == commands.QUEUE:
+            self._say(token, self._queue_text(public=bool(options.get("public"))))
         elif sub == commands.DEVICES:
             self._say(token, self._devices(pick, detailed=True))
         elif sub == commands.UPGRADE:
@@ -945,17 +1198,31 @@ class App:
                 "`/vigo devices` (only you see it) says what is there.",
             )
             return
-        if not self.run_for(channel_id) and self._device_busy(
-                channel_id, pick.name, new=bool(options.get("new"))):
+        objective = self._objective(prompt)
+        if (not objective and not self.run_for(channel_id)
+                and self._device_busy(channel_id, pick.name, new=bool(options.get("new")))):
             # Nothing runs here, yet the device still works: another daemon
-            # answered the last command, or this one restarted under it.  The
-            # question cannot wait for a run this daemon does not hold, and a
-            # prompt now would steer the agent that is already working.
+            # answered the last command, or this one restarted under it.  A
+            # question would steer the agent that is already working, so it is
+            # refused; a task is not, because it runs in a session of its own.
             log.info("ask: the device is still working on this channel's last question")
             self._say(
                 token,
                 "The device is still working on the last question here. "
                 "`/vigo status` shows it, `/vigo stop` ends it.",
+            )
+            return
+        running = self._running_agents()
+        if running >= AGENTS_MAX:
+            # One OpenCode plan pays for both machines, so its limits are
+            # shared: a concurrency past them buys a failed turn for every
+            # agent, and no answer at all.
+            log.info(f"ask: {running} agents already run on the plan; this one waits")
+            self._say(
+                token,
+                f"Your OpenCode plan already runs {running} agents, the most vigo starts "
+                f"at once ({AGENTS_MAX}, on every device it drives). `/vigo queue` shows "
+                "what waits; ask again when one finishes.",
             )
             return
         title = f"Discord #{channel_name}" if channel_name else "Discord DM"
@@ -965,11 +1232,12 @@ class App:
             channel_id=channel_id,
             user_id=who,
             device_name=pick.name,
-            prompt=prompt,
+            prompt=_attached(prompt, options.get("file")),
             new=bool(options.get("new")),
             title=title,
             hidden=bool(options.get("hidden")),
-            goal=self._objective(options, prompt),
+            goal=objective,
+            note=ask_note(who == self.config.owner, bool(options.get("hidden")), channel_name),
         )
         ahead = self.add_waiting(channel_id, worker)
         if ahead is None:
@@ -980,30 +1248,36 @@ class App:
                 "Wait for them, or `/vigo stop` clears them.",
             )
             return
+        # The work starts before the device writes the line that names it: a
+        # phrase is worth a second, but not a second of the run.
+        self.start_next(channel_id)
+        phrase = self._describe(prompt, pick.name)
         if ahead:
             log.info(f"ask: queued in this channel ({ahead} ahead)")
-            self._say(
-                token,
-                f"Queued behind {ahead} question{'' if ahead == 1 else 's'}. "
-                "I'll follow up here.",
-            )
-        self.start_next(channel_id)
+            self._say(token, self._asked(phrase, ahead))
+        else:
+            self._say(token, self._ack(phrase))
 
-    def _objective(self, options: dict, prompt: str) -> str:
+    def _objective(self, prompt: str) -> str:
         """The goal an ask becomes, or "" when it is a question.
 
-        `goal:true` says this is work even though it reads as a question;
-        `goal:false` says it is a question even though it reads as work.  Left
-        out, the wording decides, and `vigo/goal.py` says how.
+        No option says which it is, so the wording decides, and `vigo/goal.py`
+        holds the rule.  When the wording is read wrong, the person says it
+        with `/vigo goal`, which takes the goal directly rather than guessing.
         """
-        wanted = options.get("goal")
-        if wanted is None:
-            return prompt if goal.is_task(prompt) else ""
-        return prompt if bool(wanted) else ""
+        return prompt if goal.is_task(prompt) else ""
 
     def _goal(self, options: dict, token: str, channel_id: str, channel_name: str,
               pick: Pick) -> None:
-        """Set, pause, resume or clear the goal this channel's session holds."""
+        """Set, pause, resume or clear the goal this channel has.
+
+        A new objective is work of its own: it opens a session under the
+        device's subagent agent, so the channel's conversation keeps answering
+        questions while the goal runs.  A channel that already holds a goal
+        keeps that session, so a second objective steers the work it is doing
+        instead of starting a second one, and `pause`, `resume` and `clear`
+        reach the same session.
+        """
         objective = str(options.get("objective") or "").strip()
         if not objective:
             self._say(token, "The goal is empty.")
@@ -1030,11 +1304,32 @@ class App:
                 "`/vigo devices` (only you see it) says what is there.",
             )
             return
+        client = OpenCode(device.url, device.password)
+        title = f"Discord #{channel_name}" if channel_name else "Discord DM"
+        # The channel's session on this device, which the other daemon may have
+        # made.  A channel that already holds a goal keeps that session, so a
+        # second objective steers that work instead of starting another.
+        session = str((remembered or {}).get("session") or "")
+        adopted = False
+        if not session:
+            session = asking.channel_session(client, channel_id)
+            adopted = bool(session)
+        steer = False
+        if session and not control:
+            held = _holds_goal(client, session)
+            if held is None:
+                self._say(
+                    token,
+                    "The device would not say what goal this channel has, so "
+                    "nothing changed.",
+                )
+                return
+            steer = held
         if not control and (self.run_for(channel_id)
                             or self._device_busy(channel_id, device.name, new=False)):
-            # A goal would steer the turn that is already running, and this
-            # channel runs one thing at a time.  `pause` and `clear` are how
-            # the person stops it, so those are never held back.
+            # A channel runs one thing at a time, and a goal is a turn of its
+            # own: it waits for the question that is running.  `pause` and
+            # `clear` are how the person stops it, so those never wait.
             log.info("goal: a question is running in this channel")
             self._say(
                 token,
@@ -1042,11 +1337,8 @@ class App:
                 "wait for it. `/vigo goal pause` and `/vigo goal clear` work now.",
             )
             return
-        client = OpenCode(device.url, device.password)
-        title = f"Discord #{channel_name}" if channel_name else "Discord DM"
         try:
-            session = asking.open_session(self, client, device, channel_id, False, title)
-            if leasing.held_by_other(client, session, self.config.device):
+            if session and leasing.held_by_other(client, session, self.config.device):
                 # A goal starts a turn of its own, so it cannot land in one
                 # another daemon is running. It takes no lease, because it
                 # would have nothing to release it with.
@@ -1057,6 +1349,17 @@ class App:
                     "`/vigo status` shows it, and `/vigo stop` ends it.",
                 )
                 return
+            if not control and not steer:
+                # Work of its own, under the subagent agent: the conversation
+                # stays a conversation.  `open_session` remembers it, so a
+                # follow-up and `/vigo status` reach the work.
+                session = asking.open_session(
+                    self, client, device, channel_id, False,
+                    f"{title} · {text.subject(objective, 40)}",
+                    agent=client.subagent_agent(), worker=True,
+                )
+            elif adopted:
+                self.state.remember_session(channel_id, device.name, session, title)
             client.set_goal(session, objective)
         except OpenCodeError as error:
             log.info(f"goal: the device refused ({error.message})")
@@ -1069,7 +1372,8 @@ class App:
             "clear": "The goal is cleared.",
         }.get(objective.lower())
         if said is None:
-            said = "The goal is set: the agent works toward it until it is met."
+            said = ("The goal is set in a session of its own: the agent works "
+                    "toward it until it is met.")
         else:
             said += " `/vigo status` says what the device holds."
         self._say(token, said)
@@ -1091,6 +1395,8 @@ class App:
             return
         device = self.config.device_named(pick.name)
         client = OpenCode(device.url, device.password)
+        # No "got it" line: a one-off has nothing to follow up on, so the
+        # deferred message stays as "thinking" and becomes the answer itself.
         try:
             answer = client.generate_text(
                 prompt, model=self.config.model.as_ref(), timeout=float(self.config.timeout)
@@ -1099,21 +1405,48 @@ class App:
             log.info(f"quick: the device refused ({error.message})")
             self._say(token, "The device would not answer.")
             return
-        content = text.brief(answer) or "_nothing to say_"
         hidden = bool(options.get("hidden"))
+        removed = ""
+        if not hidden:
+            answer, removed = text.scrub(answer)
+        content = answer or "_nothing to say_"
+        if removed:
+            content += (
+                f"\n\n🔒 a {removed} was removed from this answer; "
+                "`hidden:true` shows the answer whole."
+            )
+        # Quick keeps no session, so a runaway answer cannot point anywhere but
+        # here: it says it stopped.  The messages before it are the answer.
+        parts = text.messages(
+            content, asking.ANSWER_PARTS, more="… (the answer was longer than this)",
+        ) or ["_nothing to say_"]
         extra = {"flags": 64} if hidden else {}
-        # The answer is its own message, after the "got it": a new message
-        # notifies, an edit does not.  A hidden answer stays ephemeral.
+        # The first part goes into the message the command already deferred: it
+        # is the one response, with no line before it.  Discord treats the next
+        # followup as an edit of that message, so the first part must be in it
+        # before a long answer continues.  A hidden answer stays ephemeral.
         try:
-            self.api.followup(token, {
-                "content": content[:2000],
+            self.api.edit_original(token, {
+                "content": parts[0][:2000],
                 "allowed_mentions": {"parse": []},
-                **extra,
             })
         except DiscordError as error:
             log.error(f"quick: cannot post the answer ({error.message})")
-            self._late_quick(channel_id, content[:2000], hidden)
+            for part in parts:
+                self._late_quick(channel_id, part, hidden)
             return
+        for number, part in enumerate(parts[1:], start=1):
+            try:
+                self.api.followup(token, {
+                    "content": part[:2000],
+                    "allowed_mentions": {"parse": []},
+                    **extra,
+                })
+            except DiscordError as error:
+                log.error(f"quick: cannot post the answer ({error.message})")
+                for rest in parts[number:]:
+                    self._late_quick(channel_id, rest, hidden)
+                return
         log.info(f"quick: answered on {pick.name}")
 
     def _late_quick(self, channel_id: str, content: str, hidden: bool) -> None:
@@ -1301,8 +1634,20 @@ class App:
                 except OpenCodeError as error:
                     log.info(f"status: the device does not answer ({error.message})")
                     lines.append("the device does not answer")
+                working = self._running_subagents(device, remembered["session"])
+                if working:
+                    named = ", ".join(f"“{text.shorten(title, 40)}”" for title in working[:3])
+                    more = f", and {len(working) - 3} more" if len(working) > 3 else ""
+                    count = f"{len(working)} subagent{'s' if len(working) != 1 else ''}"
+                    lines.append(f"{count} at work: {named}{more}")
         else:
             lines = ["No question has been asked in this channel yet."]
+        if device:
+            agents = self._running_agents()
+            if agents > 1:
+                # The owner pays the plan's concurrency: say how many are at
+                # work, so a burst is visible before it hits a limit.
+                lines.append(f"{agents} agents are running on your devices")
         busy = busy_since(info)
         if running:
             elapsed = f"running for {text.duration(running.elapsed)}"
@@ -1328,6 +1673,28 @@ class App:
             lines.append("")
             lines.extend(line)
         return "\n".join(lines)
+
+    @staticmethod
+    def _running_subagents(device: Device, session: str) -> list[str]:
+        """The titles of the subagents at work under a session, its own excluded.
+
+        A subagent is a session whose `parentID` names the session that
+        delegated the work, and the device says which sessions run now.  A
+        device that does not answer leaves the line out: a status that guesses
+        would say a subagent works when nothing does.
+        """
+        if not session:
+            return []
+        client = OpenCode(device.url, device.password, timeout=2.0)
+        try:
+            active = client.active()
+            listed = client.sessions(limit=100)
+        except OpenCodeError as error:
+            log.info(f"status: cannot read the subagents ({error.message})")
+            return []
+        return [str(info.get("title") or "untitled") for info in listed
+                if info.get("parentID") == session
+                and active.get(str(info.get("id") or "")) == "running"]
 
     def _goal_text(self, device: Device | None, remembered: dict | None) -> str:
         """What the device says about this channel's goal, or "" for none.
@@ -1355,15 +1722,199 @@ class App:
             said += f" · {reason}"
         return said
 
+    def queue_snapshot(self) -> list[dict]:
+        """This daemon's channels that run or wait, with every task in line.
+
+        Titles, not ids: the session's title names the channel the way the
+        person knows it.  A task is its own text and nothing else of the person
+        is here; the peer link carries this between daemons, and only the
+        public form of the queue redacts it for Discord.
+
+        Each entry says how many agents work on its run, because the queue
+        that names a task should say what is on it.
+        """
+        with self.runs_lock:
+            entries = [
+                (channel, self.runs.get(channel), list(self.waiting.get(channel) or []))
+                for channel in sorted(set(self.runs) | set(self.waiting))
+            ]
+        agents = self._agents_by_session(
+            [(run.session, run.device) for _, run, _ in entries if run])
+        found: list[dict] = []
+        for channel, run, waiting in entries:
+            remembered = self.state.session_for(channel) or {}
+            found.append({
+                "channel": channel,
+                "title": str(remembered.get("title") or "untitled"),
+                "running": round(run.elapsed, 1) if run else None,
+                "waiting": [worker.prompt for worker in waiting],
+                "agents": agents.get(run.session, 0) if run else 0,
+            })
+        return found
+
+    def _agents_by_session(self, tasks: list[tuple[str, str]]) -> dict[str, int]:
+        """How many agents work on each task, by the session the task runs in.
+
+        `tasks` is (session id, device name) for each run.  One answer about
+        what runs, and one listing of the sessions, says it for every task on a
+        device: a subagent is a session of its own under the task's session.
+        A device that does not answer leaves its counts out rather than wrong.
+        """
+        found: dict[str, int] = {}
+        by_device: dict[str, list[str]] = {}
+        for session, device_name in tasks:
+            if session:
+                by_device.setdefault(device_name, []).append(session)
+        for device_name, session_ids in by_device.items():
+            device = self.config.device_named(device_name)
+            if device is None:
+                continue
+            client = OpenCode(device.url, device.password, timeout=2.0)
+            try:
+                active = client.active()
+                listed = client.sessions(limit=100)
+            except OpenCodeError as error:
+                log.info(f"queue: the agent count is not known ({error.message})")
+                continue
+            for session in session_ids:
+                found[session] = agents_on(active, listed, session)
+        return found
+
+    def _queue_text(self, public: bool = False) -> str:
+        """Every channel that runs or waits, here and on the other daemons.
+
+        A queue that this daemon cannot see is still a queue: a channel's line
+        lives with whichever daemon acknowledged its questions, and saying that
+        nothing waits would be the lie `/vigo status` used to tell.  A peer that
+        does not answer is said to be silent, never left out.
+
+        `public` is the form everyone in the channel may read: no channel's
+        name, no device's name, and no task that names a person, a path or a
+        machine.  It keeps the shape of the queue, which is what the owner
+        shows when the work is the point and the people are not.
+        """
+        # (a device's name, its rows or None when it has none, and why) here first
+        groups: list[tuple[str, list[dict] | None, str]] = [("", self.queue_snapshot(), "")]
+        for name in self.config.devices:
+            if name == self.config.device:
+                continue
+            url = self._peer_url(name)
+            if not url:
+                continue
+            device = self.config.device_named(name)
+            try:
+                info = PeerClient(url, device.password, timeout=1.5).info()
+            except OSError:
+                groups.append((name, None, "does not answer on its peer port"))
+                continue
+            queue = info.get("queue")
+            if not isinstance(queue, list):
+                groups.append((name, None, "runs an older vigo, which reports no queue"))
+                continue
+            groups.append((name, queue, ""))
+        if public:
+            said = self._queue_public(groups)
+            said = self._fit(said, more="… (the rest does not fit here)")
+        else:
+            said = self._fit("\n\n".join(
+                self._queue_block(entries, name) if entries is not None
+                else f"⚠️ `{name}` {why}"
+                for name, entries, why in groups
+            ))
+        return said or "Nothing runs and nothing waits."
+
+    @staticmethod
+    def _fit(said: str, limit: int = 1800,
+             more: str = "… (the rest does not fit here; `/vigo status` shows one channel's line)") -> str:
+        """One message holds it, and what does not fit says where the rest is.
+
+        A Discord edit refuses more than 2000 characters, and a queue view that
+        the channel refuses says nothing at all.
+        """
+        if len(said) <= limit:
+            return said
+        cut = said[:limit]
+        at = cut.rfind("\n")
+        if at > limit // 2:
+            cut = cut[:at]
+        return cut + "\n" + more
+
+    def _queue_public(self, groups: list[tuple[str, list[dict] | None, str]]) -> str:
+        """The queue with nothing that names a channel, a device or a task.
+
+        The rows of every daemon come in one list, because which daemon holds a
+        line is not something a channel may read.  A task that names anything
+        keeps its place as `redacted task`, so the count in each line stays the
+        one the owner sees.
+        """
+        rows = [entry for _, entries, _ in groups
+                for entry in (entries or []) if isinstance(entry, dict)]
+        lines = ["**Queue**"]
+        if not rows:
+            lines.append("nothing runs and nothing waits")
+        for entry in rows:
+            running = entry.get("running")
+            waiting = [str(prompt) for prompt in (entry.get("waiting") or [])]
+            doing = (f"running {text.duration(float(running))}"
+                     if isinstance(running, (int, float)) else "idle")
+            count = f" · {len(waiting)} waiting" if waiting else " · nothing waits"
+            agents = entry.get("agents")
+            at_work = (f" · {agents} agent{'' if agents == 1 else 's'}"
+                       if isinstance(agents, int) and agents > 0 else "")
+            lines.append(f"{doing}{at_work}{count}")
+            for number, prompt in enumerate(waiting, 1):
+                lines.append(f"{number}. “{self._shareable(prompt)}”")
+        listed: list[str] = []
+        for _, entries, why in groups:
+            if entries is None and why not in listed:
+                listed.append(why)
+        lines.extend(f"⚠️ another daemon {why}" for why in listed)
+        return "\n".join(lines)
+
+    def _shareable(self, prompt: str) -> str:
+        """A task as a channel may read it: its words, or `redacted task`.
+
+        The text that is checked is the text that is shown, so a task keeps its
+        own words only when the shortened line holds nothing of a person.
+        """
+        said = text.shorten(prompt, 60)
+        return said if text.shareable(said, tuple(self.config.devices)) else "redacted task"
+
+    @staticmethod
+    def _queue_block(entries: list, device: str) -> str:
+        """One daemon's channels: what runs there, and every task that waits."""
+        lines = [f"**{device}**" if device else "**This daemon**"]
+        rows = [entry for entry in entries if isinstance(entry, dict)]
+        if not rows:
+            lines.append("nothing runs and nothing waits")
+            return "\n".join(lines)
+        for entry in rows:
+            running = entry.get("running")
+            waiting = [str(prompt) for prompt in (entry.get("waiting") or [])]
+            doing = (f"running {text.duration(float(running))}"
+                     if isinstance(running, (int, float)) else "idle")
+            count = f" · {len(waiting)} waiting" if waiting else " · nothing waits"
+            agents = entry.get("agents")
+            at_work = (f" · {agents} agent{'' if agents == 1 else 's'}"
+                       if isinstance(agents, int) and agents > 0 else "")
+            lines.append(f"“{entry.get('title') or 'untitled'}”: {doing}{at_work}{count}")
+            for number, prompt in enumerate(waiting, 1):
+                lines.append(f"{number}. “{text.shorten(prompt, 60)}”")
+        return "\n".join(lines)
+
     def _line_text(self, channel_id: str) -> list[str]:
-        """The next three questions and the last three that ran, for status."""
+        """Every task that waits in this channel, and the last three that ran.
+
+        The whole line, not a sample: it holds ten at most, and a queue that
+        does not name a task cannot be asked about, only waited on.
+        """
         with self.runs_lock:
             waiting = list(self.waiting.get(channel_id) or [])
             finished = list(self.finished.get(channel_id) or [])
         lines: list[str] = []
         if waiting:
             lines.append(f"**Next up** ({len(waiting)} waiting):")
-            for number, worker in enumerate(waiting[:3], 1):
+            for number, worker in enumerate(waiting, 1):
                 lines.append(f"{number}. “{text.shorten(worker.prompt, 80)}”")
         if finished:
             lines.append("**Finished:**")
@@ -1461,11 +2012,13 @@ class App:
             "",
             "`/vigo ask prompt:…` asks the device you last worked on. "
             "`device:` names one, `new:true` starts a fresh session. A question "
-            "asked while one runs waits its turn.",
-            "When the ask is a task, the agent gets a goal and works toward it "
-            "until it is done; `goal:true` or `goal:false` says which it is.",
-            "`/vigo goal objective:…` sets that goal yourself, with no question; "
-            "`pause`, `resume` and `clear` control the one this channel has.",
+            "asked while one runs waits its turn. Attach a file, or reply to an "
+            "answer with one, and the device reads it there.",
+            "When the ask is a task, it gets a goal and works toward it until "
+            "it is done, in a session of its own; the wording decides which it "
+            "is. `/vigo goal objective:…` gives a goal yourself, with no "
+            "question, in a session of its own; `pause`, `resume` and `clear` "
+            "control the one this channel has.",
             "`/vigo quick prompt:…` answers once, with no session and no tools.",
             "`/vigo devices` shows what is up and where a question would go.",
             "`/vigo status` shows this channel's session, what waits in it, and "
@@ -1478,7 +2031,9 @@ class App:
             lines.append("")
             lines.append(
                 "Yours: `/vigo allow user:<who> for:<time>`, `/vigo deny user:<who>`, "
-                "`/vigo allowed`, `/vigo upgrade`. Tool permissions come to your DMs as buttons."
+                "`/vigo allowed`, `/vigo queue`, `/vigo upgrade`. `/vigo queue public:true` "
+                "shows the channel a copy with the names and the private tasks redacted. "
+                "Tool permissions come to your DMs as buttons."
             )
         elif not approved:
             lines.append("")
@@ -1495,11 +2050,14 @@ class App:
             try:
                 PeerServer(self.config.peer_host, self.config.peer_port,
                            self.config.device, self.peer_password(),
-                           checkout=self.checkout, build=self.build).start()
+                           checkout=self.checkout, build=self.build,
+                           queue=self.queue_snapshot).start()
             except OSError as error:  # the tailnet is not up, or the port is taken
                 log.error(f"peer: not listening ({error})")
         gateway = Gateway(url, self.config.token, INTENTS, self.on_event,
                           lambda state: log.debug(f"gateway: {state}"))
+        self.gateway = gateway
+        threading.Thread(target=self._watch_presence, name="presence", daemon=True).start()
         gateway.run()
 
 
