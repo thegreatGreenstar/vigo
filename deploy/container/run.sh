@@ -29,8 +29,18 @@ if ! command -v podman >/dev/null 2>&1; then
     exit 2
 fi
 if ! podman info >/dev/null 2>&1; then
-    echo "vigo: podman is not answering; on macOS run: podman machine start" >&2
-    exit 2
+    # On macOS the machine is a VM, and the Homebrew package does not start it
+    # at login (its caveat names Podman Desktop instead).  The unit is the
+    # thing that must be up, so start it here.  A `podman machine stop` by hand
+    # is undone on the next start of the unit; booting the unit out stops both.
+    if [ "$(uname -s)" = Darwin ]; then
+        echo "vigo: the podman machine is not answering; starting it" >&2
+        podman machine start || true
+    fi
+    if ! podman info >/dev/null 2>&1; then
+        echo "vigo: podman is not answering; on macOS run: podman machine start" >&2
+        exit 2
+    fi
 fi
 
 # The three secrets, with the command that makes each one.
@@ -65,7 +75,11 @@ Darwin)
     network=""
     port=""
     if [ -n "${VIGO_PEER_PORT:-}" ]; then
-        port="--publish=127.0.0.1:${VIGO_PEER_PORT}:${VIGO_PEER_PORT}"
+        # The other device reaches the peer on the address in the settings.
+        # A loopback publish cannot answer it, so VIGO_PEER_BIND names the
+        # host address to publish on.
+        bind=${VIGO_PEER_BIND:-127.0.0.1}
+        port="--publish=${bind}:${VIGO_PEER_PORT}:${VIGO_PEER_PORT}"
     fi
     ;;
 *)
