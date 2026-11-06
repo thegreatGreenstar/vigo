@@ -163,6 +163,20 @@ class AppTest(unittest.TestCase):
             ])
             self.assertTrue(self.discord.wait_for(lambda: not app.allow.may_ask("42")))
 
+    def test_allow_refuses_the_owner_and_the_bot(self):
+        """The picker offers everyone; only someone else can be allowed."""
+        with TempDir() as directory:
+            app = self.make(directory)
+            cases = ((app.config.owner, "always ask"), (self.discord.bot_id, "this bot"))
+            for sub in (commands.ALLOW, commands.DENY):
+                for who, expected in cases:
+                    self.use(app, sub, options=[
+                        {"name": "user", "type": 6, "value": {"id": who, "username": "x"}},
+                    ])
+                    self.assertIn(expected, self.discord.edits[-1]["content"])
+        self.assertFalse(app.allow.may_ask(self.discord.bot_id))
+        self.assertTrue(app.allow.may_ask(app.config.owner), "the owner needs no entry")
+
     def test_a_listed_person_may_ask(self):
         listed = "777777777777777777"
         with TempDir() as directory:
@@ -972,6 +986,23 @@ class AppTest(unittest.TestCase):
                          ["one-off answer"],
                          "the thinking message becomes the answer, with no got-it line")
         self.assertEqual(self.discord.followups, [], "the answer is the one message")
+
+    def test_a_quick_answer_is_told_to_stay_brief(self):
+        """A one-off reaches the channel whole, so it is told the same limit."""
+        with TempDir() as directory:
+            app = self.make(directory)
+            self.use(app, commands.QUICK,
+                      options=[{"name": "prompt", "type": 3, "value": "what is a pointer"}])
+            self.assertTrue(self.discord.wait_for(
+                lambda: any("one-off answer" in str(content)
+                            for content in self.said()), 10))
+        asked = self.device.generated[0]
+        self.assertIn(asking.BRIEF, asked)
+        self.assertIn("two short paragraphs at most", asked)
+        self.assertTrue(asked.endswith("what is a pointer"),
+                        "the question stays the last thing the device reads")
+        self.assertNotIn(asking.STAYS, asked,
+                         "a one-off keeps no session, so it promises none")
 
     def test_a_long_quick_answer_arrives_whole(self):
         self.device.answer = "x" * 4000
