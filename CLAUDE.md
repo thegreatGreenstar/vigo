@@ -158,7 +158,8 @@ The daemon runs in that container on a machine that installs it. `dev.vigo.conta
 `deploy/container/run.sh`. The token and the OpenCode password come from `printenv`, which the podman secrets set. The
 container's one key is `~/.ssh/vigo_container_ed25519`. The container's `ssh_config` maps `github.com` and the
 checkout's `github-read` and `github-write` aliases to that key. A rebuild must keep them, or `/vigo upgrade` fails
-inside the container. On that machine the host job's plist is `dev.vigo.bot.plist.off`.
+inside the container. The launcher starts the podman machine when it does not answer, because the Homebrew package
+does not start that VM at login. On that machine the host job's plist is `dev.vigo.bot.plist.off`.
 
 ## Commits
 
