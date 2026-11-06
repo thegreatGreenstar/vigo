@@ -65,7 +65,11 @@ Darwin)
     network=""
     port=""
     if [ -n "${VIGO_PEER_PORT:-}" ]; then
-        port="--publish=127.0.0.1:${VIGO_PEER_PORT}:${VIGO_PEER_PORT}"
+        # The other device reaches the peer on the address in the settings.
+        # A loopback publish cannot answer it, so VIGO_PEER_BIND names the
+        # host address to publish on.
+        bind=${VIGO_PEER_BIND:-127.0.0.1}
+        port="--publish=${bind}:${VIGO_PEER_PORT}:${VIGO_PEER_PORT}"
     fi
     ;;
 *)
