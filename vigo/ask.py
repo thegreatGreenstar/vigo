@@ -403,7 +403,14 @@ class Ask:
             return
         message_id = str(message.get("id") or "")
         if message_id:
-            self.app.state.remember_answer(message_id, self.channel_id)
+            try:
+                self.app.state.remember_answer(message_id, self.channel_id)
+            except OSError as error:
+                # The answer is already out.  Remembering where it landed is a
+                # convenience for a reply, not a reason to post it a second
+                # time: a state file that cannot be written must not duplicate
+                # the answer in the channel.
+                log.error(f"ask: cannot remember the answer ({error})")
 
     def _late_answer(self, content: str, check: bool = True) -> bool:
         """The interaction's 15 minutes ran out: post it where the question was.

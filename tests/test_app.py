@@ -1166,6 +1166,9 @@ class AppTest(unittest.TestCase):
             ])
             self.assertTrue(self.discord.wait_for(
                 lambda: any("done" in str(content) for content in self.said()), 10))
+            self.assertTrue(self.discord.wait_for(
+                lambda: app.run_for(CHANNEL) is None, 10),
+                "the first question ends before the next one is asked")
             request = self.discord.edits[0]["content"]
             self.device.description = "tidying the reply wording"
             self.use(app, commands.ASK,
