@@ -961,7 +961,7 @@ class App:
         except DiscordError as error:
             log.error(f"commands: cannot read them ({error.message})")
             return
-        mine = commands.spec(self.config.install)
+        mine = commands.spec(self.config.install, list(self.config.devices))
         wanted = _strip(mine[0])
         others = [command for command in existing if command.get("name") != "vigo"]
         found = next((command for command in existing if command.get("name") == "vigo"), None)
