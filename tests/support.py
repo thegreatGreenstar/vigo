@@ -9,6 +9,7 @@ import tempfile
 import time
 from pathlib import Path
 
+from vigo import ask as rules
 from vigo import config as configuration
 
 
@@ -40,6 +41,16 @@ def write_settings(directory: Path, settings: dict) -> Path:
         json.dump(settings, handle)
     os.chmod(path, 0o600)
     return path
+
+
+def question_of(prompt: str) -> str:
+    """What the device was asked, without the manner every prompt carries.
+
+    A test that checks the question wants the question, not the instruction
+    about how the answer is written; the manner has its own test.
+    """
+    suffix = "\n\n" + rules.MANNER
+    return prompt[: -len(suffix)] if prompt.endswith(suffix) else prompt
 
 
 def load_settings(directory: Path, **overrides) -> configuration.Config:

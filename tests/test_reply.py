@@ -8,7 +8,7 @@ from vigo.discord_api import Discord
 from vigo.state import State
 from tests.fake_discord import FakeDiscord
 from tests.fake_opencode import FakeOpenCode
-from tests.support import TempDir, load_settings
+from tests.support import question_of, TempDir, load_settings
 
 OWNER = "145512144145512144"
 STRANGER = "888888888888888888"
@@ -92,7 +92,7 @@ class ReplyTest(unittest.TestCase):
         self.device.script = [("idle", "the second answer")]
         self.reply(app, self.last_answer(app))
         self.assertTrue(self.wait_for("the second answer"))
-        self.assertEqual([asked for _session, asked in self.device.prompts],
+        self.assertEqual([question_of(asked) for _session, asked in self.device.prompts],
                          ["why is CI red?", "and then?"])
         posted = [message["content"] for message in self.discord.messages[DM]]
         self.assertTrue(any("the second answer" in content for content in posted),

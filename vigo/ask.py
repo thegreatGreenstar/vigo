@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Protocol
 
-from . import lease as leasing, log, text
+from . import github, lease as leasing, log, text
 from .config import Config, Device
 from .opencode_api import EventStream, OpenCode, OpenCodeError, busy_since
 from .state import State
@@ -49,6 +49,21 @@ POLL = 0.5
 # seconds.  Longer than a retry or a restart takes, shorter than a person
 # asking the same thing again.
 RECENT = 300.0
+
+# What every question and every goal says about the answer itself.  A report of
+# work on GitHub is read by the people who review it there, so it keeps their
+# shape and their size: the verdict first, the facts with their numbers, and
+# the work named before the prose about it.  In the project this shape comes
+# from, the replies measured 47 words at the median and one line, with four
+# bullets at the long end, so the size is named here and not left to taste.
+MANNER = (
+    "When the work went to GitHub, report it the way a maintainer reports it there: "
+    "the verdict in the first sentence, then the facts that change what the reader "
+    "does next, each with its number (a pull request or issue, a commit, a file and "
+    "line, a count of tests), then what still waits for a person. That is one short "
+    "paragraph, about fifty words, and a list of four facts is the long one. No "
+    "thanks, no restating of the request, and no walk through the diff."
+)
 
 
 def _recent(stamp: object, seconds: float) -> bool:
@@ -187,10 +202,26 @@ class Ask:
             log.debug(f"ask: cannot edit the message ({error})")
             return False
 
+    def told(self, said: str) -> str:
+        """The question or goal as the device receives it: with the manner.
+
+        A goal is given as an objective and the device works on it across
+        turns, so the manner is part of the objective rather than a second
+        message the device may never read.
+        """
+        return f"{said}\n\n{MANNER}"
+
     def _final(self, body: str, outcome: str, cost: float, tokens: dict,
                steps: int = 0, context: int = 0) -> None:
         note = FOOTER.get(outcome, "")
-        content = text.brief(body.strip()) or "_nothing to say_"
+        body = body.strip()
+        # The work goes before the prose about it, so a reader meets the pull
+        # request first.  Only work the answer itself names is here, and a link
+        # the answer already put on its first line is not said again.
+        front = github.mark(body)
+        content = text.brief(body) or "_nothing to say_"
+        if front:
+            content = f"{front}\n\n{content}"
         if note:
             content += f"\n\n{note}"
         content = content[:2000]
@@ -451,9 +482,9 @@ class Ask:
             self.prompted_at = time.time() * 1000.0
             self.before = self._newest_id(session)
             if self.goal:
-                self.client.set_goal(session, self.goal)
+                self.client.set_goal(session, self.told(self.goal))
             else:
-                self.client.prompt(session, self.prompt)
+                self.client.prompt(session, self.told(self.prompt))
         except OpenCodeError as error:
             session_stop.set()
             log.info(f"ask: the prompt was refused ({error.message})")
