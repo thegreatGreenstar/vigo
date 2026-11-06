@@ -101,6 +101,14 @@ class QuestionTest(unittest.TestCase):
         thread.start()
         return thread
 
+    def test_a_state_file_that_cannot_be_written_does_not_fail_the_answer(self):
+        """Remembering where the answer landed is not worth a second post."""
+        with TempDir() as directory:
+            app = self.make(directory)
+            app.state = State(directory / "gone" / "state.json")
+            worker = self.worker(app)
+            worker._record({"id": "msg_1"})  # must not raise
+
     def test_a_question_goes_to_the_owners_dm_and_answers_the_form(self):
         self.device.script = [("form", {"title": "Questions", "fields": [field("q0", "Pick one")]}),
                               ("idle", "all done")]
