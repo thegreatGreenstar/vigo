@@ -579,12 +579,13 @@ When the repository is public or on Pro, the same rule belongs on GitHub, where
 it also covers machines that never installed the hook:
 
 Only the full-matrix names are worth requiring: the `quick` jobs exist for
-drafts, and a draft cannot merge anyway.
+drafts, and a draft cannot merge anyway. Linux has no check to require, because
+it runs in a codespace that nobody starts for you, so the rule below covers the
+two platforms a runner answers and the codespace run is a promise, not a gate.
 
 ```sh
 gh api -X PUT repos/thegreatGreenstar/vigo/branches/main/protection --input - <<'JSON'
 {"required_status_checks": {"strict": true, "contexts": ["lint", "no secrets in the tree",
-  "ubuntu-latest · Python 3.12", "ubuntu-latest · Python 3.13", "ubuntu-latest · Python 3.14",
   "macos-latest · Python 3.12", "macos-latest · Python 3.13", "macos-latest · Python 3.14",
   "windows-latest · Python 3.12", "windows-latest · Python 3.13", "windows-latest · Python 3.14"]},
  "enforce_admins": true, "required_pull_request_reviews": null, "restrictions": null,
@@ -779,12 +780,29 @@ on Windows and says why.
 python3 -m unittest discover -s tests -t . -v   # the canonical run
 python3 -m tests.parallel                       # the same suite on threads
 tests/ci-local.sh                               # what CI runs, as far as this machine can
+tests/ci-codespace.sh                           # the Linux half, in a Codespace
 tests/in-containers.sh                          # Linux 3.12-3.14, in podman
+tests/in-codespace.sh                           # Linux 3.12-3.14, inside a codespace
 ```
 
 `tests/ci-local.sh` runs the CI steps here: the suite on each host Python 3.12 to 3.14 that is installed, ruff
-0.17.3 in a container, the secrets check, and the Linux matrix in podman. It names what it cannot answer, which is
+0.17.4 in a container, the secrets check, and the Linux matrix in podman. It names what it cannot answer, which is
 Windows and any Python that is not installed. It takes about a minute and a half on this Mac.
+
+`tests/ci-codespace.sh` is the Linux half of CI, on a Linux machine rather than this one. It creates a Codespace,
+copies this working tree into it (uncommitted changes included, so nothing has to be pushed first), runs
+`tests/in-codespace.sh` there, prints the result, and deletes the codespace however the run ends. `--keep` stops it
+instead, so the next run is quick; a stopped codespace still holds storage against the quota, so delete it when done.
+The copy carries files and no `.git`, so the secrets check runs here, on the same bytes, before a codespace is
+made. The image is `.devcontainer/Dockerfile`: Ubuntu 24.04 with Python 3.12, 3.13, 3.14 and the ruff pin, built on the
+first create and cached for the next. A prebuild enabled in the repository's Codespaces settings makes even that one
+fast. The Codespace's own checkout only supplies `.devcontainer`, so the run uses the branch when it exists on
+`origin` and `main` otherwise.
+
+Codespaces is Linux only, so it cannot answer macOS or Windows, and those two stay in the workflow. The gh token
+needs the `codespace` scope once: `gh auth refresh -h github.com -s codespace`. The default machine is 2 cores, which
+is plenty for a suite of a few seconds; Pro includes 180 core-hours and 20 GB of storage a month, and a code change
+of this size costs a few minutes of that.
 
 `tests/in-containers.sh` runs the suite in `python:3.12`, `3.13` and `3.14`
 containers on the `podman machine` Linux VM, so the Linux half of the CI matrix
@@ -810,18 +828,24 @@ devices, the command surface and who may use it, the permission cards
 gateway's handshake, heartbeats and resume, and two daemons answering one use
 exactly once.
 
-CI runs the same suite on Linux, macOS and Windows for Python 3.12, 3.13 and
-3.14, plus a lint and a check that no token is in the tree. It does that in two
-stages, so a draft answers the cross-platform question quickly:
+CI runs the same suite on Python 3.12, 3.13 and 3.14, plus a lint and a check
+that no token is in the tree. Linux runs in a Codespace, and the two platforms
+a runner alone can answer run on GitHub. It does that in two stages, so a draft
+answers the cross-platform question quickly:
 
 | stage | what runs | why |
 | --- | --- | --- |
-| draft pull request | `quick`: one Python (3.14, the newest in the matrix) on all three OSes | a path, a socket or a clock that differs by platform shows up in one job per OS instead of three |
-| ready for review, or a push to `main` | `test`: all three OSes × 3.12, 3.13, 3.14 | version-specific breakage, which one Python cannot show |
+| draft pull request | `quick`: one Python (3.14, the newest in the matrix) on macOS and Windows | a path, a socket or a clock that differs by platform shows up in one job per OS instead of three |
+| ready for review, or a push to `main` | `test`: macOS and Windows × 3.12, 3.13, 3.14 | version-specific breakage, which one Python cannot show |
+| before the pull request, or before the merge | `tests/ci-codespace.sh`: 3.12, 3.13 and 3.14 on Linux, ruff and the secrets check | the Linux half, on a machine that is not this one |
 
 Lint and the secrets check are the same in both, because they are cheap and
 platform-free. Marking a draft ready runs the full matrix; converting it back
 to a draft runs the quick one again.
+
+The Linux row is the one nobody runs for you: the workflow has no Linux job,
+so a pull request is checked there only when someone runs the script. That is
+the trade a codespace makes, and it costs one manual step.
 ## Troubleshooting
 
 | What you see | What it means |

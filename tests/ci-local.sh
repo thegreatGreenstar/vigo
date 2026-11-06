@@ -5,9 +5,10 @@
 #   tests/ci-local.sh --no-containers   # skip the Linux matrix in podman
 #
 # CI's matrix is Linux, macOS and Windows on Python 3.12, 3.13 and 3.14, plus
-# ruff and the secrets check.  Linux is exact in podman.  macOS is the host
-# interpreters that are installed here.  Windows is CI only: it needs a
-# Windows VM, and it is where CI found something no other platform did.
+# ruff and the secrets check.  Linux is exact in podman, or in a Codespace with
+# `tests/ci-codespace.sh`.  macOS is the host interpreters that are installed
+# here.  Windows is CI only: it needs a Windows VM, and it is where CI found
+# something no other platform did.
 set -eu
 
 here=$(cd "$(dirname "$0")/.." && pwd)
@@ -33,11 +34,11 @@ suite() {  # suite <python> <label>
 
 lint() {  # lint
     log=$(mktemp)
-    if podman run --rm -v "$here:/w" -w /w python:3.14 sh -c \
-        'pip install -q ruff==0.17.3 >/dev/null 2>&1 && ruff check .' >"$log" 2>&1; then
-        say "lint (ruff 0.17.3): OK"
+    if podman run --rm -v "$here:/w" -w /w python:3.12 sh -c \
+        'pip install -q ruff==0.17.4 >/dev/null 2>&1 && ruff check .' >"$log" 2>&1; then
+        say "lint (ruff 0.17.4): OK"
     else
-        say "lint (ruff 0.17.3): FAILED"
+        say "lint (ruff 0.17.4): FAILED"
         tail -30 "$log"
         status=1
     fi
@@ -62,7 +63,7 @@ for version in 3.12 3.13 3.14; do
     if command -v "python$version" >/dev/null 2>&1; then
         suite "python$version" "host · Python $version"
     else
-        say "host · Python $version: not installed here (CI covers it)"
+        say "host · Python $version: not installed here (the codespace covers it)"
     fi
 done
 
@@ -73,13 +74,13 @@ if command -v podman >/dev/null 2>&1 && podman info >/dev/null 2>&1; then
         tests/in-containers.sh || status=1
     fi
 else
-    say "lint: podman is not answering (start it, then run me again)"
-    say "Linux 3.12 to 3.14: not run (CI covers it)"
+    say "lint: podman is not answering (start it, run me again, or use tests/ci-codespace.sh)"
+    say "Linux 3.12 to 3.14: not run here (tests/ci-codespace.sh runs them in a Codespace)"
 fi
 
 say ""
 secrets
 
 say ""
-say "Windows: CI only, and any Python named as not installed above."
+say "Windows and macOS: the workflow only, and any Python named as not installed above."
 exit "$status"
