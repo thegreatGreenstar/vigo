@@ -306,7 +306,11 @@ class App:
             log.info("resume: a turn on a device that is not in the file was dropped")
             return None
         session = str(record.get("session") or "")
-        prompted_at = float(record.get("prompted_at") or 0.0)
+        try:
+            prompted_at = float(record.get("prompted_at") or 0.0)
+        except (TypeError, ValueError):
+            log.info("resume: a carried-over turn names no time; it is dropped")
+            return None
         if not session or not prompted_at:
             return None
         remembered = self.state.session_on(channel, device) or {}

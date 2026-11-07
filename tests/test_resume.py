@@ -10,6 +10,7 @@ import time
 import unittest
 
 from vigo import commands
+from vigo import ask as asking
 from vigo.app import App
 from vigo.discord_api import Discord
 from vigo.state import State
@@ -199,6 +200,23 @@ class ResumeTest(unittest.TestCase):
         said = "\n".join(self.posted())
         self.assertIn("the new answer", said)
         self.assertNotIn("the old answer", said)
+
+    def test_an_idle_from_the_turn_before_does_not_end_the_run(self):
+        """A session holds the idle of every turn, and only this one's is the end."""
+        with TempDir() as directory:
+            app = self.make(directory)
+            session = self.device.new_session("Discord DM")
+            before = self.device.add_message(session, "idle")
+            self.device.add_message(session, "user", text="the next question")
+            self.device.add_message(session, "assistant", content=[
+                {"type": "text", "text": "working"},
+            ])
+            worker = asking.Ask(app, token="tok", channel_id=CHANNEL, user_id=OWNER,
+                                device_name="macbook", prompt="q", new=False, title="t")
+            worker.before = str(before["id"])
+            self.assertFalse(worker._is_idle(session), "the earlier idle is not this end")
+            self.device.add_message(session, "idle")
+            self.assertTrue(worker._is_idle(session))
 
     def test_a_carried_turn_for_a_device_that_left_the_file_is_dropped(self):
         with TempDir() as directory:
