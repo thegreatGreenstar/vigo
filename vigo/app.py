@@ -253,6 +253,84 @@ class App:
             line.append(worker)
             return len(line) - 1 + (1 if channel in self.runs else 0)
 
+    def _suspend_runs(self) -> None:
+        """Write down the work the upgrade's restart will cut off.
+
+        This runs in the second before the supervisor takes the process down,
+        and it is the only place a run is carried over a start: a crash or a
+        stop ends its runs for good, and a question that came back hours later
+        would answer a channel that has moved on.
+
+        Only a question whose prompt is already on the device is carried, with
+        the session it went to and the marks that name its turn.  One that
+        waits, or that the device has not taken yet, keeps nothing: it never
+        ran, and the state file keeps no message text.
+        """
+        with self.runs_lock:
+            running = dict(self.runs)
+        carried: dict[str, dict] = {}
+        for channel, run in running.items():
+            worker = run.ask
+            if worker is None or not worker.prompted_at or not run.session:
+                continue
+            carried[channel] = {"at": time.time(), "run": worker.record()}
+        self.state.suspend_runs(carried)
+        log.info(f"upgrade: {len(carried)} turn(s) in flight carry over the restart")
+
+    def _resume_suspended(self) -> None:
+        """Carry on the work that an upgrade's restart cut off, once.
+
+        It is read and cleared in one step, so a run that is lost again — a
+        crash of the new process — is lost as any other crash loses one, and
+        nothing comes back twice.
+        """
+        carried = self.state.take_suspended()
+        if not carried:
+            return
+        resumed = 0
+        for channel, entry in carried.items():
+            record = entry.get("run") if isinstance(entry, dict) else None
+            worker = self._restore(channel, record) if isinstance(record, dict) else None
+            if worker is None:
+                continue
+            with self.runs_lock:
+                self.runs[channel] = worker.run
+            threading.Thread(target=worker.run_it, name=f"ask-{channel}", daemon=True).start()
+            resumed += 1
+        log.info(f"resume: {resumed} turn(s) carried over the restart")
+
+    def _restore(self, channel: str, record: dict) -> asking.Ask | None:
+        """One carried-over turn, or None for one that cannot be picked up here."""
+        device = str(record.get("device") or "")
+        if device not in self.config.devices:
+            log.info("resume: a turn on a device that is not in the file was dropped")
+            return None
+        session = str(record.get("session") or "")
+        prompted_at = float(record.get("prompted_at") or 0.0)
+        if not session or not prompted_at:
+            return None
+        remembered = self.state.session_on(channel, device) or {}
+        title = (str(remembered.get("title") or "")
+                 if str(remembered.get("session") or "") == session else "")
+        worker = asking.Ask(
+            self,
+            token="",  # the interaction ended with the old process
+            channel_id=channel,
+            user_id=str(record.get("user_id") or ""),
+            device_name=device,
+            prompt="",
+            new=False,
+            title="",
+            hidden=bool(record.get("hidden")),
+            # Only whether it had one matters: the goal itself is read from
+            # the device, which kept it across the restart.
+            goal="resumed" if record.get("goal") else "",
+            note="",
+            resume=asking.Resume(session, prompted_at, str(record.get("before") or "")),
+        )
+        worker.task_title = title
+        return worker
+
     def shutdown(self) -> None:
         """Stop every run and the worker pool; used on the way out and by tests."""
         self.presence.stopped = True
@@ -1618,7 +1696,8 @@ class App:
         # This one last, after the answer is out: pulling is safe, restarting
         # is only safe once the person has read the list above.
         if local:
-            threading.Timer(1.0, lambda: update_self(self.checkout)).start()
+            threading.Timer(1.0, lambda: update_self(
+                self.checkout, before_restart=self._suspend_runs)).start()
 
     def _tell_owner(self, content: str) -> None:
         """A DM to the owner: the update that happened, or that it failed."""
@@ -2088,13 +2167,15 @@ class App:
                 PeerServer(self.config.peer_host, self.config.peer_port,
                            self.config.device, self.peer_password(),
                            checkout=self.checkout, build=self.build,
-                           queue=self.queue_snapshot).start()
+                           queue=self.queue_snapshot,
+                           suspend=self._suspend_runs).start()
             except OSError as error:  # the tailnet is not up, or the port is taken
                 log.error(f"peer: not listening ({error})")
         gateway = Gateway(url, self.config.token, INTENTS, self.on_event,
                           lambda state: log.debug(f"gateway: {state}"))
         self.gateway = gateway
         threading.Thread(target=self._watch_presence, name="presence", daemon=True).start()
+        self._resume_suspended()
         gateway.run()
 
 

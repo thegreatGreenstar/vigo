@@ -142,6 +142,7 @@ edit anything here.
 | `vigo/goal.py` | when an ask is work to be done, and when it is a question |
 | `vigo/notify.py` | a DM to the owner: the update the daemon pulled, or `vigo dm` |
 | `vigo/lease.py` | one channel's run at a time across daemons, kept in the session's metadata |
+| `vigo/state.py` | what this device remembers between runs: sessions, tickets, answers, and the turn an upgrade's restart cut off |
 | `vigo/presence.py` | the status Discord shows (online, idle, do not disturb, invisible) from what the daemon and the servers do |
 
 A direct message that replies to a message vigo posted is an ask in that DM's session. Only the daemon that posted
