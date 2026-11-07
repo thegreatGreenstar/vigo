@@ -72,9 +72,20 @@ addition.
   text of a message. The owner, the ids in the settings file, and the people
   the owner allowed with `/vigo allow` may ask. Anyone else gets an ephemeral
   "no" and nothing is sent to any device, ever.
+- **An allow is permission to ask, not to drive the machine.** An approved
+  person gets questions, not work: their ask never becomes a goal, never picks
+  a device, and never runs under the subagent agent. Their question and its
+  answer are private to them, their session is their own, so the owner's
+  conversation and files never reach them or the channel. They may have one
+  question in flight at a time, and they cannot use `status`, `queue`,
+  `devices`, `stop`, `upgrade`, `allow`, `deny` or `allowed`.
 - **Allowed users can ask, but cannot approve.** Tool permissions go to the
-  owner's DMs. An approved person's question cannot make the agent run a shell
-  command without the owner's click.
+  owner's DMs, and only a click there runs a tool. An approved person's card
+  offers **Allow once** and **Deny**, never **Always allow**: one use of a tool
+  is granted, not a standing rule the next question inherits.
+- **An allow that ends stops the question too.** The list is read again when a
+  queued question starts, so `/vigo deny` reaches a question that was already
+  waiting, and an allow that ran out refuses the next one.
 - **Nothing is stored about what was said.** No message text is logged; the
   log has ids, outcomes and durations. Answers live in Discord, as they do for
   any bot.
@@ -127,11 +138,14 @@ first start is usually a minute.
 **What a user install can and cannot do.** The acknowledgement, the answer and
 extra messages all go through the interaction's own token, so they work in a
 channel where the bot is not a member. One thing needs the bot in the channel:
-a fallback line when a DM is impossible. An answer that arrives *after* the
-interaction's 15 minutes goes to the channel with the bot's own token, and when
-that is refused — the bot is not a member, or the answer was `hidden` and its
-message expired — it goes to the owner's DM instead, said to be late. A goal
-that runs for an hour therefore still reaches the person who asked for it.
+the answer once the token is gone. Discord stops taking the token 15 minutes
+after the interaction, and a question that waits in the channel's queue spends
+part of that time before it starts. Then the answer goes to the channel with the
+bot's own token, and when that is refused — the bot is not a member — it goes to
+a direct message with the person who asked. A `hidden` answer has no ephemeral
+message left to go in, so that direct message takes it, named as the answer to
+its question. A goal that runs for an hour therefore still reaches the person
+who asked for it.
 
 ### 2. OpenCode on each device
 
@@ -419,12 +433,12 @@ What the Developer Portal asks for, if it helps:
 
 | Command | Who | What happens |
 | --- | --- | --- |
-| `/vigo ask prompt:<text> [file] [device] [hidden] [new]` | approved users | asks the device you last worked on; the question is acknowledged at once and the answer follows as a new message, public in the channel unless `hidden:true`, in which case only you see the question and answer. A task gets a goal, which the device works toward in a session of its own. A file attached with it, or a reply to an answer that carries one, is fetched and read on that device: a log or a dump never has to be pasted |
-| `/vigo goal objective:<text> [device] [hidden]` | approved users | gives the device an objective to keep working toward, with no question, in a session of its own; `pause`, `resume` and `clear` control the goal it already has |
+| `/vigo ask prompt:<text> [file] [device] [hidden] [new]` | approved users | asks the device you last worked on; the question is acknowledged at once and the answer follows as a new message, public in the channel unless `hidden:true`, in which case only you see the question and answer. A task gets a goal, which the device works toward in a session of its own. An approved person's ask is always private and is one question in a session of their own: no goal, no device choice. A file attached with it, or a reply to an answer that carries one, is fetched and read on that device: a log or a dump never has to be pasted |
+| `/vigo goal objective:<text> [device] [hidden]` | owner | gives the device an objective to keep working toward, with no question, in a session of its own; `pause`, `resume` and `clear` control the goal it already has |
 | `/vigo quick prompt:<text> [device] [hidden]` | approved users | one answer, with no session and no tools; the message stays as thinking until the answer is ready, then becomes it, with no line before, and the device is told the same two-paragraph limit as a question |
-| `/vigo status` | approved users | the channel's session, its device, tokens and cost, and the subagents at work under it; every question that waits, and the last three that ran |
+| `/vigo status` | owner | the channel's session, its device, tokens and cost, and the subagents at work under it; every question that waits, and the last three that ran |
 | `/vigo queue [public]` | owner | every channel that runs or waits, on this daemon and the other ones, every task in each line, and how many agents work on each task; `public:true` shows the channel a redacted copy |
-| `/vigo devices` | approved users | what is up, and which one a question would go to |
+| `/vigo devices` | owner | what is up, and which one a question would go to |
 | `/vigo stop` | owner | interrupts the channel's run, and drops the questions that wait behind it |
 | `/vigo upgrade [device]` | owner | pulls and restarts a daemon that runs a different commit; empty does every one of them, and the owner gets a DM naming each device and the commit it moved from and to |
 | `/vigo allow user:<who> [for:<2h｜1d｜7d｜perm>]` | owner | lets someone ask, for a time; 1 day when unnamed |
@@ -565,11 +579,22 @@ hostnames are left alone, because an answer about a machine has to name them.
 The allowlist is kept in a message the bot owns: in `stateChannel` when the
 file names one, otherwise in the bot's DM with you. It is read before every
 decision, so an allow made from the Mac holds on the PC at once, and it
-survives restarts. If that message cannot be read, because a channel the bot cannot
-see, or a message edited into something it cannot parse, changes stop with an
-error naming the problem, and nothing is overwritten. Prefer `stateChannel`: a
-DM works only when you and the bot share a server that lets you receive DMs
-from its members.
+survives restarts. The message holds the ids and the display names of the
+people you allowed, so `stateChannel` must be a private channel the bot and you
+can read, and nothing else. If that message cannot be read, because a channel
+the bot cannot see, or a message edited into something it cannot parse, changes
+stop with an error naming the problem, and nothing is overwritten. Prefer
+`stateChannel`: a DM works only when you and the bot share a server that lets
+you receive DMs from its members.
+
+An allow used to mean "may use the bot". It now means "may ask the owner's
+device a question". The device still holds your files, your sessions and your
+keys, so the limits are the point: an approved person's answer is ephemeral, so
+nothing about the machine lands in the channel; their content is their own
+session, so your conversation is not read into it; and their tools are one use
+at a time, approved by you. Do not read the allow as a grant of control, and do
+not leave `users` in the settings file as a quieter way to grant the same thing
+without the time limit.
 
 ## Protecting `main`
 
@@ -641,7 +666,9 @@ permission request. `vigo` sends it to your DMs:
 
 Clicks from anyone but the owner are refused and change nothing. The run
 waits until you answer, and the channel message says approval is needed.
-`Always allow` saves the rule in OpenCode for that project.
+`Always allow` saves the rule in OpenCode for that project. A permission that
+came from an approved person's question has **Allow once** and **Deny** only:
+their question may earn one use of a tool, never a standing rule.
 
 When the agent asks you a question of its own, it reaches the same DM as a card
 with a button for each choice and an **Other** button for a typed answer. The
@@ -831,10 +858,12 @@ show up there rather than hide here.
 No network and no Discord: a fake Discord REST API, a fake gateway and a fake
 OpenCode on 127.0.0.1. The suite covers the settings file and its refusals,
 message chunking and code fences, device routing, the allowlist across two
-devices, the command surface and who may use it, the permission cards
-(approved, refused, a stranger's click), a full ask with streamed deltas, the
-gateway's handshake, heartbeats and resume, and two daemons answering one use
-exactly once.
+devices, the limits an allow carries (its own session, a private answer, no
+goal, no device choice, one question in flight, no saved tool permission, a
+deny that reaches a waiting question), the command surface and who may use it,
+the permission cards (approved, refused, a stranger's click), a full ask with
+streamed deltas, the gateway's handshake, heartbeats and resume, and two
+daemons answering one use exactly once.
 
 CI runs the same suite on Python 3.12, 3.13 and 3.14, plus a lint and a check
 that no token is in the tree. Linux runs in a Codespace, and the two platforms
@@ -861,7 +890,7 @@ the trade a codespace makes, and it costs one manual step.
 | `closed with 4004` | the token is not the bot's; reset it and copy it again |
 | `closed with 4014` | the bot asked for an intent Discord does not allow it; the bot asks only for `DIRECT_MESSAGES` |
 | `no device answers` | no `opencode serve` is reachable from this daemon: check the URL, the port, and the password |
-| `Permission needed` never arrives | the owner and the bot do not share a server that allows DMs, so the card falls back to the channel |
+| `Permission needed` never arrives | the owner and the bot do not share a server that allows DMs, so no card is sent; the run says approval is needed and the tool does not run |
 | `/vigo upgrade` says `git refused` and the log names `usekeychain` | the daemon's `ssh` is Homebrew's, which has no `UseKeychain`; the bot's launchd job sets `GIT_SSH_COMMAND=/usr/bin/ssh`, and `./install.sh` writes that again |
 | a question says `still running` | the run passed `timeout`, so the line that question already shows, queued or got-it, ends with the note; the run keeps watching, `/vigo status` shows it, `/vigo stop` ends it |
 | the answer says `never started` | the device admitted the question and its session never began the turn: `opencode serve` there is stuck, so restart it and ask again |

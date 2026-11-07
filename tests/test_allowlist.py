@@ -123,6 +123,35 @@ class AllowListTest(unittest.TestCase):
             self.assertEqual(len(entries), 1)
             self.assertIsNone(entries[0].until)
 
+    def test_without_a_state_channel_the_list_lives_in_the_bot_dm(self):
+        with TempDir() as directory:
+            settings = load_settings(directory)
+            api = Discord("token", settings.app_id, base=self.discord.url)
+            listing = AllowList(settings, api, State(directory / "state.json"))
+            listing.allow("42", "Alex", None)
+            channel = self.discord.dm_channels[listing.owner]
+            stored = self.discord.messages.get(channel, [])
+        self.assertTrue(any(message["content"].startswith(MARKER) for message in stored),
+                        "the list is a message the bot owns in its DM with the owner")
+        self.assertEqual(settings.state_channel, "", "the file names none")
+
+    def test_the_stored_message_holds_the_list_and_no_free_text(self):
+        """The state message is one marker and one JSON object, so a reader
+        cannot mistake a chat line for an entry."""
+        with TempDir() as directory:
+            mac, _pc = self.lists(directory)
+            mac.allow("42", "Alex", 60)
+            stored = self.discord.messages[CHANNEL]
+        content = next(message["content"] for message in stored
+                       if message["content"].startswith(MARKER))
+        head, raw = content.split("\n", 1)
+        self.assertEqual(head, MARKER)
+        data = json.loads(raw)
+        self.assertEqual(sorted(data), ["allowed", "v"])
+        self.assertEqual(data["v"], 1)
+        self.assertEqual(sorted(data["allowed"][0]), ["id", "name", "since", "until"])
+
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -12,7 +12,6 @@ from tests.support import TempDir, load_settings
 OWNER = "145512144145512144"
 CHANNEL = "chan_9"
 
-
 class PermissionTest(unittest.TestCase):
     def setUp(self):
         self.discord = FakeDiscord()
@@ -109,6 +108,40 @@ class PermissionTest(unittest.TestCase):
             self.assertEqual(self.device.permission_replies, [])
             self.button(app, custom)
             self.assertTrue(self.discord.wait_for(lambda: bool(self.device.permission_replies), 10))
+
+    def test_an_approved_person_gets_no_saved_allow(self):
+        """One use of a tool, never a standing grant the next question inherits."""
+        guest = "777777777777777777"
+        self.device.script = [("permission", "bash", ["git status"]), ("idle", "done")]
+        with TempDir() as directory:
+            settings = load_settings(
+                directory, users=[guest],
+                devices=[{"name": "macbook", "url": self.device.url,
+                          "directory": "/tmp/project"}],
+            )
+            api = Discord("token", settings.app_id, base=self.discord.url)
+            self.app = App(settings, api=api, state=State(directory / "state.json"))
+            worker = asking.Ask(self.app, token="tok", channel_id=CHANNEL, user_id=guest,
+                                device_name="macbook", prompt="go", new=True, title="t",
+                                hidden=True)
+            threading.Thread(target=worker.run_it, daemon=True).start()
+            self.assertTrue(self.device.wait_for_prompt(10))
+            self.assertTrue(self.discord.wait_for(lambda: self.card()[0] is not None, 10))
+            _channel, message = self.card()
+            buttons = message["components"][0]["components"]
+            self.assertEqual([button["label"] for button in buttons], ["Allow once", "Deny"],
+                             "an approved person's tool is never saved")
+            allow = buttons[0]["custom_id"]
+            ticket = allow.split(":")[1]
+
+            self.button(self.app, f"pw:{ticket}:w")
+            self.assertEqual(self.device.permission_replies, [],
+                             "a forged always-allow changes nothing")
+
+            self.button(self.app, allow)
+            self.assertTrue(self.discord.wait_for(
+                lambda: bool(self.device.permission_replies), 10))
+            self.assertEqual(self.device.permission_replies[0][2], "once")
 
     def test_a_deny_goes_through(self):
         self.device.script = [("permission", "bash", ["rm -rf build"]), ("idle", "stopped")]
