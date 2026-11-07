@@ -474,7 +474,7 @@ class AppTest(unittest.TestCase):
         self.assertLessEqual(len(device["description"]), 100)
         self.assertIn("3 devices", device["description"])
 
-    def test_a_task_ask_gives_the_subagent_a_goal(self):
+    def test_a_task_ask_gives_the_worker_a_goal(self):
         self.device.script = [("idle", "done")]
         with TempDir() as directory:
             app = self.make(directory)
@@ -488,8 +488,8 @@ class AppTest(unittest.TestCase):
                          [("goal", "fix the failing test")])
         self.assertEqual(question_of(self.device.goals[session]["objective"]),
                          "fix the failing test")
-        self.assertEqual(self.device.sessions[session]["agent"], "general",
-                         "the goal is the subagent's, not the conversation agent's")
+        self.assertEqual(self.device.sessions[session]["agent"], "build",
+                         "the work runs under a primary agent, which can delegate subagents")
 
     def test_a_question_ask_only_asks(self):
         self.device.script = [("idle", "because the table moved")]
@@ -513,8 +513,8 @@ class AppTest(unittest.TestCase):
             session = app.state.session_for(CHANNEL)["session"]
         self.assertEqual(self.goals(), [("goal", "keep the build green")])
         self.assertEqual(self.device.goals[session]["objective"], "keep the build green")
-        self.assertEqual(self.device.sessions[session]["agent"], "general",
-                         "the goal is the subagent's, not the conversation agent's")
+        self.assertEqual(self.device.sessions[session]["agent"], "build",
+                         "the work runs under a primary agent, which can delegate subagents")
         self.assertIn("session of its own", written)
 
     def test_a_second_objective_steers_the_goal_the_channel_has(self):
@@ -1132,6 +1132,10 @@ class AppTest(unittest.TestCase):
         self.assertIn("at most 3 at a time", rule)
         self.assertIn("use fewer when fewer are enough", rule)
         self.assertIn("none when none is", rule)
+        self.assertIn("starts with fresh context", rule)
+        self.assertIn("cannot start another subagent", rule)
+        self.assertIn("exact files, the exact result", rule)
+        self.assertIn("read every report", rule)
 
     def test_an_answer_that_names_github_work_leads_with_it(self):
         self.device.script = [
@@ -1233,7 +1237,8 @@ class AppTest(unittest.TestCase):
             answer = next(content for content in self.said()
                           if "its own OpenCode session" in content)
         self.assertNotEqual(task, conversation, "the task does not run in the conversation")
-        self.assertEqual(self.device.sessions[task]["agent"], "general")
+        self.assertEqual(self.device.sessions[task]["agent"], "build",
+                         "a primary agent: a subagent agent cannot start subagents")
         self.assertIn("fix the failing test", self.device.sessions[task]["title"])
         self.assertEqual({session for session, _name, _text in self.device.commands}, {task},
                          "the goal went to the task's own session")

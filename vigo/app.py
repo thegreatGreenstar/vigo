@@ -1287,7 +1287,7 @@ class App:
         """Set, pause, resume or clear the goal this channel has.
 
         A new objective is work of its own: it opens a session under the
-        device's subagent agent, so the channel's conversation keeps answering
+        device's coding agent, so the channel's conversation keeps answering
         questions while the goal runs.  A channel that already holds a goal
         keeps that session, so a second objective steers the work it is doing
         instead of starting a second one, and `pause`, `resume` and `clear`
@@ -1365,13 +1365,13 @@ class App:
                 )
                 return
             if not control and not steer:
-                # Work of its own, under the subagent agent: the conversation
-                # stays a conversation.  `open_session` remembers it, so a
-                # follow-up and `/vigo status` reach the work.
+                # Work of its own, under the device's coding agent: the
+                # conversation stays a conversation.  `open_session` remembers
+                # it, so a follow-up and `/vigo status` reach the work.
                 session = asking.open_session(
                     self, client, device, channel_id, False,
                     f"{title} · {text.subject(objective, 40)}",
-                    agent=client.subagent_agent(), worker=True,
+                    agent=client.worker_agent(), worker=True,
                 )
             elif adopted:
                 self.state.remember_session(channel_id, device.name, session, title)

@@ -100,7 +100,7 @@ Torn between two sizes: pick the smaller, and say so.
 
 ## Where this design comes from, and when we last looked
 
-Five outside sources shaped this repo. Their changes are not tracked automatically, so a session that touches the
+Six outside sources shaped this repo. Their changes are not tracked automatically, so a session that touches the
 areas below reads them again first, and updates this table when it does.
 | Source | What we take from it | Last checked | At |
 | --- | --- | --- | --- |
@@ -108,6 +108,7 @@ areas below reads them again first, and updates this table when it does.
 | [OpenCode v2 API](https://opencode.ai/v2/openapi.json) and docs | every endpoint used: `/api/info`, sessions, prompt, message, permission reply, `session.command` (`goal`), the `opencode.goal` RPC, the form list and reply the question tool uses, `experimental/generate/text`, `/api/event` SSE, `serve --hostname/--port`, `OPENCODE_PASSWORD` | 2026-11-05 | `opencode v2.2.5` |
 | [DeepSeek dsh-superagent-prototype](https://github.com/deepseek-ai/dsh-superagent-prototype) | the authorization stance: the host decides from its own state, and message text is input to a decision, never a grant | 2026-11-04 | `8c32a9dc5d` |
 | [Accord/CLAUDE.md](https://accord.dravee.dev/Accord/CLAUDE.md) | the structure of this contract: task sizing, tests ship with the change, completion status, self-rating, confusion protocol, safety | 2026-11-05 | commit `a18354b1` |
+| [OpenCode agents and tools](https://opencode.ai/docs/agents/), [tools](https://opencode.ai/docs/tools/), [config](https://opencode.ai/docs/config/) | how a subagent runs: `mode: subagent` is used only in a child session through the `subagent` tool, the default nesting depth is one so a subagent cannot start another, `general` cannot launch subagents, only primary (or `all`) agents can run a session, and `background: true` returns before the child finishes | 2026-11-07 | `opencode v2 docs` |
 | [scarletnx/ScarletNX](https://github.com/scarletnx/ScarletNX), Aogo's replies on its pull requests and issues | how GitHub work is reported: the verdict in the first sentence, the facts that matter with their numbers, what waits for a maintainer, the artifacts named before the prose (`vigo/github.py`, `RULES` in `vigo/ask.py`). The mark is `From Vigo (an agent)`, once: a pull request and an issue end with it, a comment starts with it, and it never names the model that ran the turn (`#1277` signed one as the model's name). The replies measured 2026-11-05: 19 comments, median 47 words and one line, four bullets at most, so the rule carries that size | 2026-11-05 | `#1218`, `#1246`, `#1143`, `#1277` |
 
 Re-read one when a task touches it:
@@ -134,7 +135,7 @@ edit anything here.
 | `vigo/config.py` | the settings, checked strictly, one error named at a time |
 | `vigo/discord_api.py` | REST v10: commands, interactions, messages, DMs |
 | `vigo/gateway.py` | the WebSocket client: handshake, frames, heartbeat, resume |
-| `vigo/opencode_api.py` | sessions, prompts, permissions, the SSE event stream |
+| `vigo/opencode_api.py` | sessions, prompts, permissions, the SSE event stream, and the agent a task runs under |
 | `vigo/router.py` | which device answers, and what may be said about it |
 | `vigo/allowlist.py` | who may ask, in a Discord message so both daemons agree |
 | `vigo/app.py` | interactions, commands, permission cards, the election of one answerer, and a DM reply that is a question |
