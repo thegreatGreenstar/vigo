@@ -915,13 +915,15 @@ class Ask:
         log.info(f"ask: done on {self.device_name} ({outcome})")
 
     def _is_idle(self, session: str) -> bool:
-        try:
-            for message in self.client.messages(session, limit=6, order="desc"):
-                if message.get("type") == "idle":
-                    return True
-        except OpenCodeError:
-            pass
-        return False
+        """Whether this turn has ended, judged by its own idle.
+
+        A session keeps the idle of every turn it finished, so one from the
+        turn before is not this turn's end.  Only an idle newer than the
+        message that was newest at the prompt counts, which is what `_verdict`
+        reads: a session with a long turn and a short turn in it ended early
+        here once, and the answer stopped mid-sentence.
+        """
+        return self._verdict(session) == "finished"
 
     def _wait_for_turn(self, session: str, until: float) -> bool:
         """Wait until the device is free and this run holds the channel.
