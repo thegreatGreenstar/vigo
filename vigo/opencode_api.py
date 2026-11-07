@@ -134,25 +134,29 @@ class OpenCode:
         data = self._call("GET", "/api/agent")
         return [entry.get("id", "") for entry in (data or {}).get("data", []) if entry.get("id")]
 
-    def subagent_agent(self) -> str:
-        """The agent a delegated task runs under, or "" when the device offers none.
+    def worker_agent(self) -> str:
+        """The agent a task or a goal runs under, or "" for the device's default.
 
-        OpenCode marks each agent `primary` or `subagent`; `general` is its
-        general-purpose one.  A device without a subagent still gets the
-        session, and the default agent runs the work.
+        A task is a session of its own, and the rule it follows says it may
+        hand parts of the work to subagents.  OpenCode runs a `subagent` agent
+        only in a child session through the `subagent` tool, and its `general`
+        subagent cannot start subagents of its own, so a subagent agent cannot
+        run that session: it needs a `primary` (or `all`) agent.  `build` is
+        OpenCode's coding agent; another primary is the fallback when a device
+        has no `build`, and "" leaves the choice to the device, which must
+        select an agent that supports primary use.
         """
         try:
             data = self._call("GET", "/api/agent")
         except OpenCodeError:
             return ""
-        agents = [entry for entry in (data or {}).get("data", []) if isinstance(entry, dict)]
+        agents = [entry for entry in (data or {}).get("data", [])
+                  if isinstance(entry, dict) and entry.get("id")
+                  and entry.get("mode") in ("primary", "all")]
         for agent in agents:
-            if agent.get("id") == "general":
-                return "general"
-        for agent in agents:
-            if agent.get("mode") == "subagent" and agent.get("id"):
-                return str(agent["id"])
-        return ""
+            if agent["id"] == "build":
+                return "build"
+        return str(agents[0]["id"]) if agents else ""
 
     # -- sessions ---------------------------------------------------------
 
