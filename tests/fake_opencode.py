@@ -231,6 +231,10 @@ class FakeOpenCode:
                 self.add_message(session, "assistant",
                                  content=[{"type": "text", "text": step[1] if len(step) > 1 else "done"}],
                                  cost=0.002, tokens={"input": 120, "output": 8})
+                # The device ends a turn with an idle message on the session,
+                # which is what a run reads when the event that said so was
+                # missed: a restart in between leaves nothing else.
+                self.add_message(session, "idle")
                 self.emit("session.execution.succeeded", {"sessionID": session})
                 self.emit("session.idle", {"sessionID": session})
                 if not self.stay_busy:

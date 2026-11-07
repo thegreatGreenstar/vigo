@@ -399,6 +399,12 @@ The supervisor starts the script again when the bot ends, which is what `/vigo u
 process there and the new code starts. A bare `run.sh` is a one-shot, for a test. A rebuild must keep the
 `github-read` and `github-write` hosts in `ssh_config`, or a pull inside the container fails.
 
+An upgrade is the one stop that keeps the work. A question whose prompt already reached a device is written down
+just before the restart, with the session and the marks that name its turn. The new process watches that turn, then
+posts the answer in the channel, because the interaction ended with the old process. A question that only waited in a
+line is not carried: it never ran, and the state file keeps no message text. A crash, a stop or a restart nobody asked
+for carries nothing either, so the bot never answers a channel with work from hours ago.
+
 ## The Discord application, in words
 
 What the Developer Portal asks for, if it helps:
@@ -426,7 +432,7 @@ What the Developer Portal asks for, if it helps:
 | `/vigo queue [public]` | owner | every channel that runs or waits, on this daemon and the other ones, every task in each line, and how many agents work on each task; `public:true` shows the channel a redacted copy |
 | `/vigo devices` | approved users | what is up, and which one a question would go to |
 | `/vigo stop` | owner | interrupts the channel's run, and drops the questions that wait behind it |
-| `/vigo upgrade [device]` | owner | pulls and restarts a daemon that runs a different commit; empty does every one of them, and the owner gets a DM naming each device and the commit it moved from and to |
+| `/vigo upgrade [device]` | owner | pulls and restarts a daemon that runs a different commit; empty does every one of them, and the owner gets a DM naming each device and the commit it moved from and to. A turn already running on that daemon carries over the restart, and its answer still arrives |
 | `/vigo allow user:<who> [for:<2h｜1d｜7d｜perm>]` | owner | lets someone ask, for a time; 1 day when unnamed |
 | `/vigo deny user:<who>` | owner | takes that allow back |
 | `/vigo allowed` | owner | who may ask, and until when |
@@ -767,7 +773,7 @@ with the same caveat about the running process.
 | Where | What |
 | --- | --- |
 | `~/.config/vigo/vigo.json` | the settings, mode 0600 |
-| `~/.local/state/vigo/state.json` | channel → the session it has on each device, permission card tickets, the allowlist message's id; folder 0700, file 0600 |
+| `~/.local/state/vigo/state.json` | channel → the session it has on each device, permission card tickets, the allowlist message's id, and the turn an upgrade's restart is about to cut off (ids and times only); folder 0700, file 0600 |
 | Discord | the answers, and the allowlist message |
 
 A state file that cannot be read is kept as `state.json.bad` and a fresh one
@@ -869,4 +875,5 @@ the trade a codespace makes, and it costs one manual step.
 | the answer says the device returned no text | the turn produced nothing: the machine slept under it, or the session never ran. Ask again; a run that crossed a sleep ends like this |
 | a goal says `paused` | the device restarted while the goal was active; `/vigo goal resume` starts it again |
 | a question says `Queued` | one run at a time per channel; it starts when the one before it ends, or `/vigo stop` clears it |
+| `/vigo upgrade` ended a question that was queued | only a turn already on a device carries over the restart; a question that waited never started, so ask it again |
 | a channel has no session | the first ask creates one; `new:true` starts a fresh one on purpose |

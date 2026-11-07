@@ -2,6 +2,7 @@
 
 import json
 import os
+import time
 import unittest
 from pathlib import Path
 
@@ -57,3 +58,24 @@ class StateTest(unittest.TestCase):
             state = State(path)
             self.assertEqual(state.data["sessions"], {})
             self.assertIsNone(state.session_for("chan"))
+
+    # -- work carried over an upgrade ------------------------------------
+
+    def test_carried_over_work_is_given_up_once(self):
+        with TempDir() as directory:
+            path = directory / "state.json"
+            state = State(path)
+            state.suspend_runs({"chan": {"at": time.time(), "run": None,
+                                         "waiting": [{"prompt": "hello"}]}})
+            reopened = State(path)
+            self.assertIn("chan", reopened.take_suspended())
+            self.assertEqual(reopened.take_suspended(), {}, "it is read once")
+            self.assertEqual(State(path).data["suspended"], {},
+                             "the new process wrote the gap down")
+
+    def test_carried_over_work_older_than_its_restart_is_dropped(self):
+        with TempDir() as directory:
+            state = State(directory / "state.json")
+            state.suspend_runs({"chan": {"at": time.time() - 7200, "run": None,
+                                         "waiting": [{"prompt": "old"}]}})
+            self.assertEqual(state.take_suspended(), {})
