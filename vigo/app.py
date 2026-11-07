@@ -15,7 +15,7 @@ from .config import Config, Device
 from .discord_api import Discord, DiscordError
 from .gateway import Gateway
 from . import __version__
-from .notify import send_owner
+from .notify import send_dm, send_owner
 from .opencode_api import OpenCode, OpenCodeError, agents_on, busy_since
 from .peer import PeerClient, PeerServer, build_of, head_of, update_self
 from .router import DeviceState, Pick, Router
@@ -266,6 +266,18 @@ class App:
     def run_for(self, channel: str) -> asking.Run | None:
         with self.runs_lock:
             return self.runs.get(channel)
+
+    def _guest_busy(self, user_id: str) -> bool:
+        """Whether an approved person already has a question running or waiting.
+
+        The owner pays for every turn on the plan and every device holds one
+        conversation for that person, so an approved asker gets one at a time.
+        """
+        with self.runs_lock:
+            if any(run.user == user_id for run in self.runs.values()):
+                return True
+            return any(worker.user_id == user_id
+                       for line in self.waiting.values() for worker in line)
 
     # -- the status Discord shows ----------------------------------------
 
@@ -577,22 +589,25 @@ class App:
     # -- permission cards -------------------------------------------------
 
     def ask_permission(self, *, device: str, session: str, request: str,
-                       action: str, resources: list[str], channel: str) -> bool:
+                       action: str, resources: list[str], channel: str,
+                       owner: bool = True) -> bool:
         ticket = secrets.token_hex(4)
-        self.state.new_ticket(ticket, device, session, request, channel)
+        self.state.new_ticket(ticket, device, session, request, channel, owner=owner)
         shown = "\n".join(f"> `{text.shorten(item, 180)}`" for item in resources if item) or "> (no path)"
         content = (
             f"**Permission needed** on `{device}`\n"
             f"The agent asks to run `{text.shorten(action, 120)}`:\n{shown}"
         )
-        components = [{
-            "type": 1,
-            "components": [
-                {"type": 2, "style": 1, "label": "Allow once", "custom_id": f"pw:{ticket}:a"},
-                {"type": 2, "style": 3, "label": "Always allow", "custom_id": f"pw:{ticket}:w"},
-                {"type": 2, "style": 4, "label": "Deny", "custom_id": f"pw:{ticket}:d"},
-            ],
-        }]
+        buttons = [{"type": 2, "style": 1, "label": "Allow once", "custom_id": f"pw:{ticket}:a"}]
+        if owner:
+            # A saved rule outlives the question that asked for it.  An
+            # approved person's question may earn one use of a tool, never a
+            # standing grant that the next question inherits.
+            buttons.append({"type": 2, "style": 3, "label": "Always allow",
+                            "custom_id": f"pw:{ticket}:w"})
+        buttons.append({"type": 2, "style": 4, "label": "Deny",
+                        "custom_id": f"pw:{ticket}:d"})
+        components = [{"type": 1, "components": buttons}]
         payload = {
             "content": content,
             "components": components,
@@ -636,6 +651,16 @@ class App:
             self.api.respond(interaction_id, token, {
                 "type": 4,
                 "data": {"content": "That card is old; the request is gone.", "flags": 64},
+            })
+            return
+        if decision == "always" and not info.get("owner", True):
+            self.api.respond(interaction_id, token, {
+                "type": 4,
+                "data": {
+                    "content": ("An approved person's tool is allowed once, "
+                                "not saved. Allow it once, or run the question yourself."),
+                    "flags": 64,
+                },
             })
             return
         device = self.config.device_named(info["device"])
@@ -903,7 +928,14 @@ class App:
         if not self.run_for(channel_id) and self._device_busy(channel_id, pick.name, new=False):
             log.info("reply: the device is still working on this channel's last question")
             self._post(channel_id, "The device is still working on the last question here. "
-                                   "`/vigo status` shows it, `/vigo stop` ends it.")
+                                   "`/vigo status` shows it, `/vigo stop` ends it."
+                       if who == self.config.owner else
+                       "The device is still working on your last question. Wait for its answer.")
+            return
+        if who != self.config.owner and self._guest_busy(who):
+            log.info("reply: an approved user already has work in flight")
+            self._post(channel_id, "You already have a question in flight. Wait for its "
+                                   "answer, then reply to it with the next one.")
             return
         worker = asking.Ask(
             self,
@@ -1004,6 +1036,9 @@ class App:
         token = str(payload.get("token") or "")
         interaction_id = str(payload.get("id") or "")
         kind = payload.get("type")
+        # Discord keeps the token for 15 minutes, and the clock starts here,
+        # not when a run of the queue gets its turn.
+        asked_at = time.monotonic()
 
         member = payload.get("member") or {}
         user = member.get("user") or payload.get("user") or {}
@@ -1033,7 +1068,7 @@ class App:
         if sub == commands.HELP:
             self._answer_now(
                 interaction_id, token, self._help(owner, approved),
-                ephemeral=not approved or bool(options.get("hidden")),
+                ephemeral=not owner or bool(options.get("hidden")),
             )
             return
         if not approved:
@@ -1047,7 +1082,8 @@ class App:
             log.info(f"denied {sub or 'a use'} from {who}")
             return
         if sub in (commands.STOP, commands.UPGRADE, commands.STATUS, commands.QUEUE,
-                   commands.ALLOW, commands.DENY, commands.ALLOWED, commands.DEVICES) and not owner:
+                   commands.ALLOW, commands.DENY, commands.ALLOWED, commands.DEVICES,
+                   commands.GOAL) and not owner:
             self._answer_now(
                 interaction_id, token,
                 f"Only this bot's owner can use `/vigo {sub}`.",
@@ -1066,6 +1102,13 @@ class App:
         explicit = None
         if sub in (commands.ASK, commands.QUICK):
             explicit = (options.get("device") or "").strip() or None
+            if explicit and not owner:
+                self._answer_now(
+                    interaction_id, token,
+                    "Only this bot's owner chooses the device.",
+                    ephemeral=True,
+                )
+                return
             if explicit and explicit not in self.config.devices:
                 self._answer_now(
                     interaction_id, token,
@@ -1079,12 +1122,13 @@ class App:
         # Discord takes the first; the other is told it was already answered and
         # stops.  Whichever wins can drive every device, so it does not matter
         # which one it is.
-        if not self._defer(interaction_id, token, ephemeral=self._ephemeral(sub, options)):
+        if not self._defer(interaction_id, token, ephemeral=self._ephemeral(sub, options, owner)):
             return
 
         pick = self.router.pick(explicit)
         try:
-            self._answer(sub, options, token, channel_id, channel_name, who, owner, pick)
+            self._answer(sub, options, token, channel_id, channel_name, who, owner,
+                         pick, asked_at)
         except Exception as error:  # an answer always reaches the person
             log.error(f"command {sub}: {error}")
             self._say(token, "Something broke. The log says what.")
@@ -1103,7 +1147,9 @@ class App:
                 allowed = who == self.config.owner or self.allow.may_ask(who)
             except Exception:  # a slow read must not stall the three seconds
                 allowed = who == self.config.owner
-            if allowed:
+            # An approved person does not choose the device: its name would be
+            # told to them, and the owner decides where their question runs.
+            if allowed and who == self.config.owner:
                 typed = str(focused.get("value") or "").strip().lower()
                 choices = [
                     {"name": name, "value": name}
@@ -1113,17 +1159,22 @@ class App:
         self.api.respond(payload["id"], payload["token"],
                          {"type": 8, "data": {"choices": choices}})
 
-    def _ephemeral(self, sub: str, options: dict) -> bool:
-        """Everyone sees the answer unless the asker asked to hide it.
+    def _ephemeral(self, sub: str, options: dict, owner: bool = True) -> bool:
+        """Who sees the reply: the asker alone, or the channel too.
 
-        `devices` names the machines, `status` names the session and its cost,
-        and the three allowlist commands name other people, so those are always
+        The owner's answer is public unless they hide it.  An approved
+        asker's question is always private: the device holds the owner's
+        files, and an answer about them must not land in a channel.  `devices`
+        names the machines, `status` names the session and its cost, and the
+        three allowlist commands name other people, so those are always
         private: no option could show them to a channel by accident.  `queue`
         is private too, unless the owner asks for the public form, which names
         no channel, no task and no device.
         """
         if sub == commands.QUEUE:
             return not bool(options.get("public"))
+        if not owner:
+            return True
         if sub in (commands.DEVICES, commands.STATUS, commands.UPGRADE, commands.ALLOW,
                    commands.DENY, commands.ALLOWED):
             return True
@@ -1167,11 +1218,12 @@ class App:
     # -- the commands -----------------------------------------------------
 
     def _answer(self, sub: str, options: dict, token: str, channel_id: str,
-                channel_name: str, who: str, owner: bool, pick: Pick) -> None:
+                channel_name: str, who: str, owner: bool, pick: Pick,
+                asked_at: float) -> None:
         if sub == commands.ASK:
-            self._ask(options, token, channel_id, channel_name, who, pick)
+            self._ask(options, token, channel_id, channel_name, who, pick, asked_at)
         elif sub == commands.QUICK:
-            self._quick(options, token, channel_id, pick)
+            self._quick(options, token, channel_id, pick, who)
         elif sub == commands.GOAL:
             self._goal(options, token, channel_id, channel_name, pick)
         elif sub == commands.STATUS:
@@ -1192,10 +1244,29 @@ class App:
             self._say(token, self.allow.describe())
 
     def _ask(self, options: dict, token: str, channel_id: str, channel_name: str,
-             who: str, pick: Pick) -> None:
+             who: str, pick: Pick, asked_at: float) -> None:
         prompt = str(options.get("prompt") or "").strip()
         if not prompt:
             self._say(token, "The question is empty.")
+            return
+        owner = who == self.config.owner
+        # A fresh session is the owner's to ask for: an approved person's
+        # questions continue in their own conversation, not a new one per ask.
+        start_new = bool(options.get("new")) if owner else False
+        # Work that runs on after the answer is the owner's: an approved
+        # person's ask is one question in a session of their own, never a goal
+        # with a subagent that keeps changing the machine.
+        objective = self._objective(prompt) if owner else ""
+        if not owner and self._guest_busy(who):
+            # Each question is a turn the owner's plan pays for, and the
+            # device holds one conversation per person.  One at a time keeps
+            # a list of approved people from becoming a queue on the machine.
+            log.info(f"ask: an approved user already has work in flight ({who})")
+            self._say(
+                token,
+                "You already have a question in flight. Wait for its answer, "
+                "then ask the next one.",
+            )
             return
         if pick.name is None:
             log.info(f"ask: no device ({pick.reason})")
@@ -1203,12 +1274,14 @@ class App:
                 token,
                 "No device would take the question.\n"
                 "Start OpenCode there with `opencode serve --hostname 0.0.0.0 --port 4096`; "
-                "`/vigo devices` (only you see it) says what is there.",
+                "`/vigo devices` (only you see it) says what is there."
+                if owner else
+                "No device would take the question. Ask the owner to check the machine.",
             )
             return
-        objective = self._objective(prompt)
+        session_key = channel_id if owner else f"{channel_id}:{who}"
         if (not objective and not self.run_for(channel_id)
-                and self._device_busy(channel_id, pick.name, new=bool(options.get("new")))):
+                and self._device_busy(session_key, pick.name, new=start_new)):
             # Nothing runs here, yet the device still works: another daemon
             # answered the last command, or this one restarted under it.  A
             # question would steer the agent that is already working, so it is
@@ -1217,7 +1290,9 @@ class App:
             self._say(
                 token,
                 "The device is still working on the last question here. "
-                "`/vigo status` shows it, `/vigo stop` ends it.",
+                "`/vigo status` shows it, `/vigo stop` ends it."
+                if owner else
+                "The device is still working on your last question. Wait for its answer.",
             )
             return
         running = self._running_agents()
@@ -1230,10 +1305,17 @@ class App:
                 token,
                 f"Your OpenCode plan already runs {running} agents, the most vigo starts "
                 f"at once ({AGENTS_MAX}, on every device it drives). `/vigo queue` shows "
-                "what waits; ask again when one finishes.",
+                "what waits; ask again when one finishes."
+                if owner else
+                "The owner's OpenCode plan is busy with the most work it starts at once. "
+                "Ask again when it finishes.",
             )
             return
         title = f"Discord #{channel_name}" if channel_name else "Discord DM"
+        # An approved person's answer is private whatever the option says: the
+        # device holds the owner's files, and nothing about them belongs in a
+        # channel.  Their session is their own, so no history is shared either.
+        hidden = bool(options.get("hidden")) or not owner
         worker = asking.Ask(
             self,
             token=token,
@@ -1241,11 +1323,13 @@ class App:
             user_id=who,
             device_name=pick.name,
             prompt=_attached(prompt, options.get("file")),
-            new=bool(options.get("new")),
+            new=start_new,
             title=title,
-            hidden=bool(options.get("hidden")),
+            hidden=hidden,
             goal=objective,
-            note=ask_note(who == self.config.owner, bool(options.get("hidden")), channel_name),
+            note=ask_note(owner, hidden, channel_name),
+            asked_at=asked_at,
+            session_key=session_key,
         )
         ahead = self.add_waiting(channel_id, worker)
         if ahead is None:
@@ -1393,7 +1477,8 @@ class App:
             said += " `/vigo status` says what the device holds."
         self._say(token, said)
 
-    def _quick(self, options: dict, token: str, channel_id: str, pick: Pick) -> None:
+    def _quick(self, options: dict, token: str, channel_id: str, pick: Pick,
+               who: str) -> None:
         """One question, answered once: no session, no tools, nothing kept."""
         prompt = str(options.get("prompt") or "").strip()
         if not prompt:
@@ -1423,7 +1508,7 @@ class App:
             log.info(f"quick: the device refused ({error.message})")
             self._say(token, "The device would not answer.")
             return
-        hidden = bool(options.get("hidden"))
+        hidden = bool(options.get("hidden")) or who != self.config.owner
         removed = ""
         if not hidden:
             answer, removed = text.scrub(answer)
@@ -1449,9 +1534,13 @@ class App:
                 "allowed_mentions": {"parse": []},
             })
         except DiscordError as error:
-            log.error(f"quick: cannot post the answer ({error.message})")
+            # The usual cause is the interaction's 15 minutes, which a long
+            # one-off can pass: the answer is delivered below, so this is not
+            # an error.  A post that fails as well says so there.
+            log.info(f"quick: the deferred message would not take the answer "
+                     f"({error.message}); posting it where the question was")
             for part in parts:
-                self._late_quick(channel_id, part, hidden)
+                self._late_quick(channel_id, part, hidden, prompt, who)
             return
         for number, part in enumerate(parts[1:], start=1):
             try:
@@ -1461,16 +1550,30 @@ class App:
                     **extra,
                 })
             except DiscordError as error:
-                log.error(f"quick: cannot post the answer ({error.message})")
+                log.info(f"quick: the interaction would not take the rest of the "
+                         f"answer ({error.message}); posting it where the question was")
                 for rest in parts[number:]:
-                    self._late_quick(channel_id, rest, hidden)
+                    self._late_quick(channel_id, rest, hidden, prompt, who)
                 return
         log.info(f"quick: answered on {pick.name}")
 
-    def _late_quick(self, channel_id: str, content: str, hidden: bool) -> None:
-        """The interaction's 15 minutes ran out: post it where the question was."""
+    def _late_quick(self, channel_id: str, content: str, hidden: bool,
+                    prompt: str, who: str) -> None:
+        """Post a one-off where the question was, without the token.
+
+        A public answer goes to the channel.  A hidden one has no ephemeral
+        message left to go in, so a DM takes it, to the person who asked: the
+        owner's DM would show them an approved person's answer.  The
+        alternative is to drop it, which is what used to happen here.
+        """
         if hidden:
-            log.error("quick: the answer is too late for an ephemeral message")
+            said = (f"**the answer to “{text.subject(prompt, 60)}”**\n\n"
+                    f"{content}")
+            try:
+                send_dm(self.config, who, said, api=self.api)
+                log.info("quick: the answer went to the asker's DM")
+            except Exception as error:  # noqa: BLE001 - any failure means it did not arrive
+                log.error(f"quick: the DM did not take the answer ({error})")
             return
         try:
             self.api.send(channel_id, {
@@ -2047,23 +2150,41 @@ class App:
         lines = [
             "**Vigo**, an OpenCode agent on your own machines, reached from Discord.",
             "",
-            "`/vigo ask prompt:…` asks the device you last worked on. "
-            "`device:` names one, `new:true` starts a fresh session. A question "
-            "asked while one runs waits its turn. Attach a file, or reply to an "
-            "answer with one, and the device reads it there.",
-            "When the ask is a task, it gets a goal and works toward it until "
-            "it is done, in a session of its own; the wording decides which it "
-            "is. `/vigo goal objective:…` gives a goal yourself, with no "
-            "question, in a session of its own; `pause`, `resume` and `clear` "
-            "control the one this channel has.",
-            "`/vigo quick prompt:…` answers once, with no session and no tools.",
-            "`/vigo devices` shows what is up and where a question would go.",
-            "`/vigo status` shows this channel's session, what waits in it, and "
-            "what ran. `/vigo stop` ends its run and drops what waits.",
-            "Every command that answers a question takes `hidden:true` to keep "
-            "its answer to yourself. Without it, the channel sees it. "
-            "`devices`, `allow`, `deny` and `allowed` are always private.",
         ]
+        if owner:
+            lines.extend([
+                "`/vigo ask prompt:…` asks the device you last worked on. "
+                "`device:` names one, `new:true` starts a fresh session. A question "
+                "asked while one runs waits its turn. Attach a file, or reply to an "
+                "answer with one, and the device reads it there.",
+                "When the ask is a task, it gets a goal and works toward it until "
+                "it is done, in a session of its own; the wording decides which it "
+                "is. `/vigo goal objective:…` gives a goal yourself, with no "
+                "question, in a session of its own; `pause`, `resume` and `clear` "
+                "control the one this channel has.",
+                "`/vigo quick prompt:…` answers once, with no session and no tools.",
+                "`/vigo devices` shows what is up and where a question would go.",
+                "`/vigo status` shows this channel's session, what waits in it, and "
+                "what ran. `/vigo stop` ends its run and drops what waits.",
+                "Every command that answers a question takes `hidden:true` to keep "
+                "its answer to yourself. Without it, the channel sees it. "
+                "`devices`, `allow`, `deny` and `allowed` are always private.",
+            ])
+        elif approved:
+            lines.extend([
+                "`/vigo ask prompt:…` asks the owner's device a question. It is "
+                "private to you, even without `hidden`: the owner's files and "
+                "history stay out of the channel, and your session is your own. "
+                "`/vigo quick prompt:…` answers once, with no session and no tools.",
+                "Approved users ask questions. Work on the device, and the commands "
+                "that name it, belong to the owner.",
+            ])
+        else:
+            lines.extend([
+                "`/vigo ask prompt:…` asks a device a question. It is for the "
+                "owner and the people the owner allows; anyone else is refused.",
+                "Only the bot's owner may ask.",
+            ])
         if owner:
             lines.append("")
             lines.append(
@@ -2075,6 +2196,14 @@ class App:
         elif not approved:
             lines.append("")
             lines.append("Only the bot's owner may ask.")
+        else:
+            lines.append("")
+            lines.append(
+                "You may ask questions, and `/vigo quick`. Your question and its "
+                "answer are private to you: the owner's files and history stay out "
+                "of the channel, and your session is your own. Work on the device, "
+                "and every command that names it, is the owner's."
+            )
         return "\n".join(lines)
 
     # -- running ----------------------------------------------------------

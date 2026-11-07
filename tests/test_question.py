@@ -1,4 +1,5 @@
 import threading
+import time
 import unittest
 
 from vigo import ask as asking
@@ -40,18 +41,20 @@ class QuestionTest(unittest.TestCase):
         self.device.close()
         self.discord.close()
 
-    def make(self, directory):
+    def make(self, directory, **overrides):
         settings = load_settings(
             directory,
             devices=[{"name": "macbook", "url": self.device.url, "directory": "/tmp/project"}],
+            **overrides,
         )
         api = Discord("token", settings.app_id, base=self.discord.url)
         self.app = App(settings, api=api, state=State(directory / "state.json"))
         return self.app
 
-    def worker(self, app: App) -> asking.Ask:
-        return asking.Ask(app, token="tok", channel_id=CHANNEL, user_id=OWNER,
-                          device_name="macbook", prompt="go", new=False, title="t")
+    def worker(self, app: App, user_id: str = OWNER, **extra) -> asking.Ask:
+        return asking.Ask(app, token="tok", channel_id=CHANNEL, user_id=user_id,
+                          device_name="macbook", prompt="go", new=False, title="t",
+                          **extra)
 
     def said(self) -> list[str]:
         return [entry["content"] for entry in self.discord.edits + self.discord.followups]
@@ -96,10 +99,60 @@ class QuestionTest(unittest.TestCase):
         })
         return interaction
 
-    def start(self, app: App):
-        thread = threading.Thread(target=self.worker(app).run_it, daemon=True)
+    def start(self, app: App, **extra):
+        thread = threading.Thread(target=self.worker(app, **extra).run_it, daemon=True)
         thread.start()
         return thread
+
+    def test_a_question_past_the_token_posts_its_answer_in_the_channel(self):
+        """The clock runs from the interaction, so a run the queue held is late."""
+        self.device.script = [("idle", "the answer after the wait")]
+        with TempDir() as directory:
+            app = self.make(directory)
+            self.start(app, asked_at=time.monotonic() - asking.LIFE - 60)
+            self.assertTrue(self.discord.wait_for(
+                lambda: any("the answer after the wait" in message["content"]
+                            for message in self.discord.messages.get(CHANNEL, [])), 10))
+        self.assertEqual(self.discord.followups, [], "a dead token is not tried")
+        self.assertEqual(self.discord.dm_channels, {},
+                         "the channel takes a public answer, so no DM is opened")
+
+    def test_a_hidden_question_past_the_token_is_dmed_without_trying_it(self):
+        self.device.script = [("idle", "still private")]
+        with TempDir() as directory:
+            app = self.make(directory)
+            self.start(app, hidden=True,
+                       asked_at=time.monotonic() - asking.LIFE - 60)
+            self.assertTrue(self.discord.wait_for(
+                lambda: bool(self.discord.dm_channels), 10), "the owner's DM was opened")
+            self.assertTrue(self.discord.wait_for(
+                lambda: bool(self.discord.messages.get(
+                    self.discord.dm_channels.get(OWNER, ""), [])), 10))
+            dm = self.discord.messages.get(self.discord.dm_channels[OWNER], [])
+        self.assertTrue(any("still private" in message["content"] for message in dm))
+        self.assertTrue(any("the answer to “go”" in message["content"] for message in dm),
+                        "the DM names the question it answers")
+        self.assertEqual(self.discord.followups, [], "a dead token is not tried")
+        self.assertEqual(self.discord.messages.get(CHANNEL, []), [],
+                         "a hidden answer is never posted in the channel")
+
+    def test_an_approved_askers_late_answer_goes_to_them_not_the_owner(self):
+        """The owner's DM would show them what an approved person asked."""
+        guest = "777777777777777777"
+        self.device.script = [("idle", "for you only")]
+        with TempDir() as directory:
+            app = self.make(directory, users=[guest])
+            self.start(app, user_id=guest, hidden=True,
+                       asked_at=time.monotonic() - asking.LIFE - 60)
+            self.assertTrue(self.discord.wait_for(
+                lambda: bool(self.discord.messages.get(
+                    self.discord.dm_channels.get(guest, ""), [])), 10))
+            mine = self.discord.messages.get(self.discord.dm_channels[guest], [])
+        self.assertTrue(any("for you only" in message["content"] for message in mine))
+        self.assertNotIn(OWNER, self.discord.dm_channels,
+                         "the owner's DM is not opened")
+        self.assertEqual(self.discord.messages.get(CHANNEL, []), [],
+                         "the answer never lands in the channel")
 
     def test_a_state_file_that_cannot_be_written_does_not_fail_the_answer(self):
         """Remembering where the answer landed is not worth a second post."""

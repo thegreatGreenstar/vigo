@@ -139,13 +139,14 @@ class State:
     # -- permission cards -------------------------------------------------
 
     def new_ticket(self, ticket: str, device: str, session: str, request: str,
-                   channel: str) -> None:
+                   channel: str, owner: bool = True) -> None:
         with self.lock:
             self.data["tickets"][ticket] = {
                 "device": device,
                 "session": session,
                 "request": request,
                 "channel": channel,
+                "owner": owner,
                 "at": int(time.time()),
             }
             self._write()

@@ -7,6 +7,13 @@ agent asks, goes to its owner in a DM, and the run waits for the answer.  Past
 ``timeout`` the line the question already shows — the queued line or the got-it
 line — gains a note that the device is still working, and the run keeps
 watching: the channel is still busy, so the next question waits.
+
+The interaction's token is what posts the answer where the question was, and
+Discord stops taking it 15 minutes after the interaction.  A question that
+waited in the channel's queue can pass that before it starts, so the answer
+falls back to the channel's own token, and to a direct message for one only
+the asker may see.  In every case the answer goes to the person who asked, never
+to the owner, whose DM would show them what an approved person asked.
 """
 
 from __future__ import annotations
@@ -19,9 +26,10 @@ from datetime import datetime
 from typing import Protocol
 
 from . import github, lease as leasing, log, text
+from .allowlist import AllowList
 from .config import Config, Device
 from .discord_api import Discord
-from .notify import send_owner
+from .notify import send_dm
 from .opencode_api import EventStream, OpenCode, OpenCodeError, busy_since
 from .state import State
 
@@ -106,6 +114,13 @@ POLL = 0.5
 # asking the same thing again.
 RECENT = 300.0
 
+# How long Discord keeps taking an interaction's token, in seconds: 15 minutes
+# for a followup, for an edit of the deferred message, and for an ephemeral
+# message of its own.  A question that waits in this channel's queue spends
+# part of that time before it even starts, so a run of ten minutes can answer
+# past it.  The minute of margin leaves the requests themselves to fit.
+LIFE = 14 * 60.0
+
 
 def _failure(data: dict) -> str:
     """The device's own words for why a turn failed, from its event.
@@ -142,6 +157,7 @@ class Host(Protocol):
     config: Config
     state: State
     api: Discord
+    allow: AllowList
 
 
 def open_session(app: Host, client: OpenCode, device: Device, channel_id: str,
@@ -244,6 +260,7 @@ class Run:
     device: str
     started: float
     prompt: str = ""
+    user: str = ""     # who asked, so an approved asker's in-flight work is counted
     stop: threading.Event = field(default_factory=threading.Event)
 
     @property
@@ -257,12 +274,16 @@ class Ask:
     def __init__(self, app: Host, *, token: str, channel_id: str, user_id: str,
                  device_name: str, prompt: str, new: bool, title: str,
                  hidden: bool = False, goal: str = "", reply_in_channel: bool = False,
-                 note: str = "") -> None:
+                 note: str = "", asked_at: float = 0.0, session_key: str = "") -> None:
         self.app = app
         self.token = token
         self.channel_id = channel_id
         self.hidden = hidden
         self.user_id = user_id
+        # The channel's session is the owner's conversation.  An approved
+        # asker gets a session of their own, so their question never reads the
+        # owner's history and the owner never reads theirs.
+        self.session_key = session_key or channel_id
         self.device_name = device_name
         self.device = app.config.device_named(device_name)
         self.client = OpenCode(self.device.url, self.device.password)
@@ -274,7 +295,11 @@ class Ask:
         self.reply_in_channel = reply_in_channel
         self.new = new
         self.title = title
-        self.run = Run(session="", device=device_name, started=time.monotonic(), prompt=prompt)
+        # When Discord received the interaction, not when the run starts: the
+        # token's 15 minutes begin there, and the queue can hold the run back.
+        self.asked_at = asked_at or time.monotonic()
+        self.run = Run(session="", device=device_name, started=time.monotonic(),
+                       prompt=prompt, user=user_id)
         self.buffer = ""
         self.lease: leasing.Lease | None = None
         self.waiting = False
@@ -285,6 +310,19 @@ class Ask:
         self.message_id = ""  # that line's message, when it is not the interaction's own
 
     # -- the message ------------------------------------------------------
+
+    def _allowed(self) -> bool:
+        """Whether the person who asked may still ask, read again at the start.
+
+        An allow can end while a question waits its turn, so the decision is
+        made again here rather than only when the command arrived.
+        """
+        if self.user_id == self.app.config.owner:
+            return True
+        try:
+            return self.app.allow.may_ask(self.user_id)
+        except Exception:  # a list that cannot be read refuses, never allows
+            return False
 
     def question(self) -> str:
         """The question, with what the device should know of who reads the answer.
@@ -319,6 +357,8 @@ class Ask:
             return False
         text = f"{self.shown}\n\n{content}"[:2000]
         if not self.reply_in_channel:
+            if not self._token_live():
+                return False
             return self._edit(text)
         if not self.message_id:
             return False
@@ -377,8 +417,7 @@ class Ask:
         parts = text.messages(content, ANSWER_PARTS, more=MORE) or ["_nothing to say_"]
         # The answer is a new message, after the "got it": Discord notifies on
         # a new message but not on an edit, and the "got it" stays as the
-        # record that the question arrived.  A hidden answer is ephemeral, so
-        # it cannot be posted in the channel when the interaction has expired.
+        # record that the question arrived.
         if self._already_answered(parts[0]):
             # Two runs can watch one device turn, and both would post it.
             log.info("ask: the channel already has that answer; not posting it twice")
@@ -388,7 +427,7 @@ class Ask:
             for part in parts:
                 self._late_answer(part, check=False)
         else:
-            self._followup(parts, {"flags": 64} if self.hidden else {})
+            self._deliver(parts)
         log.info(
             f"ask: {self.device_name} · {text.duration(self.run.elapsed)} · "
             f"{steps} step(s) · context {text.tokens(context)} · "
@@ -396,26 +435,60 @@ class Ask:
             f"{text.money(cost)}"
         )
 
-    def _followup(self, parts: list[str], extra: dict) -> None:
-        """Post the answer after the "got it", in as many messages as it takes.
+    def _deliver(self, parts: list[str]) -> None:
+        """Post the answer where its reader still is when it is ready.
 
-        The same interaction token carries each one, so a channel where this bot
-        is not a member still gets the whole answer.  A message that Discord
-        refuses sends that part, and the ones after it, where the question was.
+        The interaction's token is the first way: it reaches a channel where
+        this bot is not a member, which is where a user install answers, and it
+        is the only way an ephemeral answer can be shown.  Discord stops taking
+        it 15 minutes after the interaction, though, and a question that waited
+        in the queue can pass that before it starts: then the channel's own
+        token takes a public answer, and the owner's DM a private one.  Nothing
+        is posted twice, and a part that fails hands the rest of the answer
+        over with it.
         """
         for number, part in enumerate(parts):
-            try:
-                posted = self.app.api.followup(self.token, {
-                    "content": part[:2000],
-                    "allowed_mentions": {"parse": []},
-                    **extra,
-                })
-                self._record(posted)
-            except Exception as error:
-                log.error(f"ask: cannot post the answer ({error})")
-                for rest in parts[number:]:
-                    self._late_answer(rest, check=False)
-                return
+            extra = {"flags": 64} if self.hidden else {}
+            if self._token_live() and self._followup(part, extra):
+                continue
+            if not self.hidden and self._send(part):
+                continue
+            first = number == 0
+            for rest in parts[number:]:
+                self._dm(rest, first=first)
+                first = False
+            return
+
+    def _followup(self, part: str, extra: dict) -> bool:
+        """Post one part on the interaction's token, if Discord still takes it."""
+        try:
+            posted = self.app.api.followup(self.token, {
+                "content": part[:2000],
+                "allowed_mentions": {"parse": []},
+                **extra,
+            })
+        except Exception as error:
+            log.debug(f"ask: cannot post the answer on the interaction ({error})")
+            return False
+        self._record(posted)
+        return True
+
+    def _send(self, part: str) -> bool:
+        """Post one part in the channel, as a message that is not on a timer."""
+        try:
+            posted = self.app.api.send(self.channel_id, {
+                "content": part[:2000],
+                "allowed_mentions": {"parse": []},
+            })
+        except Exception as error:
+            log.info(f"ask: cannot post the answer in the channel ({error})")
+            return False
+        self._record(posted)
+        return True
+
+    def _token_live(self) -> bool:
+        """Whether Discord still takes this question's interaction token."""
+        return time.monotonic() - self.asked_at < LIFE
 
     def _goal_line(self) -> str:
         """Where the goal stands now, for the person who set it.
@@ -462,7 +535,7 @@ class Ask:
                 log.error(f"ask: cannot remember the answer ({error})")
 
     def _late_answer(self, content: str, check: bool = True) -> bool:
-        """The interaction's 15 minutes ran out: post it where the question was.
+        """Post a part where the question was, without the interaction's token.
 
         An answer that cannot go there is not thrown away: a hidden one has an
         ephemeral message that expired, and a channel where this bot is not a
@@ -474,37 +547,36 @@ class Ask:
         match an earlier message is not a reason to drop the rest.
         """
         if self.hidden:
-            log.info("ask: the answer is too late for an ephemeral message; sending it to the owner")
-            return self._last_resort(content)
+            log.info("ask: an ephemeral message cannot carry this answer; "
+                     "sending it to the asker")
+            return self._dm(content)
         if check and self._already_answered(content):
             log.info("ask: the channel already has that answer; not posting it twice")
             return True
-        try:
-            posted = self.app.api.send(self.channel_id, {
-                "content": content[:2000],
-                "allowed_mentions": {"parse": []},
-            })
-            self._record(posted)
+        if self._send(content):
             return True
-        except Exception as error:
-            log.error(f"ask: cannot post the answer at all ({error})")
-            return self._last_resort(content)
+        return self._dm(content)
 
-    def _last_resort(self, content: str) -> bool:
+    def _dm(self, content: str, first: bool = False) -> bool:
         """The answer reaches the person when Discord will not take it there.
 
-        The owner's DM is the one place this bot can always open, because the
-        bot is a member of it whatever the channel is.  The line above says it
-        is late, so it does not read like a new question's answer.
+        A direct message is the one place this bot can always open, because the
+        bot is a member of it whatever the channel is.  It goes to whoever
+        asked: the owner's DM would show an approved person's answer to the
+        owner, which is the leak this split exists to stop.  `first` names the
+        question the answer belongs to: an answer that arrives on its own, in a
+        place the person did not ask in, must not read like a new question's.
         """
+        said = content
+        if first and self.prompt:
+            said = (f"**the answer to “{text.subject(self.prompt, 60)}”**\n\n"
+                    f"{content}")
         try:
-            send_owner(self.app.config,
-                       f"(an answer that arrived too late for its message)\n\n{content}",
-                       api=self.app.api)
-            log.info("ask: the answer went to the owner's DM")
+            send_dm(self.app.config, self.user_id, said, api=self.app.api)
+            log.info("ask: the answer went to the asker's DM")
             return True
         except Exception as error:  # noqa: BLE001 - any failure means it did not arrive
-            log.error(f"ask: the owner's DM did not take the answer ({error})")
+            log.error(f"ask: the DM did not take the answer ({error})")
             return False
 
     def _already_answered(self, content: str) -> bool:
@@ -537,7 +609,7 @@ class Ask:
         if self.reply_in_channel:
             self._late_answer(content)
             return
-        if not self._edit(content):
+        if not self._token_live() or not self._edit(content):
             self._late_answer(content)
 
     # -- the session ------------------------------------------------------
@@ -545,14 +617,14 @@ class Ask:
     def _open_session(self) -> str:
         if not self.goal:
             return open_session(
-                self.app, self.client, self.device, self.channel_id, self.new, self.title,
+                self.app, self.client, self.device, self.session_key, self.new, self.title,
             )
         # A task is work, not a question: it runs in a session of its own, with
         # a subagent, so the conversation stays a conversation and the person
         # can open the work where it happens.
         self.task_title = f"{self.title} · {text.subject(self.prompt, 40)}"
         return open_session(
-            self.app, self.client, self.device, self.channel_id, self.new,
+            self.app, self.client, self.device, self.session_key, self.new,
             self.task_title, agent=self.client.subagent_agent(), worker=True,
         )
 
@@ -619,15 +691,20 @@ class Ask:
                 action=str(data.get("action") or "a tool"),
                 resources=[str(item) for item in (data.get("resources") or [])][:4],
                 channel=self.channel_id,
+                owner=self.user_id == self.app.config.owner,
             )
         except Exception as error:
             log.error(f"ask: cannot ask for permission ({error})")
             self.waiting = False
             return
         self._tell(
+            "A tool needs the owner's approval. It went to their DMs."
+            if sent and self.user_id != self.app.config.owner else
             "A tool needs your approval. Check your DMs."
             if sent else
             "A tool needs your approval, but I could not send you a DM."
+            if self.user_id == self.app.config.owner else
+            "A tool needs the owner's approval, but I could not reach them."
         )
 
     def _form(self, session: str, form: dict) -> None:
@@ -691,6 +768,13 @@ class Ask:
     def _run(self) -> None:
         started = time.monotonic()
         self.run.started = started
+        if not self._allowed():
+            # An allow can end while a question waits its turn.  The decision
+            # is made again here, so a question that was approved when it was
+            # asked does not run on access that has since been taken back.
+            log.info("ask: the asker's access ended before the run started")
+            self._tell("Your access ended before this question started, so it did not run.")
+            return
         try:
             session = self._open_session()
         except OpenCodeError as error:
