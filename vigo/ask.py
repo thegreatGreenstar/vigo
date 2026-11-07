@@ -43,7 +43,9 @@ END_EVENTS = {
 # What every piece of work is told, a question and a goal alike: the plan is a
 # subscription, and a fan-out that ignores it buys failures instead of answers.
 # Three is a ceiling, not a target: one subagent is as right as three when one
-# is what the work needs.
+# is what the work needs.  The session that runs the work must be a primary
+# agent, because OpenCode runs a subagent only through the subagent tool, and a
+# subagent cannot start another one.
 SUBTASKS = 3
 # What every piece of work is told about the thing it is part of: the model has
 # no other way to know it is Vigo, and a question like "explain how Vigo works"
@@ -72,7 +74,11 @@ STAYS = (
 RULES = (
     f"You may hand parts of this work to subagents, at most {SUBTASKS} at a time, "
     "only where it helps: use fewer when fewer are enough, and none when none is. "
-    "Report what they did.\n\n"
+    "A subagent starts with fresh context: it does not see this conversation, and "
+    "it cannot start another subagent. Give each one the exact files, the exact "
+    "result and the constraints, start independent parts in the background, and "
+    "read every report before you trust it. The judgement and the final answer "
+    "stay with you. Report what they did.\n\n"
     "When the work went to GitHub, report it the way a maintainer reports it there: "
     "the verdict in the first sentence, then the facts that change what the reader "
     "does next, each with its number (a pull request or issue, a commit, a file and "
@@ -159,9 +165,10 @@ def open_session(app: Host, client: OpenCode, device: Device, channel_id: str,
     with the channel it belongs to.
 
     `worker` makes a session of the task's own, never the channel's: the work
-    runs there under `agent`, and OpenCode lists it, so the person can open
-    that session and carry on in it directly.  The channel remembers it, so a
-    follow-up and `/vigo status` reach the session the work is in.
+    runs there under `agent`, a primary agent, and OpenCode lists it, so the
+    person can open that session and carry on in it directly.  The channel
+    remembers it, so a follow-up and `/vigo status` reach the session the work
+    is in.
     """
     if worker:
         created = client.create_session(
@@ -547,13 +554,14 @@ class Ask:
             return open_session(
                 self.app, self.client, self.device, self.channel_id, self.new, self.title,
             )
-        # A task is work, not a question: it runs in a session of its own, with
-        # a subagent, so the conversation stays a conversation and the person
-        # can open the work where it happens.
+        # A task is work, not a question: it runs in a session of its own, so
+        # the conversation stays a conversation and the person can open the
+        # work where it happens.  Its agent is a primary one, because the rule
+        # lets the work delegate subagents, and a subagent agent cannot.
         self.task_title = f"{self.title} · {text.subject(self.prompt, 40)}"
         return open_session(
             self.app, self.client, self.device, self.channel_id, self.new,
-            self.task_title, agent=self.client.subagent_agent(), worker=True,
+            self.task_title, agent=self.client.worker_agent(), worker=True,
         )
 
     # -- the answer -------------------------------------------------------
