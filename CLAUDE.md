@@ -30,6 +30,39 @@ exactly where it would break. Green tests are not understanding.
 Errors show. Never trade an error for a silent fallback, a default, or a quieter path: a config key that is wrong
 stops the bot and names the key, a device that does not answer is said to be down, a refused command says so.
 
+## A request to improve the bot
+
+A one-line request from greenstar — "do X to improve yourself", "the bot should not do Y", "finish the thing from
+earlier" — is the whole brief. Do not come back for what to do next, and do not ask which part comes first. Run this
+procedure to the end:
+
+1. **Say what happens now, with its place.** Read the module that owns the behaviour and name the file, the function
+   and the line that decides it. A claim about current behaviour without a line is a guess.
+2. **Write the failing test first.** It goes in `tests/`, uses the fakes, and fails for the reason the request names.
+   Show the failure before the fix, and keep it after.
+3. **Fix the mechanism, not the symptom.** The smallest change that makes the test pass, in the module that owns it.
+   No delay, retry, or title-shaped special case. If the change touches permissions, the daemon/device contract, or a
+   new subcommand, it is large: the full suite and a fresh read of the whole diff before reporting.
+4. **Ship the docs in the same commit.** The README prose and its troubleshooting table, and `CLAUDE.md` when a rule
+   moves. A behaviour nobody can find in the docs is half done.
+5. **Run the gate.** `tests/ci-local.sh` runs the suite, ruff, the secrets check and the Linux 3.12 to 3.14 matrix in
+   `podman`; `tests/ci-codespace.sh --machine standardLinux32gb` answers the Linux half on a clean machine instead
+   (`gh codespace create` asks for a machine on a terminal, and a run in the background has none). Say which half the
+   answer covers and which it does not.
+6. **One commit, then a draft pull request.** Subject `[area] an imperative sentence`, body says why and how it was
+   verified. Push the branch, open the pull request with `--draft`, watch the quick stage, mark it ready when green.
+   The merge into `main` stays greenstar's.
+7. **Report in the maintainer shape.** The verdict in the first sentence, then the facts that change what the reader
+   does next, each with its number (pull request, commit, file and line, count of tests), then what waits for a
+   person. Sign it once, `From Vigo (an agent)`.
+
+A message can carry several requests. Take them in the order given and give each its own branch and pull request,
+unless they change the same module: then one branch is right and the body says which items it holds. When one closes,
+say which is done and keep going on the rest.
+
+Hand a separable part to a subagent — a section of the suite, a read of an outside source, a log — three at most, and
+say in the report what each did. The typing is theirs; the understanding and the final read are yours.
+
 ## Running commands
 
 - Long runs go in the background. You are told when one finishes. Do not sleep, poll, or read its output file while it
@@ -163,14 +196,12 @@ does not start that VM at login. On that machine the host job's plist is `dev.vi
 
 ## Commits
 
-Greenstar signs every commit by hand, with a YubiKey and Touch ID, so a commit is a cost he pays each time. Batch the
-work: **one commit per request, or fewer**. Never one per change, and never while changes are still landing. Run the
-full suite once, stage everything, and give him the single message he should sign. If he cancels a signature, the work
-stays staged: leave it staged, do not retry, and do not commit again until he says so.
+Batch the work: **one commit per request, or fewer**. Never one per change, and never while changes are still landing.
+Run the full suite once, then stage everything and commit.
 
-That cost is **macbook's** only. Its key is Greenstar's own, so every commit there waits for his hand (YubiKey,
-Touch ID). On **pc** a commit is signed by that machine's TPM key with no hand involved, so it adds no such
-user cost. Batch on both anyway: the history is shared, and the Mac reads what the PC wrote.
+Commit signing is off for the agent account `VIGO-VI`, as of 2026-11-06: a commit asks for no YubiKey, no Touch ID
+and no PIN, and the history accepts it unsigned. Do not turn signing back on to make a commit look like the owner's.
+On a machine whose agent key is its TPM, the signature is that machine's and costs no hand either.
 
 ## Pull requests
 
@@ -181,11 +212,11 @@ differs by platform shows up, in two jobs instead of six.
 Mark the pull request **ready for review** once that stage is green. Ready runs the full matrix, macOS and Windows on
 3.12, 3.13 and 3.14, and that is the matrix a merge waits for. Converting back to a draft runs the quick stage again.
 
-Linux is the third platform and no job covers it: run `tests/ci-codespace.sh` before the push, and put its answer in
+Linux is the third platform and no job covers it: run `tests/ci-codespace.sh --machine standardLinux32gb` before the push, and put its answer in
 the body. Say what it could not answer when it could not run.
 
 ```sh
-tests/ci-codespace.sh                  # Linux 3.12 to 3.14, ruff, the secrets check
+tests/ci-codespace.sh --machine standardLinux32gb   # Linux 3.12 to 3.14, ruff, secrets
 gh pr create --draft --base main --title "…" --body-file …
 gh pr checks <number> --watch          # the quick stage
 gh pr ready <number>                   # the full matrix
@@ -207,8 +238,8 @@ before paying for six.
   restart the job, not the process: `launchctl kickstart -k gui/$(id -u)/dev.vigo.bot` on macOS,
   `systemctl --user restart vigo` on Linux. A `kill` works too, because both units are kept alive; starting a second
   `python3.14 -m vigo` by hand would run two daemons. The settings reload on the next start.
-- Greenstar commits and pushes himself: on macbook with his YubiKey and the Secure Enclave key, on
-  pc with that machine's TPM key. Prepare the tree and hand him the command; never `git push` for him.
+- The agent commits and pushes the branch, and opens the pull request as a draft. The merge into `main` is
+  greenstar's, every time: do not run `gh pr merge`, whatever the colour of the matrix.
 
 ## Confusion protocol
 

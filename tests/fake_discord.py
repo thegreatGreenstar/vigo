@@ -195,6 +195,7 @@ class FakeDiscord:
                         # "is thinking" state marks.
                         if kind in (4, 5):
                             fake.originals[token] = {
+                                "id": f"orig_{token}",
                                 "content": str(data.get("content") or ""),
                                 "loading": kind == 5,
                                 "ephemeral": bool(data.get("flags")),
@@ -227,7 +228,8 @@ class FakeDiscord:
                             fake.edits.append({"token": token,
                                                "content": original["content"],
                                                "components": body.get("components")})
-                        self._send(200, {"id": "original", "content": original["content"]})
+                        self._send(200, {"id": original["id"],
+                                         "content": original["content"]})
                         return
                     with fake.lock:
                         fake.followups.append({"token": token,
@@ -275,14 +277,14 @@ class FakeDiscord:
                         return
                     with fake.lock:
                         original = fake.originals.setdefault(token, {
-                            "content": "", "loading": True, "ephemeral": False,
-                            "deleted": False,
+                            "id": f"orig_{token}", "content": "", "loading": True,
+                            "ephemeral": False, "deleted": False,
                         })
                         original["content"] = str(body.get("content") or "")
                         original["loading"] = False
                         fake.edits.append({"token": token, "content": original["content"],
                                            "components": body.get("components")})
-                    self._send(200, {"id": "original", "content": original["content"]})
+                    self._send(200, {"id": original["id"], "content": original["content"]})
                     return
                 if "/channels/" in path and "/messages/" in path:
                     channel = path.split("/channels/")[1].split("/")[0]
@@ -295,6 +297,21 @@ class FakeDiscord:
                             if message["id"] == message_id:
                                 message["content"] = body.get("content", message["content"])
                                 self._send(200, message)
+                                return
+                        # An interaction's message is the question's line, and
+                        # its channel id edits it after the token is gone.  An
+                        # ephemeral one is not in the channel at all, so its id
+                        # answers no route, as Discord does.
+                        for token, original in fake.originals.items():
+                            if original.get("id") == message_id \
+                                    and not original.get("ephemeral"):
+                                original["content"] = str(body.get("content") or "")
+                                original["loading"] = False
+                                fake.edits.append({"token": token,
+                                                   "content": original["content"],
+                                                   "components": body.get("components")})
+                                self._send(200, {"id": message_id,
+                                                 "content": original["content"]})
                                 return
                     self._send(404, {"code": 10008, "message": "Unknown Message"})
                     return
