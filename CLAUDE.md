@@ -72,6 +72,9 @@ say in the report what each did. The typing is theirs; the understanding and the
   shell and never ends. Wait for a file the job writes, or use `pgrep -x NAME`.
 - Put temporary files in the session temp folder, never in the repo root. Do not print a whole log or a large command
   output. Use `grep`, `head`, or `tail` to read the part that matters.
+- Never edit a file while a long run reads it. `tests/ci-codespace.sh` tars the tree and copies it to the Codespace, so
+  a rewrite in the middle of the copy gives a torn file there and a failure that is not the branch's. Freeze the tree
+  for the run, and make the edit after it finishes.
 - Do not use `sudo` or install system packages. The project uses the standard library only, and the machine is the
   user's.
 
