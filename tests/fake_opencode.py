@@ -44,6 +44,15 @@ class FakeOpenCode:
         self.activity_ms = 0.0
         self.description = "fixing the thing"
         self.answer = "one-off answer"
+        # The plan's meters and the totals of a window: the usage cap reads
+        # both, and a test sets them to the numbers it needs.
+        self.metered = True         # answer the usage endpoints at all
+        self.limits_error = 0       # an HTTP status instead of the meters
+        self.meters = {"rolling": 0.0, "weekly": 0.0, "monthly": 0.0}
+        self.limited_meters: tuple[str, ...] = ()
+        self.reset_at = int(time.time() * 1000) + 86400000
+        self.limits_reads = 0
+        self.stats_reads: list[tuple[float, float]] = []
         self.hang_events = threading.Event()
         self.permission_waiters: dict[str, threading.Event] = {}
         self.form_waiters: dict[str, threading.Event] = {}
@@ -102,6 +111,30 @@ class FakeOpenCode:
                 self.sessions[session]["parentID"] = parent
             self.messages.setdefault(session, [])
         return session
+
+    def spent_between(self, start_ms: float, end_ms: float) -> dict:
+        """What every session on this fake spent between two times.
+
+        The real device answers this from its own record; the fake sums the
+        assistant messages it holds, so a test sets a session's cost with the
+        messages it adds.
+        """
+        totals = {"input": 0, "output": 0, "reasoning": 0,
+                  "cache": {"read": 0, "write": 0}}
+        with self.lock:
+            every = list(self.messages.values())
+        for messages in every:
+            for message in messages:
+                if message.get("type") != "assistant":
+                    continue
+                created = float((message.get("time") or {}).get("created") or 0)
+                if not start_ms <= created <= end_ms:
+                    continue
+                tokens = message.get("tokens") or {}
+                for key in ("input", "output", "reasoning"):
+                    totals[key] += int(tokens.get(key) or 0)
+                totals["cache"]["read"] += int((tokens.get("cache") or {}).get("read") or 0)
+        return totals
 
     def running(self) -> dict[str, dict]:
         """What `/api/session/active` answers: the sessions a turn runs in."""
@@ -299,6 +332,40 @@ class FakeOpenCode:
                     self._send(200, {"version": "2.2.5", "pid": 1, "hostname": fake.name,
                                      "urls": [fake.url], "paths": {}, "capabilities": {}})
                     return
+                if path == "/api/experimental/usage/limits":
+                    fake.limits_reads += 1
+                    if fake.limits_error:
+                        self._send(fake.limits_error, {"_tag": "NotFound", "message": "no route"})
+                        return
+                    if not fake.metered:
+                        self._send(404, {"_tag": "NotFound", "message": "no route"})
+                        return
+                    meters = {
+                        name: {"percent": float(fake.meters.get(name, 0.0)),
+                               "limited": name in fake.limited_meters,
+                               "resetsAt": fake.reset_at}
+                        for name in ("rolling", "weekly", "monthly")
+                    }
+                    self._send(200, {
+                        "location": {"directory": fake.directory},
+                        "data": {
+                            "workspace": {"id": "org", "name": "Personal",
+                                          "usageURL": "https://example.invalid/usage"},
+                            "go": meters, "budgets": [],
+                        },
+                    })
+                    return
+                if path == "/api/experimental/session/stats":
+                    start = float(query.get("from", ["0"])[0])
+                    end = float(query.get("to", [str(time.time() * 1000)])[0])
+                    with fake.lock:
+                        fake.stats_reads.append((start, end))
+                    self._send(200, {"data": {
+                        "tokens": fake.spent_between(start, end), "cost": 0,
+                        "sessions": len(fake.sessions), "subagents": 0,
+                        "prompts": 0, "steps": 0,
+                    }})
+                    return
                 if path == "/api/event":
                     # Subscribe before answering: the client is free to emit as
                     # soon as it reads the headers, and an event sent before
@@ -354,7 +421,15 @@ class FakeOpenCode:
                         found = [message for message in found if message.get("type") == kind]
                     if order == "desc":
                         found = list(reversed(found))
-                    self._send(200, {"data": found[:limit], "cursor": {"previous": None, "next": None}})
+                    # The cursor is an offset here: the real device's is
+                    # opaque, and all a client may do with either is follow it.
+                    offset = int((query.get("cursor") or ["0"])[0] or 0)
+                    window = found[offset:offset + limit]
+                    more = offset + limit < len(found)
+                    self._send(200, {"data": window, "cursor": {
+                        "previous": str(offset) if offset else None,
+                        "next": str(offset + limit) if more else None,
+                    }})
                     return
                 if path.startswith("/api/session/") and path.endswith("/form"):
                     session = path.split("/")[3]

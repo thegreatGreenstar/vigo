@@ -32,6 +32,7 @@ KNOWN_KEYS = {
     "users",
     "model",
     "devices",
+    "guests",
     "activityWindow",
     "timeout",
     "editEvery",
@@ -77,6 +78,23 @@ class Model:
 
 
 @dataclass(frozen=True)
+class Guests:
+    """What approved people may spend of the owner's plan.
+
+    `share` is the part of the plan's own rate limit that approved people may
+    use together: a third by default, so two thirds stay for the owner.  The
+    hourly and daily numbers are tokens (input, output and reasoning, not the
+    cache reads), and 0 turns a limit off.
+    """
+
+    share: float = 1.0 / 3.0
+    hourly: int = 500_000
+    daily: int = 2_000_000
+    per_user_hourly: int = 250_000
+    per_user_daily: int = 1_000_000
+
+
+@dataclass(frozen=True)
 class Config:
     token: str
     app_id: str
@@ -88,6 +106,7 @@ class Config:
     state_channel: str = ""
     install: str = "both"
     model: Model = field(default_factory=lambda: Model("opencode-go", "deepseek-v4.1-flash"))
+    guests: Guests = field(default_factory=Guests)
     activity_window: int = 1800
     timeout: int = 900
     edit_every: float = 3.0
@@ -259,6 +278,37 @@ def _model(raw: object) -> Model:
     return Model(provider, ident, variant)
 
 
+GUEST_KEYS = {"share", "hourly", "daily", "perUserHourly", "perUserDaily"}
+
+
+def _guests(raw: object) -> Guests:
+    """The guest budget: a share of the plan, and the hourly and daily caps."""
+    if raw is None:
+        return Guests()
+    if not isinstance(raw, dict):
+        raise ConfigError("'guests' is not an object")
+    unknown = set(raw) - GUEST_KEYS
+    if unknown:
+        raise ConfigError(f"'guests' has the unknown key {sorted(unknown)[0]!r}")
+    share = 1.0 / 3.0
+    if "share" in raw:
+        value = raw["share"]
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ConfigError(f"'guests': 'share' is {value!r}, not a number")
+        if not 0 <= value <= 1:
+            raise ConfigError(f"'guests': 'share' is {value}, outside 0 to 1")
+        share = float(value)
+    return Guests(
+        share=share,
+        hourly=_whole(raw, "hourly", "'guests'", 0, 10**12, Guests.hourly),
+        daily=_whole(raw, "daily", "'guests'", 0, 10**12, Guests.daily),
+        per_user_hourly=_whole(raw, "perUserHourly", "'guests'", 0, 10**12,
+                               Guests.per_user_hourly),
+        per_user_daily=_whole(raw, "perUserDaily", "'guests'", 0, 10**12,
+                              Guests.per_user_daily),
+    )
+
+
 INSTALLS = ("both", "user", "guild")
 
 
@@ -335,6 +385,7 @@ def parse(raw: object, base: Path | None = None) -> Config:
         state_channel=state_channel,
         install=_install(raw),
         model=_model(raw.get("model")),
+        guests=_guests(raw.get("guests")),
         activity_window=_whole(raw, "activityWindow", "the file", 0, 86400, 1800),
         timeout=_whole(raw, "timeout", "the file", 30, 3600, 900),
         edit_every=float(_whole(raw, "editEvery", "the file", 1, 60, 3)),

@@ -24,6 +24,7 @@ from .discord_api import Discord
 from .notify import send_owner
 from .opencode_api import EventStream, OpenCode, OpenCodeError, busy_since
 from .state import State
+from .usage import GUEST_KEY
 
 FOOTER = {
     "succeeded": "",
@@ -152,7 +153,7 @@ class Host(Protocol):
 
 def open_session(app: Host, client: OpenCode, device: Device, channel_id: str,
                  new: bool, title: str, agent: str = "",
-                 worker: bool = False) -> str:
+                 worker: bool = False, guest: str = "") -> str:
     """This channel's session on that device, or a new one.
 
     Shared with `/vigo goal`, which needs a session to hang an objective on
@@ -169,11 +170,19 @@ def open_session(app: Host, client: OpenCode, device: Device, channel_id: str,
     person can open that session and carry on in it directly.  The channel
     remembers it, so a follow-up and `/vigo status` reach the session the work
     is in.
+
+    `guest` is the id of the approved person who asked.  It is written to the
+    session's metadata so the plan's usage can be split between the owner and
+    the people the owner allowed, and so a session that predates the mark is
+    found and marked the first time it is used again.
     """
+    metadata = {CHANNEL_KEY: channel_id}
+    if guest:
+        metadata[GUEST_KEY] = guest
     if worker:
         created = client.create_session(
             device.directory, title or "Discord", model=app.config.model.as_ref(),
-            agent=agent or None, metadata={CHANNEL_KEY: channel_id},
+            agent=agent or None, metadata=metadata,
         )
         session = created.get("id")
         if not session:
@@ -181,24 +190,52 @@ def open_session(app: Host, client: OpenCode, device: Device, channel_id: str,
         app.state.remember_session(channel_id, device.name, session, title)
         log.info(f"session: the task runs in its own session on {device.name}")
         return session
+    found = ""
     if not new:
         remembered = app.state.session_on(channel_id, device.name)
         if remembered and _alive(client, remembered["session"]):
-            return remembered["session"]
-        found = _adopt(client, channel_id)
-        if found:
-            log.info("session: this channel already has one on the device; using it")
-            app.state.remember_session(channel_id, device.name, found, title)
-            return found
+            found = remembered["session"]
+        else:
+            adopted = _adopt(client, channel_id)
+            if adopted:
+                log.info("session: this channel already has one on the device; using it")
+                app.state.remember_session(channel_id, device.name,
+                                           str(adopted.get("id") or ""), title)
+                found = str(adopted.get("id") or "")
+    if found:
+        _mark_guest(client, found, guest)
+        return found
     created = client.create_session(
         device.directory, title or "Discord", model=app.config.model.as_ref(),
-        metadata={CHANNEL_KEY: channel_id},
+        metadata=metadata,
     )
     session = created.get("id")
     if not session:
         raise OpenCodeError(0, "no session id", "POST /api/session")
     app.state.remember_session(channel_id, device.name, session, title)
     return session
+
+
+def _mark_guest(client: OpenCode, session_id: str, guest: str) -> None:
+    """Write the guest's mark on a session that was made without it.
+
+    The mark is the one internal record that says a session's tokens belong to
+    an approved person rather than the owner, so a session from before the
+    mark is marked the next time it is used.  A device that refuses the patch
+    still runs the question: the channel key of a guest already carries the
+    asker, which is the fallback the usage accounting reads.
+    """
+    if not guest:
+        return
+    try:
+        info = client.session(session_id)
+        metadata = dict(info.get("metadata") or {})
+        if metadata.get(GUEST_KEY) == guest:
+            return
+        metadata[GUEST_KEY] = guest
+        client.set_metadata(session_id, metadata)
+    except OpenCodeError as error:
+        log.info(f"session: the guest mark was not written ({error.message})")
 
 
 def channel_session(client: OpenCode, channel_id: str) -> str:
@@ -209,7 +246,8 @@ def channel_session(client: OpenCode, channel_id: str) -> str:
     place both of them read, so `/vigo goal` checks it before it makes a second
     goal for the channel.
     """
-    return _adopt(client, channel_id)
+    found = _adopt(client, channel_id)
+    return str((found or {}).get("id") or "")
 
 
 def _alive(client: OpenCode, session_id: str) -> bool:
@@ -220,20 +258,21 @@ def _alive(client: OpenCode, session_id: str) -> bool:
         return False
 
 
-def _adopt(client: OpenCode, channel_id: str) -> str:
+def _adopt(client: OpenCode, channel_id: str) -> dict | None:
     """The session this channel already has on the device, if the device says so.
 
     A device lists its sessions newest first, so the newest one naming this
-    channel wins — the same answer a `new` ask would have left behind.
+    channel wins — the same answer a `new` ask would have left behind.  The
+    whole entry is returned, because a guest's session is marked from it.
     """
     try:
         for info in client.sessions(limit=100):
             metadata = info.get("metadata")
             if isinstance(metadata, dict) and str(metadata.get(CHANNEL_KEY) or "") == channel_id:
-                return str(info.get("id") or "")
+                return info
     except OpenCodeError:
         pass  # a device that will not list them gets a new one, and says so
-    return ""
+    return None
 
 
 # The message stays empty (Discord shows "is thinking...") until the answer is
@@ -549,10 +588,25 @@ class Ask:
 
     # -- the session ------------------------------------------------------
 
+    @property
+    def session_key(self) -> str:
+        """The conversation this asker owns: an approved person's own session.
+
+        The cap splits the plan by session, so an approved person's question
+        runs in a session of its own.  In the channel's session their tokens
+        and the owner's cannot be told apart, and the cap would read the
+        owner's work as theirs.
+        """
+        if self.user_id == self.app.config.owner:
+            return self.channel_id
+        return f"{self.channel_id}:{self.user_id}"
+
     def _open_session(self) -> str:
+        guest = "" if self.user_id == self.app.config.owner else self.user_id
         if not self.goal:
             return open_session(
-                self.app, self.client, self.device, self.channel_id, self.new, self.title,
+                self.app, self.client, self.device, self.session_key, self.new, self.title,
+                guest=guest,
             )
         # A task is work, not a question: it runs in a session of its own, so
         # the conversation stays a conversation and the person can open the
@@ -560,8 +614,9 @@ class Ask:
         # lets the work delegate subagents, and a subagent agent cannot.
         self.task_title = f"{self.title} · {text.subject(self.prompt, 40)}"
         return open_session(
-            self.app, self.client, self.device, self.channel_id, self.new,
+            self.app, self.client, self.device, self.session_key, self.new,
             self.task_title, agent=self.client.worker_agent(), worker=True,
+            guest=guest,
         )
 
     # -- the answer -------------------------------------------------------

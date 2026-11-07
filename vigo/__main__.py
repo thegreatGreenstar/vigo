@@ -108,6 +108,8 @@ def _report(settings: configuration.Config) -> None:
     print(f"vigo {__version__} · this device is {settings.device}")
     print(f"owner {settings.owner} · devices: {devices}")
     print(f"model {settings.model} · directory {settings.own.directory}")
+    print(f"guests: a {settings.guests.share:.1%} share of the plan · "
+          f"{settings.guests.hourly}/hour · {settings.guests.daily}/day")
     if not settings.state_channel:
         print("allowlist: the bot's DM with the owner (no stateChannel in the file)")
 
