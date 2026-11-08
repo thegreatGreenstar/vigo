@@ -145,8 +145,20 @@ if holder.get("scarletnx-host") != entry:
 PY
 
     plist=$agents/dev.vigo.container.plist
+    # The launcher publishes the peer port on this address, and the plist is
+    # the only place it is kept.  A reinstall must not drop the address the
+    # machine already uses, and the documented VIGO_BIND_ADDRESS must land.
+    bind=${VIGO_BIND_ADDRESS:-}
+    if [ -z "$bind" ] && [ -f "$plist" ]; then
+        bind=$(plutil -extract EnvironmentVariables.VIGO_BIND_ADDRESS raw -o - \
+                "$plist" 2>/dev/null || true)
+    fi
     sed -e "s|__KIT__|$kit|g" -e "s|__HOME__|$HOME|g" \
         "$here/dev.vigo.container.plist.in" > "$plist"
+    if [ -n "$bind" ]; then
+        plutil -insert EnvironmentVariables.VIGO_BIND_ADDRESS -string "$bind" \
+            "$plist" >/dev/null
+    fi
     chmod 644 "$plist"
     launchctl bootout "gui/$(id -u)/dev.vigo.container" 2>/dev/null || true
     launchctl bootstrap "gui/$(id -u)" "$plist" 2>/dev/null || true

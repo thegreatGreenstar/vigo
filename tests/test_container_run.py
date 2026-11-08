@@ -15,6 +15,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = ROOT / "deploy" / "container" / "run.sh"
+INSTALL = ROOT / "deploy" / "container" / "install.sh"
 
 
 @unittest.skipIf(sys.platform == "win32", "the launcher is a POSIX shell script")
@@ -140,3 +141,77 @@ class LauncherTest(unittest.TestCase):
                         "an agent on an older image is replaced")
         self.assertEqual("sha256:new\n",
                          (self.state / "agent-image").read_text(encoding="utf-8"))
+
+
+@unittest.skipUnless(sys.platform == "darwin", "the plist is a macOS launchd file")
+class InstallTest(unittest.TestCase):
+    """The macOS install keeps the address the peer port is published on."""
+
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.home = Path(temporary.name)
+        self.bin = self.home / "bin"
+        self.bin.mkdir()
+        self._stub("uname", "echo Darwin\n")
+        self._stub("launchctl", "exit 0\n")
+        self._stub("podman", "exit 0\n")
+        self._stub("openssl", "echo deadbeef\n")
+        checkout = self.home / ".local/share/vigo/checkout"
+        (checkout / ".git").mkdir(parents=True)
+        subprocess.run(["git", "-C", str(checkout), "init", "-q"], check=True)
+        subprocess.run(
+            ["git", "-C", str(checkout), "remote", "add", "origin",
+             "git@example.invalid:fake/repo.git"],
+            check=True,
+        )
+        (self.home / "source").mkdir()
+        self.plist = self.home / "Library/LaunchAgents/dev.vigo.container.plist"
+
+    def _stub(self, name: str, body: str) -> None:
+        path = self.bin / name
+        path.write_text("#!/bin/sh\n" + body)
+        path.chmod(0o755)
+
+    def _run(self, bind: str = "") -> subprocess.CompletedProcess[str]:
+        environ = {
+            "HOME": str(self.home),
+            "PATH": f"{self.bin}:/usr/bin:/bin",
+            "VIGO_SOURCE": str(self.home / "source"),
+            "VIGO_INSTALL_DIRTY": "1",
+        }
+        if bind:
+            environ["VIGO_BIND_ADDRESS"] = bind
+        return subprocess.run(
+            ["sh", str(INSTALL)],
+            env=environ,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+
+    def _bind(self) -> str:
+        done = subprocess.run(
+            ["plutil", "-extract", "EnvironmentVariables.VIGO_BIND_ADDRESS",
+             "raw", "-o", "-", str(self.plist)],
+            capture_output=True, text=True,
+        )
+        return done.stdout.strip() if done.returncode == 0 else ""
+
+    def test_it_writes_the_peer_bind_and_keeps_it_on_a_reinstall(self) -> None:
+        done = self._run(bind="100.64.0.5")
+
+        self.assertEqual(0, done.returncode, done.stderr)
+        self.assertEqual("100.64.0.5", self._bind())
+
+        done = self._run()
+
+        self.assertEqual(0, done.returncode, done.stderr)
+        self.assertEqual("100.64.0.5", self._bind(),
+                         "a reinstall keeps the address the machine uses")
+
+    def test_no_address_is_set_unless_one_is_asked_for(self) -> None:
+        done = self._run()
+
+        self.assertEqual(0, done.returncode, done.stderr)
+        self.assertEqual("", self._bind(), "the launcher defaults to loopback")
