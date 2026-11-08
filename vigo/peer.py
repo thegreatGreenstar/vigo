@@ -71,6 +71,19 @@ class _Handler(BaseHTTPRequestHandler):
     def log_message(self, *args: object) -> None:  # the bot's own log is the log
         pass
 
+    def handle_error(self, request: object, client_address: object) -> None:
+        """A request that broke reaches the daemon's log with its stack.
+
+        The stock handler prints an unlabelled trace to stderr, which a
+        supervisor captures beside lines with no thread and no time.
+        """
+        error = sys.exc_info()[1]
+        text = f"peer: a request from {client_address} broke"
+        if isinstance(error, BaseException):
+            log.failure(text, error)
+        else:
+            log.error(text)
+
     def _send(self, status: int, body: dict) -> None:
         raw = json.dumps(body).encode()
         self.send_response(status)

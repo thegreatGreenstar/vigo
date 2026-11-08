@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import argparse
 import io
+import os
 import sys
+import time
 from pathlib import Path
 
-from . import __version__, config as configuration, log
+from . import __version__, config as configuration, log, watchdog
+from .gateway import FatalGatewayError
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -22,6 +25,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--version", action="version", version=f"vigo {__version__}")
     args = parser.parse_args(argv)
     log.level(args.log)
+    log.install()
 
     try:
         settings = configuration.load(args.config)
@@ -63,10 +67,22 @@ def main(argv: list[str] | None = None) -> int:
 
     app = App(settings)
     _report(settings)
+    began = time.monotonic()
+    log.info(f"start: vigo {__version__}, python {sys.version.split()[0]}, "
+             f"pid {os.getpid()}, {sys.platform}, log {args.log}")
     try:
         app.run()
     except KeyboardInterrupt:
         log.info("stopping")
+    except FatalGatewayError as error:
+        log.error(f"vigo: {error}")
+        return 1
+    except Exception as error:
+        log.failure("vigo: the daemon stopped on an error", error)
+        return 1
+    finally:
+        watchdog.stop()
+        log.info(f"stopped after {time.monotonic() - began:.1f}s")
     return 0
 
 

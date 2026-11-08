@@ -19,7 +19,7 @@ import time
 import urllib.parse
 from collections.abc import Callable
 
-from . import log
+from . import log, watchdog
 
 GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 FATAL_CLOSE = {
@@ -243,7 +243,9 @@ class Gateway:
 
     def run(self) -> None:
         backoff = 1.0
+        attempt = 0
         while not self.stopped:
+            attempt += 1
             try:
                 lived = self._session()
                 if lived and not self.stopped:
@@ -258,20 +260,25 @@ class Gateway:
                 if not self.stopped:
                     log.info(f"gateway: {error}")
             except Exception as error:  # a frame the bot cannot read must not kill it
-                log.error(f"gateway: {type(error).__name__}: {error}")
+                if not self.stopped:
+                    log.failure(f"gateway: {type(error).__name__}: {error}", error)
             finally:
                 if self.ws:
                     self.ws.close()
                     self.ws = None
             if self.stopped:
                 return
+            log.info(f"gateway: connecting again in {backoff:.0f}s (attempt {attempt + 1})")
             time.sleep(backoff)
             backoff = min(backoff * 2, 60.0)
 
     def _session(self) -> bool:
         # A fresh connection each time: Discord keeps the old one open a moment.
         self.ws = WebSocket(self.url)
+        watchdog.beat("gateway")
+        started = time.monotonic()
         self.ws.connect()
+        log.debug(f"gateway: connected in {time.monotonic() - started:.2f}s")
         self.on_state("connecting")
 
         interval = 41.25
@@ -282,6 +289,7 @@ class Gateway:
         identified = False
 
         while not self.stopped:
+            watchdog.beat("gateway")
             if not identified and time.monotonic() > deadline:
                 raise GatewayClosed("no hello")
 

@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Protocol
 
-from . import github, lease as leasing, log, text
+from . import github, lease as leasing, log, text, watchdog
 from .config import Config, Device
 from .discord_api import Discord
 from .notify import send_owner
@@ -741,9 +741,10 @@ class Ask:
         try:
             self._run()
         except Exception as error:  # a run always ends, and always unregisters
-            log.error(f"ask: broke on {self.device_name}: {type(error).__name__}: {error}")
+            log.failure(f"ask: broke on {self.device_name}: {type(error).__name__}: {error}", error)
             self._tell("The run broke. The log says what.")
         finally:
+            watchdog.drop(f"ask:{self.channel_id}")
             # The only place that gives the channel up, and it gives up *this*
             # run: a second call from `_run`'s own paths used to take the next
             # run's place and start another beside it.
@@ -754,6 +755,7 @@ class Ask:
     def _run(self) -> None:
         started = time.monotonic()
         self.run.started = started
+        watchdog.beat(f"ask:{self.channel_id}")
         try:
             session = self._open_session()
         except OpenCodeError as error:
@@ -801,6 +803,7 @@ class Ask:
 
         while not self.run.stop.is_set():
             now = time.monotonic()
+            watchdog.beat(f"ask:{self.channel_id}")
             if self.lease is not None:
                 self.lease.renew()
             if not noted and now > deadline:
@@ -908,6 +911,7 @@ class Ask:
         """
         announced = False
         while not self.run.stop.is_set():
+            watchdog.beat(f"ask:{self.channel_id}")
             # Once ours, it stays ours until we release it or somebody takes a
             # stale one, so the claim is made once and the wait is for the
             # device to finish the turn it is on.

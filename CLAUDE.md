@@ -133,6 +133,8 @@ edit anything here.
 | File | Holds |
 | --- | --- |
 | `vigo/config.py` | the settings, checked strictly, one error named at a time |
+| `vigo/log.py` | one line per event, with the date, the thread and the stack of a failure |
+| `vigo/watchdog.py` | the beats of the long loops, and every thread's stack when one stops |
 | `vigo/discord_api.py` | REST v10: commands, interactions, messages, DMs |
 | `vigo/gateway.py` | the WebSocket client: handshake, frames, heartbeat, resume |
 | `vigo/opencode_api.py` | sessions, prompts, permissions, the SSE event stream, and the agent a task runs under |

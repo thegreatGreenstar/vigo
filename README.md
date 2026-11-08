@@ -916,10 +916,31 @@ to a draft runs the quick one again.
 The Linux row is the one nobody runs for you: the workflow has no Linux job,
 so a pull request is checked there only when someone runs the script. That is
 the trade a codespace makes, and it costs one manual step.
+
+### The log
+
+The daemon writes to stderr, one line per event: the date with milliseconds,
+the seconds since the start, the level, and the thread. It holds ids, outcomes
+and durations, never a message, a prompt or an answer. On macOS launchd keeps it
+in `~/.local/state/vigo/vigo.err`, and on Linux it goes to the journal
+(`journalctl --user -u vigo`). The container writes
+`~/.local/state/vigo/container.err`.
+
+`--log debug` (or `VIGO_LOG=debug`) adds each HTTP call with its host and
+status, and the gateway's connection steps. A call that takes longer than ten
+seconds is also written at the default level.
+
+A hang writes no line, so each long loop beats a watchdog. When one stands
+still for 90 seconds, the log says which one and writes the stack of every
+thread. The same line appears when the loop moves again, with how long it was
+still. An uncaught error, on the main thread, a worker thread or a callback, is
+written with its stack at any log level but `quiet`.
+
 ## Troubleshooting
 
 | What you see | What it means |
 | --- | --- |
+| the log says `watchdog: no movement in ...` | that loop is stuck: the stacks under the line say where. Restart the daemon, and keep the log for the report |
 | `closed with 4004` | the token is not the bot's; reset it and copy it again |
 | `closed with 4014` | the bot asked for an intent Discord does not allow it; the bot asks only for `DIRECT_MESSAGES` |
 | `no device answers` | no `opencode serve` is reachable from this daemon: check the URL, the port, and the password |

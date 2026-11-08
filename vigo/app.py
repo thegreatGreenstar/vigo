@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
+import os
+import platform
 import secrets
+import sys
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
+from collections.abc import Callable
+from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 
 from . import ask as asking
-from . import commands, goal, lease as leasing, log, presence as showing, text, usage
+from . import commands, goal, lease as leasing, log, presence as showing, text, usage, watchdog
 from .allowlist import AllowError, AllowList
 from .config import Config, Device
 from .discord_api import Discord, DiscordError
@@ -32,6 +36,18 @@ WAITING_MAX = 10   # questions a channel may hold behind the one that runs
 FINISHED_MAX = 10  # the last questions that ran, which `/vigo status` can name
 AGENTS_MAX = 10    # agents at work on the plan at once, across every device
 GOAL_WORDS = ("pause", "resume", "clear")  # `/vigo goal` control, not objectives
+
+
+def _reported(future: Future) -> None:
+    """Say what a pool task raised, which nobody else would ever read.
+
+    `ThreadPoolExecutor.submit` keeps a task's exception in its future, and a
+    future that the caller drops takes the error with it: a handler that broke
+    left no line, no stack, and a bot that looked healthy.
+    """
+    error = future.exception()
+    if error is not None:
+        log.failure(f"app: a handler broke: {type(error).__name__}: {error}", error)
 
 
 def describe_prompt(prompt: str) -> str:
@@ -367,6 +383,7 @@ class App:
     def _watch_presence(self) -> None:
         """Keep the status in step, without letting a probe stop the bot."""
         while not self.presence.stopped:
+            watchdog.beat("presence")
             try:
                 self._refresh_presence()
             except Exception as error:  # a status never takes the bot down
@@ -866,11 +883,14 @@ class App:
 
     def on_event(self, event: str, data: dict) -> None:
         if event == "INTERACTION_CREATE":
-            self.pool.submit(self.handle_interaction, data)
+            self._submit(self.handle_interaction, data)
         elif event == "MESSAGE_CREATE":
             # A reply to one of this bot's answers is a question. Everything
             # else is dropped in `handle_message` before its text is looked at.
-            self.pool.submit(self.handle_message, data)
+            self._submit(self.handle_message, data)
+
+    def _submit(self, work: Callable[[dict], None], payload: dict) -> None:
+        self.pool.submit(work, payload).add_done_callback(_reported)
 
     def handle_message(self, data: dict) -> None:
         """A message, with the status kept in step around the answer."""
@@ -2145,22 +2165,35 @@ class App:
     # -- running ----------------------------------------------------------
 
     def run(self) -> None:
-        url = self.api.gateway_url()
-        log.info(f"up: {self.config.device}, {len(self.config.devices)} devices, model {self.config.model}")
-        self.register_commands()
-        if self.config.peer_port:
-            try:
-                PeerServer(self.config.peer_host, self.config.peer_port,
-                           self.config.device, self.peer_password(),
-                           checkout=self.checkout, build=self.build,
-                           queue=self.queue_snapshot).start()
-            except OSError as error:  # the tailnet is not up, or the port is taken
-                log.error(f"peer: not listening ({error})")
-        gateway = Gateway(url, self.config.token, INTENTS, self.on_event,
-                          lambda state: log.debug(f"gateway: {state}"))
-        self.gateway = gateway
-        threading.Thread(target=self._watch_presence, name="presence", daemon=True).start()
-        gateway.run()
+        log.install()
+        log.info(f"up: vigo {__version__} on {platform.python_implementation()} "
+                 f"{platform.python_version()}, pid {os.getpid()}, {sys.platform}")
+        log.info(f"up: {self.config.device}, {len(self.config.devices)} devices, "
+                 f"model {self.config.model}")
+        watchdog.start()
+        watchdog.beat("startup")
+        try:
+            url = self.api.gateway_url()
+            self.register_commands()
+            if self.config.peer_port:
+                try:
+                    PeerServer(self.config.peer_host, self.config.peer_port,
+                               self.config.device, self.peer_password(),
+                               checkout=self.checkout, build=self.build,
+                               queue=self.queue_snapshot).start()
+                except OSError as error:  # the tailnet is not up, or the port is taken
+                    log.error(f"peer: not listening ({error})")
+            gateway = Gateway(url, self.config.token, INTENTS, self.on_event,
+                              lambda state: log.debug(f"gateway: {state}"))
+            self.gateway = gateway
+            threading.Thread(target=self._watch_presence, name="presence", daemon=True).start()
+            watchdog.drop("startup")
+            gateway.run()
+        finally:
+            watchdog.drop("startup")
+            self.presence.stopped = True
+            watchdog.stop()
+            log.info("down: the daemon stopped")
 
 
 def info_request(info: dict) -> str:
