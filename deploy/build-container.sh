@@ -40,6 +40,7 @@ Darwin)
     cp "$here/container/Containerfile" "$tmp/Containerfile"
     cp "$here/container/vigo-entrypoint.py" "$tmp/vigo-entrypoint.py"
     cp "$here/container/ssh_config" "$here/container/known_hosts" "$tmp/"
+    cp "$here/container/ssh_config.linux" "$tmp/"
     cp "$opencode" "$tmp/opencode"
     cp "$gh" "$tmp/gh"
     chmod 0755 "$tmp/opencode" "$tmp/gh"

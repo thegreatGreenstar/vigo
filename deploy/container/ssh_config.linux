@@ -1,0 +1,13 @@
+# Vigo's SSH client inside the Linux container.
+#
+# The daemon runs as root inside the user namespace, so OpenSSH resolves `~`
+# to /root rather than /home/vigo.  Every path here is absolute for that
+# reason.  The private keys never enter the container; ssh asks the host's
+# vigo-ssh-agent through the mounted socket.
+Host github.com
+	User git
+	IdentityAgent /run/vigo/ssh-agent.sock
+	IdentityFile /home/vigo/.ssh/id_ecdsa_vigo.pub
+	IdentitiesOnly yes
+	StrictHostKeyChecking yes
+	UserKnownHostsFile /home/vigo/.ssh/known_hosts

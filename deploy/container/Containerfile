@@ -40,6 +40,7 @@ COPY --chmod=0755 opencode /usr/local/bin/opencode
 COPY --chmod=0755 gh /usr/local/bin/gh
 COPY --chmod=0755 vigo-entrypoint.py /usr/local/libexec/vigo-entrypoint.py
 COPY ssh_config known_hosts /etc/vigo/
+COPY ssh_config.linux /etc/ssh/ssh_config.d/vigo.conf
 
 # The checkout and home are bind mounts; these are only the mount points.
 RUN install -d -m 0755 /vigo /run/vigo /run/secrets /config /home/vigo
