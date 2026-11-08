@@ -2209,6 +2209,59 @@ class AppTest(unittest.TestCase):
         self.assertIn(f"{was} → {build_of(peer_checkout)}", told,
                       "what it went from and to")
 
+    def test_upgrade_with_no_device_pulls_this_one_when_the_peer_is_off(self):
+        """An empty device list means every device, this one included.
+
+        The Mac is the daemon that answers the command.  With the PC off, an
+        upgrade used to try only the PC, say it was not answering, and leave
+        this checkout behind.  The local pull must still be scheduled.
+        """
+        with tempfile.TemporaryDirectory() as work:
+            root = Path(work)
+            origin = root / "origin.git"
+            self._git("init", "--bare", "-q", str(origin), cwd=root)
+            seed = root / "seed"
+            self._git("clone", "-q", str(origin), str(seed), cwd=root)
+            self._git("config", "user.email", "t@example.com", cwd=seed)
+            self._git("config", "user.name", "t", cwd=seed)
+            (seed / "one.txt").write_text("one\n", encoding="utf-8")
+            self._git("add", ".", cwd=seed)
+            self._git("commit", "-qm", "one", cwd=seed)
+            self._git("push", "-q", "origin", "HEAD:main", cwd=seed)
+            checkout = root / "local"
+            self._git("clone", "-q", "-b", "main", str(origin), str(checkout), cwd=root)
+            (seed / "two.txt").write_text("two\n", encoding="utf-8")
+            self._git("add", ".", cwd=seed)
+            self._git("commit", "-qm", "two", cwd=seed)
+            self._git("push", "-q", "origin", "HEAD:main", cwd=seed)
+
+            with TempDir() as directory:
+                settings = load_settings(
+                    directory,
+                    device="macbook",
+                    devices=[
+                        {"name": "macbook", "url": "http://127.0.0.1:1",
+                         "directory": "/a"},
+                        {"name": "workstation", "url": "http://127.0.0.1:2",
+                         "directory": "/b", "peer": "http://127.0.0.1:1"},
+                    ],
+                )
+                api = Discord("token", settings.app_id, base=self.discord.url)
+                app = App(settings, api=api, state=State(directory / "state.json"),
+                          checkout=checkout)
+                self.app = app
+                self.use(app, commands.UPGRADE)
+                self.assertTrue(self.discord.wait_for(
+                    lambda: any("pulls after this answer" in str(content)
+                                for content in self.said()), 10))
+                said = self.said()[-1]
+                self.assertTrue(self.discord.wait_for(
+                    lambda: (checkout / "two.txt").exists(), 15),
+                    "the local checkout is pulled, not just the peer")
+        self.assertIn("macbook", said)
+        self.assertIn("workstation", said)
+        self.assertIn("not answering", said)
+
     def test_builds_decide_who_is_behind(self):
         with TempDir() as directory:
             app = self.make(directory)

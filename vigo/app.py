@@ -2280,9 +2280,11 @@ class App:
         if wanted and wanted not in self.config.devices:
             self._say(token, f"No device is called `{wanted}`.")
             return
-        targets = [wanted] if wanted else [
-            name for name in self.config.devices if name != self.config.device
-        ]
+        # With no device named, every device is a target, this one included.
+        # The loop below pulls this one last, after the answer is out, because
+        # the restart ends this process.  Leaving it out made an upgrade with
+        # the other machine off do nothing at all.
+        targets = [wanted] if wanted else list(self.config.devices)
         lines = []
         moved: list[str] = []   # what the owner is told, once, in a DM
         local = False
