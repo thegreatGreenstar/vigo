@@ -11,7 +11,8 @@ daemon runs per device; each daemon can drive any device's `opencode serve`. Pyt
 Two things follow from that shape and never change:
 
 - **The daemon decides who may act, from its own state.** Never from the text of a message, a prompt, an answer or a
-  reaction. A stranger who installs the app gets a refusal and nothing else; only `owner` can approve a tool.
+  reaction. A stranger who installs the app gets a refusal and nothing else; with `requests` on, that refusal carries
+  one button that asks the owner for access, and only `owner` can grant it or approve a tool.
 - **Nothing identifying goes to Discord.** No device names in a channel message, no hostnames, no paths, no error
   text, no user ids except in an allowlist answer that is always ephemeral. The log may hold them; Discord may not.
 - **An allow is permission to ask, not to act.** `/vigo allow` lets someone ask a question: their answer is
@@ -136,8 +137,9 @@ Torn between two sizes: pick the smaller, and say so.
 3. **No PII to Discord.** Before adding any string that goes into an embed or a message, ask what it identifies.
    Device names, hostnames, paths, error internals and other users' names are out. `devices`, `allow`, `deny` and
    `allowed` are always ephemeral and have no option that could show them.
-4. **The owner is an id, compared with `==`.** Not a role, not a permission bit, not a name. A Discord install grants
-   nothing.
+4. **The owner is the application's owner, compared with `==`.** Not a role, not a permission bit, not a name. Vigo
+   reads the id from `/applications/@me` at start. A settings file may name `owner`, but the value must equal it, or
+   the bot stops. A Discord install grants nothing.
 5. **Discord gives three seconds.** Acknowledge first, then probe or run. Any new command follows that order.
 6. **A tool runs only when the owner clicks.** Permission cards go to the owner's DM; a channel fallback says only
    that approval is needed, never what the tool wanted to touch. A card for an approved person's question says so:
@@ -196,6 +198,7 @@ edit anything here.
 | File | Holds |
 | --- | --- |
 | `vigo/config.py` | the settings, checked strictly, one error named at a time |
+| `vigo/portal.py` | the Developer Portal links, and `--invite`'s check of the app's install contexts |
 | `vigo/discord_api.py` | REST v10: commands, interactions, messages, DMs |
 | `vigo/gateway.py` | the WebSocket client: handshake, frames, heartbeat, resume |
 | `vigo/opencode_api.py` | sessions, prompts, permissions, the SSE event stream, and the agent a task runs under |

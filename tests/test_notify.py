@@ -49,6 +49,18 @@ class SendOwnerTest(unittest.TestCase):
         channel = self.discord.dm_channels[settings.owner]
         self.assertEqual(self.discord.messages[channel][0]["allowed_mentions"], {"parse": []})
 
+    def test_components_ride_on_the_last_piece(self):
+        with TempDir() as directory:
+            settings = load_settings(directory)
+            api = Discord("token", settings.app_id, base=self.discord.url)
+            buttons = [{"type": 1, "components": []}]
+            send_owner(settings, "x" * 4000, api=api, components=buttons)
+        channel = self.discord.dm_channels[settings.owner]
+        messages = self.discord.messages[channel]
+        self.assertGreater(len(messages), 1)
+        self.assertEqual(messages[0]["components"], buttons, "the newest is the last piece")
+        self.assertNotIn("components", messages[-1])
+
 
 class MessageOfTest(unittest.TestCase):
     def test_words_become_one_message(self):

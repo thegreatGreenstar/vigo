@@ -7,10 +7,11 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from urllib.parse import quote, unquote
 
 from . import ask as asking
 from . import commands, goal, lease as leasing, log, presence as showing, text, usage
-from .allowlist import AllowError, AllowList
+from .allowlist import AllowError, AllowList, metadata_name
 from .config import Config, Device
 from .discord_api import Discord, DiscordError
 from .gateway import Gateway
@@ -31,6 +32,8 @@ INTENTS = DIRECT_MESSAGES
 WAITING_MAX = 10   # questions a channel may hold behind the one that runs
 FINISHED_MAX = 10  # the last questions that ran, which `/vigo status` can name
 AGENTS_MAX = 10    # agents at work on the plan at once, across every device
+REQUESTS_MAX = 20  # access requests waiting for the owner at once
+REQUEST_BUTTON = "rq:ask"
 GOAL_WORDS = ("pause", "resume", "clear")  # `/vigo goal` control, not objectives
 PEER_BUILT = 5.0   # seconds a peer's commit time is trusted before it is read again
 
@@ -42,6 +45,57 @@ def describe_prompt(prompt: str) -> str:
         "about, starting with a verb that ends in -ing, with no quotes and no "
         f"full stop:\n\n{prompt}"
     )
+
+
+def _request_components() -> list[dict]:
+    """The one button a refused person gets: ask the owner, once."""
+    return [{"type": 1, "components": [{
+        "type": 2,
+        "style": 1,
+        "label": "Ask for access",
+        "custom_id": REQUEST_BUTTON,
+    }]}]
+
+
+def _access_card(requester: str, name: str) -> list[dict]:
+    """The three answers to a request, and the person they answer about.
+
+    The requester's id rides in the custom id, because that is what Discord
+    returns when the owner clicks.  The name is quoted so a colon in it cannot
+    become another field; the button itself shows only the choice.
+    """
+    tag = quote(_plain_name(name)[:32], safe="")[:50]
+    buttons = [
+        {"type": 2, "style": 3, "label": "Allow 1 day",
+         "custom_id": f"rq:ok:{requester}:1d:{tag}"},
+        {"type": 2, "style": 2, "label": "Allow for good",
+         "custom_id": f"rq:ok:{requester}:perm:{tag}"},
+        {"type": 2, "style": 4, "label": "Deny",
+         "custom_id": f"rq:no:{requester}:{tag}"},
+    ]
+    return [{"type": 1, "components": buttons}]
+
+
+def _plain_name(value: str) -> str:
+    """A person's name, stripped of anything Discord would render as markdown.
+
+    A stranger controls their own display name, and the request card lands in
+    the owner's DM.  A name shaped like a link must arrive as plain text, not
+    as something the owner can be invited to click.
+    """
+    name = metadata_name(value)
+    kept = "".join(char for char in name if char.isalnum() or char in " .'-")
+    return " ".join(kept.split())[:80]
+
+
+def _person(user: dict) -> str:
+    """What to call someone in a card, with no id and no mention."""
+    name = user.get("global_name") or user.get("username") or ""
+    return _plain_name(str(name)) or "someone"
+
+
+def _request_snowflake(value: str) -> bool:
+    return value.isdigit() and 15 <= len(value) <= 20
 
 
 def guest_refused(reason: str) -> str:
@@ -766,6 +820,9 @@ class App:
     def _component(self, payload: dict, who: str) -> None:
         data = payload.get("data") or {}
         custom = str(data.get("custom_id") or "")
+        if custom.startswith("rq:"):
+            self._request_component(payload, who, custom)
+            return
         if custom.startswith("q:"):
             self._question_component(payload, who, data)
             return
@@ -829,6 +886,140 @@ class App:
             },
         })
         log.info(f"perm: {ticket} {decision} on {info['device']}")
+
+    # -- people asking the owner for access -------------------------------
+
+    def _request_component(self, payload: dict, who: str, custom: str) -> None:
+        parts = custom.split(":")
+        if parts == ["rq", "ask"]:
+            self._ask_for_access(payload, who)
+            return
+        if len(parts) < 4 or parts[1] not in ("ok", "no"):
+            return
+        requester = parts[2]
+        if parts[1] == "ok":
+            if len(parts) < 5:
+                return
+            span = parts[3]
+            name = unquote(parts[4])
+        else:
+            span = ""
+            name = unquote(parts[3])
+        self._answer_request(payload, who, requester, span, name, allow=parts[1] == "ok")
+
+    def _ask_for_access(self, payload: dict, who: str) -> None:
+        """A refused person asks the owner, with one DM and a cooldown.
+
+        Both daemons see the click.  The one Discord accepts owns it; the
+        other is told the interaction was already answered and must not send a
+        second card.  The id in the card is the one Discord gave this click,
+        never one the text of a message names.
+        """
+        interaction_id = payload["id"]
+        token = payload["token"]
+        if not self._defer(interaction_id, token, ephemeral=True):
+            return
+        if who == self.config.owner:
+            self._say(token, "You are the owner: no allow is needed.")
+            return
+        if not self.config.requests:
+            self._say(token, "This Vigo does not take requests from Discord. "
+                             "Ask its owner to allow you.")
+            return
+        if self.allow.may_ask(who):
+            self._say(token, "You can already ask. `/vigo ask prompt:…` starts a question.")
+            return
+        waited = self.state.request_state(who)
+        if waited == "pending":
+            self._say(token, "Your request is already with the owner. "
+                             "They decide whether to let you ask.")
+            return
+        if waited == "cooling":
+            self._say(token, "You asked recently. Try again in a while.")
+            return
+        if self.state.pending_requests() >= REQUESTS_MAX:
+            self._say(token, f"The owner already has {REQUESTS_MAX} requests waiting. "
+                             "Try again later.")
+            return
+        user = (payload.get("member") or {}).get("user") or payload.get("user") or {}
+        name = _person(user)
+        try:
+            self.allow.ensure()
+        except AllowError as error:
+            self.state.forget_request(who)
+            log.error(f"request: the allowlist cannot be read ({error})")
+            self._say(token, "I cannot reach the owner's list just now. "
+                             "Ask them directly.")
+            return
+        self.state.remember_request(who, name)
+        card = (
+            f"**{name}** asks for access to Vigo.\n\n"
+            "Approving lets them ask questions on your devices. Their question and "
+            "its answer are private to them, one runs at a time, and it spends the "
+            "share of your plan kept for approved people. Every tool still waits "
+            "for your click."
+        )
+        try:
+            send_dm(self.config, self.config.owner, card, api=self.api,
+                    components=_access_card(who, name))
+        except (DiscordError, ValueError) as error:
+            self.state.forget_request(who)
+            log.error(f"request: cannot reach the owner's DM ({error})")
+            self._say(token, "I could not reach the owner's DM just now. "
+                             "Ask them directly.")
+            return
+        log.info(f"request: a card went to the owner ({who})")
+        self._say(token, "Your request is with the owner. They decide whether "
+                         "to let you ask.")
+
+    def _answer_request(self, payload: dict, who: str, requester: str,
+                        span: str, name: str, allow: bool) -> None:
+        """The owner's click on a request card."""
+        interaction_id = payload["id"]
+        token = payload["token"]
+        if who != self.config.owner:
+            self._answer_now(interaction_id, token,
+                             "Only the bot's owner answers this card.", ephemeral=True)
+            return
+        if not self._defer(interaction_id, token, ephemeral=True):
+            return
+        if not _request_snowflake(requester):
+            self._say(token, "That request is old; ask for a new one.")
+            return
+        safe = _plain_name(name) or "they"
+        if allow:
+            seconds = None if span == "perm" else 86400
+            try:
+                said = self.allow.allow(requester, safe, seconds)
+            except AllowError as error:
+                self._say(token, f"Nothing changed: {error}")
+                return
+            self.state.settle_request(requester, allowed=True)
+            until = ("for good" if seconds is None
+                     else f"for <t:{int(time.time()) + seconds}:R>")
+            told = self._tell(
+                requester,
+                f"The owner of Vigo allowed you to ask questions {until}. "
+                "Use `/vigo ask prompt:…` in a DM with Vigo, or in any "
+                "channel where you see its commands.")
+            self._say(token, said + (" They have been told." if told
+                                     else " I could not reach their DM."))
+            log.info(f"request: allowed ({requester})")
+            return
+        self.state.settle_request(requester, allowed=False)
+        told = self._tell(requester, "The owner of Vigo did not allow your request.")
+        self._say(token, "Denied." + (" They have been told." if told
+                                      else " I could not reach their DM."))
+        log.info(f"request: denied ({requester})")
+
+    def _tell(self, user_id: str, content: str) -> bool:
+        """Tell the requester what the owner decided, if their DM is open."""
+        try:
+            send_dm(self.config, user_id, content, api=self.api)
+        except (DiscordError, ValueError) as error:
+            log.info(f"request: the answer did not reach {user_id} ({error})")
+            return False
+        return True
 
     def _question_component(self, payload: dict, who: str, data: dict) -> None:
         parts = str(data.get("custom_id") or "").split(":")
@@ -1075,8 +1266,9 @@ class App:
             allowed = who == self.config.owner
         if not allowed:
             log.info(f"denied a message from {who}")
-            self._post(channel_id, "Only this bot's owner and the people it approved may use "
-                                   "it. `/vigo help` says what it does.")
+            self._post(channel_id, "Only the owner of this Discord application and the "
+                                   "people it approved may use it. `/vigo help` says what "
+                                   "it does.")
             return
         answered = self.state.answer_for(reference)
         if answered is None or str(answered.get("channel") or "") != channel_id:
@@ -1243,15 +1435,24 @@ class App:
             self._answer_now(
                 interaction_id, token, self._help(owner, approved),
                 ephemeral=not owner or bool(options.get("hidden")),
+                components=_request_components() if not approved and self.config.requests else None,
             )
             return
         if not approved:
+            asked = (
+                " Only the owner can let you in: use the button below, and they "
+                "decide."
+                if self.config.requests else
+                " Ask its owner to allow you with `/vigo allow`."
+            )
             self._answer_now(
                 interaction_id,
                 token,
-                "Only this bot's owner and the people it approved may use it. "
-                "`/vigo help` says what it does.",
+                "Vigo is someone's personal OpenCode agent, and only its owner "
+                "and the people it approved may use it. `/vigo help` says what it "
+                "does." + asked,
                 ephemeral=True,
+                components=_request_components() if self.config.requests else None,
             )
             log.info(f"denied {sub or 'a use'} from {who}")
             return
@@ -1260,7 +1461,7 @@ class App:
                    commands.GOAL) and not owner:
             self._answer_now(
                 interaction_id, token,
-                f"Only this bot's owner can use `/vigo {sub}`.",
+                f"Only the owner of this Discord application can use `/vigo {sub}`.",
                 ephemeral=True,
             )
             return
@@ -1279,7 +1480,7 @@ class App:
             if explicit and not owner:
                 self._answer_now(
                     interaction_id, token,
-                    "Only this bot's owner chooses the device.",
+                    "Only this Discord application's owner chooses the device.",
                     ephemeral=True,
                 )
                 return
@@ -1372,16 +1573,21 @@ class App:
             log.error(f"interaction: not acknowledged ({reply.status} {code})")
         return False
 
-    def _answer_now(self, interaction_id: str, token: str, content: str, ephemeral: bool) -> None:
+    def _answer_now(self, interaction_id: str, token: str, content: str,
+                    ephemeral: bool, components: list[dict] | None = None) -> bool:
         payload: dict = {
             "type": 4,
             "data": {"content": content, "allowed_mentions": {"parse": []}},
         }
+        if components:
+            payload["data"]["components"] = components
         if ephemeral:
             payload["data"]["flags"] = 64
         reply = self.api.respond(interaction_id, token, payload)
         if not reply.ok:
             log.debug("interaction already answered")
+            return False
+        return True
 
     def _say(self, token: str, content: str) -> dict | None:
         """Put this text on the message Discord made for the interaction.
@@ -2463,7 +2669,9 @@ class App:
             lines.extend([
                 "`/vigo ask prompt:…` asks a device a question. It is for the "
                 "owner and the people the owner allows; anyone else is refused.",
-                "Only the bot's owner may ask.",
+                "Vigo runs on its owner's machines, under the owner's plan. "
+                "Installing the app only asks them for access."
+                + (" Use the button here to ask." if self.config.requests else ""),
             ])
         if owner:
             lines.append("")
@@ -2473,9 +2681,21 @@ class App:
                 "shows the channel a copy with the names and the private tasks redacted. "
                 "Tool permissions come to your DMs as buttons."
             )
+            if self.config.requests:
+                lines.append(
+                    "When someone installs Vigo and asks for access, the card in "
+                    "your DM offers Allow 1 day, Allow for good and Deny. Only the "
+                    "owner ever answers it."
+                )
         elif not approved:
             lines.append("")
-            lines.append("Only the bot's owner may ask.")
+            lines.append(
+                "Only the bot's owner decides who is allowed, and only they "
+                "approve a tool. The button here asks them for access."
+                if self.config.requests else
+                "Only the bot's owner decides who is allowed, and only they "
+                "approve a tool. Ask them to allow you."
+            )
         else:
             lines.append("")
             lines.append(

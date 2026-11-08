@@ -31,6 +31,7 @@ KNOWN_KEYS = {
     "peerPasswordFile",
     "peerPasswordCommand",
     "install",
+    "requests",
     "stateChannel",
     "users",
     "model",
@@ -109,6 +110,7 @@ class Config:
     users: tuple[str, ...] = ()
     state_channel: str = ""
     install: str = "both"
+    requests: bool = True
     model: Model = field(default_factory=lambda: Model("opencode-go", "deepseek-v4.1-flash"))
     guests: Guests = field(default_factory=Guests)
     activity_window: int = 1800
@@ -156,6 +158,15 @@ def _whole(obj: dict, key: str, where: str, low: int, high: int, default: int) -
         raise ConfigError(f"{where}: {key!r} is {value!r}, not a whole number")
     if not low <= value <= high:
         raise ConfigError(f"{where}: {key!r} is {value}, outside {low} to {high}")
+    return value
+
+
+def _flag(obj: dict, key: str, where: str, default: bool) -> bool:
+    if key not in obj:
+        return default
+    value = obj[key]
+    if not isinstance(value, bool):
+        raise ConfigError(f"{where}: {key!r} is {value!r}, not true or false")
     return value
 
 
@@ -350,7 +361,7 @@ def parse(raw: object, base: Path | None = None) -> Config:
     if not token:
         raise ConfigError("the file needs 'token' (or 'tokenFile', or 'tokenCommand')")
     app_id = _snowflake(raw, "appID", "the file")
-    owner = _snowflake(raw, "owner", "the file")
+    owner = _snowflake(raw, "owner", "the file") if "owner" in raw else ""
     password = _secret(raw, "password", "the file", base)
     peer_password = _secret(raw, "peerPassword", "the file", base)
     device_name = _str(raw, "device", "the file")
@@ -380,7 +391,7 @@ def parse(raw: object, base: Path | None = None) -> Config:
         for index, user in enumerate(listed_users):
             if not isinstance(user, str) or not SNOWFLAKE.match(user):
                 raise ConfigError(f"users[{index}] is {user!r}, not a Discord id")
-            if user == owner:
+            if owner and user == owner:
                 raise ConfigError("'users' lists the owner, who is always let through")
             if user in users:
                 raise ConfigError(f"'users' lists {user} twice")
@@ -401,6 +412,7 @@ def parse(raw: object, base: Path | None = None) -> Config:
         users=tuple(users),
         state_channel=state_channel,
         install=_install(raw),
+        requests=_flag(raw, "requests", "the file", True),
         model=_model(raw.get("model")),
         guests=_guests(raw.get("guests")),
         activity_window=_whole(raw, "activityWindow", "the file", 0, 86400, 1800),

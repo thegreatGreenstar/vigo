@@ -79,3 +79,41 @@ class StateTest(unittest.TestCase):
             state.suspend_runs({"chan": {"at": time.time() - 7200, "run": None,
                                          "waiting": [{"prompt": "old"}]}})
             self.assertEqual(state.take_suspended(), {})
+
+    # -- access requests ---------------------------------------------------
+
+    def test_a_request_waits_then_a_denial_cools_it_down(self):
+        with TempDir() as directory:
+            state = State(directory / "state.json")
+            self.assertEqual(state.request_state("42"), "")
+            state.remember_request("42", "Alex")
+            self.assertEqual(state.request_state("42"), "pending")
+            self.assertEqual(state.pending_requests(), 1)
+            state.settle_request("42", allowed=False)
+            self.assertEqual(state.request_state("42"), "cooling")
+            self.assertEqual(state.request_state("42", now=time.time() + 3601), "")
+            self.assertEqual(state.pending_requests(), 0)
+
+    def test_a_pending_request_does_not_wait_for_ever(self):
+        with TempDir() as directory:
+            state = State(directory / "state.json")
+            state.remember_request("42", "Alex")
+            self.assertEqual(state.request_state("42", now=time.time() + 86401), "")
+            self.assertEqual(state.pending_requests(now=time.time() + 86401), 0)
+
+    def test_an_allow_leaves_no_request_behind(self):
+        with TempDir() as directory:
+            state = State(directory / "state.json")
+            state.remember_request("42", "Alex")
+            state.settle_request("42", allowed=True)
+            self.assertEqual(state.request_state("42"), "")
+            self.assertIsNone(state.request("42"))
+
+    def test_a_request_that_never_reached_the_owner_can_be_sent_again(self):
+        with TempDir() as directory:
+            state = State(directory / "state.json")
+            state.remember_request("42", "Alex")
+            state.forget_request("42")
+            self.assertEqual(state.request_state("42"), "")
+            state.remember_request("42", "Alex")
+            self.assertEqual(state.request_state("42"), "pending")

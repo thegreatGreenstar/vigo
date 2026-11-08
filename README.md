@@ -1,6 +1,6 @@
 # vigo
 
-Your OpenCode agent, on your own machines, reachable from Discord.You ask in a channel with `/vigo ask`, and the answer comes back there. The
+Your OpenCode agent, on your own machines, reachable from Discord. You ask in a channel with `/vigo ask`, and the answer comes back there. The
 work runs on your Mac or your PC, whichever one you last used, against the
 project directory that device points at. Every tool that needs a permission
 asks *you* in a DM, with a button. Nothing runs because someone typed
@@ -76,7 +76,15 @@ addition.
 - **Who may ask** is decided by the daemon from its own state, never from the
   text of a message. The owner, the ids in the settings file, and the people
   the owner allowed with `/vigo allow` may ask. Anyone else gets an ephemeral
-  "no" and nothing is sent to any device, ever.
+  "no" and nothing is sent to any device, ever. With `requests` on, that "no"
+  carries one button, **Ask for access**, which DMs the owner a card naming the
+  person and offering **Allow 1 day**, **Allow for good** or **Deny**. The
+  owner's click is the grant. The request itself runs nothing.
+- **Owner commands belong to the application's owner.** Vigo reads that id
+  from the Discord application at start. A second person who runs their own
+  Vigo owns that application, so `status`, `queue`, `devices`, `stop`,
+  `upgrade`, `goal`, `allow`, `deny` and `allowed` answer to them, and to none
+  of that app's guests. A file that names a different `owner` stops the bot.
 - **An allow is permission to ask, not to drive the machine.** An approved
   person gets questions, not work: their ask never becomes a goal, never picks
   a device, and never runs in the owner's session. Their question and its answer
@@ -121,11 +129,15 @@ addition.
 
 1. <https://discord.com/developers/applications> → **New Application**, name it
    `Vigo`.
-2. **Bot** → **Reset Token**, copy the token. Turn **Public Bot** off.
-3. **General Information** → copy the **Application ID**.
-4. **Installation** → turn on **User Install** (and **Guild Install** if you
-   want the bot in a server of your own). Under *Default Install Settings*, the
-   user-install scopes are `applications.commands`.
+2. **General Information** → copy the **Application ID**.
+3. **Bot** → **Reset Token**, copy the token. Leave **Public Bot** on if other
+   people will install it: Discord only gives a shareable install link to a
+   public app. Turn it off only for a bot that is just yours, and then set
+   **Install Link** to **None**. Public Bot alone puts the bot in no server.
+4. **Installation** → under **Installation Contexts** turn on **User Install**
+   and leave **Guild Install** off. Set **Install Link** to **Discord Provided
+   Link**. Under *Default Install Settings*, add `applications.commands` to the
+   user-install scopes, and **Save Changes**.
 5. Add it to your own account. No server and no invite permission are needed:
 
    ```
@@ -135,13 +147,15 @@ addition.
    In the Discord client it appears under **Settings → Apps**, and `/vigo`
    works in your DMs with it, in group DMs, and in the command picker of any
    server you are in, even servers the bot is not a member of.
-6. Get **your** numeric user id: Settings → Advanced → Developer Mode on, then
-   right-click your avatar → **Copy User ID**. The username is not enough.
-   every check here is an id.
+6. You do not need to copy your own user id. Vigo reads the application's
+   owner from Discord at start, so whoever owns the application also owns its
+   `status`, `queue`, `devices`, `stop`, `upgrade`, `goal`, `allow`, `deny` and
+   `allowed` commands. If the settings file names `owner` anyway, it must be
+   that same id or the bot stops.
 
-If you also want to invite it to a server (its own avatar posting there), use
-the `bot` scope and these permissions: View Channels, Send Messages, Read
-Message History:
+If you also want to invite it to a server (its own avatar posting there), turn
+on **Guild Install** in the same **Installation** page, use the `bot` scope and
+these permissions: View Channels, Send Messages, Read Message History:
 
 ```
 https://discord.com/oauth2/authorize?client_id=<APP_ID>&scope=bot+applications.commands&permissions=68608
@@ -162,6 +176,98 @@ a direct message with the person who asked. A `hidden` answer has no ephemeral
 message left to go in, so that direct message takes it, named as the answer to
 its question. A goal that runs for an hour therefore still reaches the person
 who asked for it.
+
+### Letting other people use it
+
+A user install is the whole door. You keep the daemon, the token, the
+machines and the plan. Another person adds the app to their own account and
+asks you for access. Nothing runs for them until you click. The same
+walkthrough, with the portal pages in order and the copy-paste commands, is
+in [docs/OTHERS.md](docs/OTHERS.md).
+
+**In the Developer Portal.** `python3 -m vigo --invite` prints these pages
+with your application's id, checks the settings below, and exits
+non-zero while one is still wrong. The steps are:
+
+1. **Installation**: open
+   <https://discord.com/developers/applications>, choose your app, then
+   **Installation**.
+   - **Installation Contexts**: **User Install** on, **Guild Install** off.
+   - **Install Link**: **Discord Provided Link**.
+   - **Default Install Settings** → **User Install**: add the
+     `applications.commands` scope.
+   - **Save Changes**.
+2. **Bot**: turn **Public Bot** on. Discord only gives a shareable install link
+   to a public app. With it off, only your team can install it. Public Bot
+   does not put the bot in any server by itself.
+3. **General Information**: copy the **Application ID** into `appID` if it is
+   not already there. Never put the token in a channel, an issue or a commit.
+4. In the settings file set `"install": "user"`, because the app now offers
+   only User Install, and leave `"requests": true` unless you want the
+   request button gone. Restart the daemon:
+
+   ```sh
+   systemctl --user restart vigo                        # Linux
+   launchctl kickstart -k gui/$(id -u)/dev.vigo.bot     # macOS
+   ```
+
+5. Check the portal settings and print the link to share:
+
+   ```sh
+   python3 -m vigo --invite
+   ```
+
+   ```
+   https://discord.com/oauth2/authorize?client_id=<APP_ID>&integration_type=1&scope=applications.commands
+   ```
+
+Anyone with that link can add Vigo under **Settings → Apps**. `/vigo` then
+appears in their DMs, in group DMs, and in the command picker of every server
+they are in, including servers the bot has never joined. No server install is
+needed.
+
+**When the other person should own their own Vigo.** A guest asks on your
+machines. If they want their own agent, they create their own application and
+run their own daemon with their own token, as the setup above does. Vigo reads
+that application's owner, so `status`, `queue`, `allow` and the rest answer to
+them, and their guests never get them. Their plan, machines and allowlist are
+theirs, and nothing is shared with yours.
+
+**What the person gets.** `/vigo ask`, and every command except `/vigo help`,
+answers with a short refusal and one button, **Ask for access**. The button
+DMs you a card with their display name and three answers: **Allow 1 day**,
+**Allow for good**, **Deny**. Only the application owner's id can press them. A
+request on its own runs nothing and touches no device. If the card cannot
+reach your DM, the person is told so and the request is not left half-open.
+
+The person is told the decision in a DM. An allow is the same allow
+`/vigo allow` makes: questions only, their own session, their own private
+answer, one question in flight, no device choice, no goal, and the share of
+your plan kept for approved people. Every tool they cause still comes to you
+as a card, with **Allow once** and **Deny** and no **Always allow**. [What can
+and cannot happen](#what-can-and-cannot-happen) and [The share of the plan an
+allow carries](#the-share-of-the-plan-an-allow-carries) say the rest.
+
+A request costs you at most one DM per person per hour: a pending request is
+not sent twice, and a denial starts a one-hour quiet period. A request that
+waits a day without an answer stops blocking that person, who may ask again,
+and twenty requests may wait at once. `"requests": false` removes the button
+and tells a stranger to ask you directly, without changing anyone who is
+already allowed.
+
+**What a public app does and does not expose.** The token stays on your
+machine, the OpenCode password never goes to Discord, and the commands run in
+your daemon. A stranger who installs the app can only ask you for access.
+Keep **Guild Install** off: that is the setting that lets the app be added to
+a server, and a public app can be added to anyone's server. If you want the
+bot in a server, turn Guild Install on, use the `bot` invite link, set
+`"install": "both"`, and accept that the bot posts there with its own avatar.
+
+The link works before the app is in the App Directory. A listing is a
+separate review and this setup does not need one. Discord's verification
+thresholds are about server installs and privileged intents. Vigo asks for
+neither a server install nor a privileged intent, and `DIRECT_MESSAGES` is the
+one gateway intent it uses.
 
 ### 2. OpenCode on each device
 
@@ -197,9 +303,11 @@ Then fill it in:
 {
   "token": "the bot token",
   "appID": "111111111111111111",
-  "owner": "145512144145512144",       // your user id
+  // "owner": "145512144145512144",    // optional: the application's owner is used
   "device": "macbook",                 // which entry this copy of vigo is
   "password": "the OPENCODE_PASSWORD",
+  "install": "both",                   // "user" when the app offers only User Install
+  "requests": true,                    // the Ask for access button for a stranger
   "users": [],                         // ids always allowed to ask
   "model": { "providerID": "opencode-go", "id": "deepseek-v4.1-flash" },
   "guests": {                           // what approved people may spend
@@ -221,11 +329,13 @@ Then fill it in:
 
 | Key | What it is |
 | --- | --- |
-| `token`, `appID`, `owner` | from the Developer Portal, and your user id |
+| `token`, `appID` | from the Developer Portal |
+| `owner` | optional. The application owner's user id. When absent, Vigo reads it from Discord at start. When present it must match that id, or the bot stops |
 | `device` | this machine's entry; the same file runs on both, with this line changed |
 | `password` | the OpenCode password; a device may set its own with `password` in its entry |
 | `users` | ids that may always ask, besides the owner |
-| `install` | `both` (default), `user` or `guild`: which install kinds the command supports. Keep `both`, because a user install can be used in servers too |
+| `install` | `both` (default), `user` or `guild`: which install kinds the commands register for. Use `user` when the app offers only User Install, which is the public setup above. A value the app does not offer makes Discord refuse the commands |
+| `requests` | `true` (default) or `false`: whether a refused person gets the **Ask for access** button. Off still refuses, and says to ask the owner directly |
 | `model` | provider, model id, optional `variant` |
 | `guests` | the share of the plan approved people may spend, and their hourly and daily token caps. A third of the plan and the defaults in the example when absent; 0 turns a cap off, and `share: 0` pauses approved people completely |
 | `devices` | name, base URL and project directory of each machine |
@@ -241,7 +351,14 @@ value of the wrong shape. Check without connecting:
 python3 -m vigo --check       # the file, and what it says
 python3 -m vigo --whoami      # asks Discord for the bot's own name
 python3 -m vigo --devices     # probes the devices and says where a question would go
+python3 -m vigo --invite      # asks Discord for the app settings, prints the install link
 ```
+
+`--invite` is the one check that talks to Discord about the application
+itself: it names the Installation and Bot pages, says who owns the
+application, and says whether User Install, Public Bot and the
+`applications.commands` scope are set. It exits non-zero while the portal and
+`install` disagree, or a hand-written `owner` is not the application's.
 
 ### 4. Run it
 
@@ -561,10 +678,10 @@ What the Developer Portal asks for, if it helps:
 | `/vigo devices` | owner | what is up, and which one a question would go to |
 | `/vigo stop` | owner | interrupts the channel's run, and drops the questions that wait behind it |
 | `/vigo upgrade [device]` | owner | pulls and restarts a daemon that runs a different commit; empty does every one of them, and the owner gets a DM naming each device and the commit it moved from and to. A turn already running on that daemon carries over the restart, and its answer still arrives |
-| `/vigo allow user:<who> [for:<2h｜1d｜7d｜perm>]` | owner | lets someone ask, for a time; 1 day when unnamed |
+| `/vigo allow user:<who> [for:<2h｜1d｜7d｜perm>]` | owner | lets someone ask, for a time. One day when unnamed. The **Allow** buttons on a request card do the same |
 | `/vigo deny user:<who>` | owner | takes that allow back |
 | `/vigo allowed` | owner | who may ask, and until when |
-| `/vigo help` | anyone | what the bot does |
+| `/vigo help` | anyone | what the bot does. A stranger also gets the **Ask for access** button |
 
 `/vigo status`, `devices`, `upgrade`, `allow`, `deny` and `allowed` are always
 ephemeral: only the person who ran it sees the answer, and no option could show
@@ -863,7 +980,11 @@ that project may do in its own `opencode.json`.
 - Keep `~/.config/vigo/vigo.json` at mode 0600, because the program refuses to
   start otherwise, and never commit it. `git status` should never show it.
 - Invite the bot only to servers you control. Its commands are guild-scoped to
-  each server it is in.
+  each server it is in. A user install needs no server, so leave Guild Install
+  off unless you want that second door.
+- A public app lets anyone install it and ask you for access. Only your click
+  allows one, the allow runs out or is denied as any other, and a request on
+  its own reaches no device. Keep `requests` off if you do not want the card.
 - The bot stores nothing about what was said: no message text in the log, no
   database. Sessions live in OpenCode; the Discord channel holds the answers.
 - An allow is a read grant. An approved person's question runs the agent under
@@ -884,8 +1005,13 @@ was ever written into it.
 - **A token in an old commit still works.** The `secrets` job runs on the tree
   and on every commit. Run the same check before publishing, and rotate a token
   that appears even once. Redacting a log is not rotation.
-- **Keep the Discord application private.** Leave **Public Bot** off. The token
-  is for your install only, and the commands grant nothing to another install.
+- **A public app is a choice, not a leak.** Leave **Public Bot** off and
+  **Install Link** at **None** for a bot that is only yours. Then nobody else
+  can install it. Turn it on for the public user install above: strangers can
+  then install the app and ask you for access, and nothing runs until you
+  click. The token is still yours alone. A second person who wants their own
+  agent makes their own application and their own token. Sharing this app
+  shares the machines behind it, which is what an allow already says.
 - **Never track the settings file.** `vigo.json` holds the token when it is not
   read from the Keychain or a TPM. `.gitignore` covers it and CI fails on it.
 - **Pin what runs.** Every action in `.github/workflows/tests.yml` is pinned to a
@@ -1030,7 +1156,7 @@ with the same caveat about the running process.
 | Where | What |
 | --- | --- |
 | `~/.config/vigo/vigo.json` | the settings, mode 0600 |
-| `~/.local/state/vigo/state.json` | channel → the session it has on each device, permission card tickets, the allowlist message's id, and the turn an upgrade's restart is about to cut off (ids and times only); folder 0700, file 0600 |
+| `~/.local/state/vigo/state.json` | channel → the session it has on each device, permission card tickets, the allowlist message's id, the people who asked for access and when, and the turn an upgrade's restart is about to cut off (ids and times only). Folder 0700, file 0600 |
 | `~/.local/share/vigo-agent` | the agent's own home: OpenCode data and settings, Vigo's public keys and git config |
 | `~/.local/state/vigo` | the daemon's state, mounted only in the daemon |
 | `${XDG_RUNTIME_DIR}/vigo/ssh-agent.sock` | the socket that asks this machine's TPM to sign as Vigo; gone when the agent stops |
@@ -1104,8 +1230,8 @@ OpenCode on 127.0.0.1. The suite covers the settings file and its refusals,
 message chunking and code fences, device routing, the allowlist across two
 devices, the limits an allow carries (its own session, a private answer, no
 goal, no device choice, one question in flight, no saved tool permission, a
-deny that reaches a waiting question), the command surface and who may use it,
-the permission cards (approved, refused, a stranger's click), a full ask with
+deny that reaches a waiting question), an access request from a stranger through the owner's card, the command
+surface and who may use it, the permission cards (approved, refused, a stranger's click), a full ask with
 streamed deltas, the gateway's handshake, heartbeats and resume, and two
 daemons answering one use exactly once.
 
@@ -1148,6 +1274,15 @@ the trade a codespace makes, and it costs one manual step.
 | a question says `Queued` | one run at a time per channel; it starts when the one before it ends, or `/vigo stop` clears it |
 | `/vigo upgrade` ended a question that was queued | only a turn already on a device carries over the restart; a question that waited never started, so ask it again |
 | a channel has no session | the first ask creates one; `new:true` starts a fresh one on purpose |
+| `python3 -m vigo --invite` says `Public Bot off` | Discord only gives a shareable install link to a public app: turn it on at the Bot page the check prints, and set Install Link to Discord Provided Link on the Installation page |
+| `--invite` says the commands are registered for a context the app does not offer | the `install` key names more than the portal enables: set `"install": "user"` for a user-install-only app, or turn the other context on |
+| a stranger sees no **Ask for access** button | `"requests"` is false, or the daemon answering is older code. Set it true and restart the daemon |
+| a request says it cannot reach the owner's list | the allowlist lives in the owner's DM and the bot found another of its own messages with no list in reach. Set `stateChannel` to a private channel the bot can read |
+| a request reached the bot but no card arrived | the owner and the bot do not share a DM that accepts messages. Open a DM with the bot, or set `stateChannel` |
+| `/vigo` does not appear for somebody who installed it | they have not finished Settings → Apps, or the app's Installation page does not offer User Install. Discord can take up to an hour to show a changed command |
+| the log says the file's owner is not the application's owner | remove `owner` from the settings, or set it to the id the application belongs to; the daemon will not trust a typed id |
+| the log says the token belongs to another application | `appID` and `token` are from different apps; copy the Application ID from the same app as the token |
+| an owner command says `Only this bot's owner` for the person who made the app | the app belongs to another account, or an older daemon is answering. Check the owner with `python3 -m vigo --whoami` |
 
 ## Licence
 
