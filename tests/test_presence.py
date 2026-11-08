@@ -161,6 +161,17 @@ class AppPresenceTest(unittest.TestCase):
             app._refresh_presence()
         self.assertEqual(app.gateway.statuses[-1], "dnd")
 
+    def test_a_stale_busy_session_is_not_do_not_disturb(self):
+        """A restart leaves the stamp; the device's list says no turn runs."""
+        with TempDir() as directory:
+            app = self.make(directory)
+            session = self.device.new_session()
+            self.device.started_turn(session)
+            self.device.lost_turn(session)
+            app._refresh_presence()
+        self.assertEqual(app.gateway.statuses[-1], "idle",
+                         "no turn runs there, so the light is not red")
+
     def test_thinking_on_the_only_server_is_green(self):
         """The account shows the work the daemon is doing, not a red light."""
         with TempDir() as directory:

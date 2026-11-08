@@ -1367,6 +1367,29 @@ class AppTest(unittest.TestCase):
         self.assertIn("0. “the task that runs”", written)
         self.assertIn("nothing waits", written)
 
+    def test_a_stale_busy_session_is_not_an_agent(self):
+        """A stamp left by a restart must not count against the plan for ever."""
+        with TempDir() as directory:
+            app = self.make(directory)
+            for _ in range(3):
+                session = self.device.new_session("a stale session")
+                self.device.started_turn(session)
+                self.device.lost_turn(session)
+            self.assertEqual(app._running_agents(), 0,
+                             "no device lists a turn there")
+
+    def test_the_queue_does_not_name_a_stale_run(self):
+        """The queue reads what runs, not a stamp that no turn ended."""
+        with TempDir() as directory:
+            app = self.make(directory)
+            session = self.device.new_session(
+                "the stale one", metadata={asking.CHANNEL_KEY: CHANNEL})
+            self.device.started_turn(session)
+            self.device.lost_turn(session)
+            self.use(app, commands.QUEUE)
+            written = self.said()[-1]
+        self.assertNotIn("the stale one", written)
+
     def test_the_queue_reads_a_run_no_daemon_holds(self):
         """The device is working, and no daemon's memory has the line.
 
