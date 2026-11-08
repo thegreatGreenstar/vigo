@@ -1,19 +1,27 @@
 """The status Discord shows for this daemon, from what the daemon is doing.
 
 Discord takes a status over the gateway: online, idle, do not disturb, or
-invisible. The bot shows what it is doing rather than a light that is always
+invisible.  The bot shows what it is doing rather than a light that is always
 green:
 
 - `invisible`: no OpenCode server answers, so there is nothing to ask.
-- `dnd`: every server that answers is at work on a turn, including the turn
-  this daemon is thinking in.  A question would wait behind that work, so this
-  is the do-not-disturb the owner sees without asking.  A turn at work is what
-  the server is doing, not a session count at its limit.
-- `online`: an interaction is being answered, an ask waits, or the bot answered
-  anything within the last two minutes.
-- `idle`: none of the above.
+- `online` (green): this daemon answers something, or answered anything within
+  the last five minutes.
+- `idle`: no answer within those five minutes, and a server can take a
+  question.
+- `dnd` (red): every server that answers is at work on a turn, and nothing was
+  answered recently, so a question would wait behind that work.  A turn at
+  work is what the server is doing, not a session count at its limit.
 
-Only a change is sent. Discord limits presence updates, and the gateway keeps
+Every device runs a daemon, and each one sets the status of the same bot
+account over its own gateway connection, so the last update to arrive is the
+one Discord keeps.  Each daemon therefore shows the one status that the facts
+on any daemon support, best first: online, then idle, then do not disturb,
+and invisible only when not one of them can be asked.  Two daemons that see
+the same servers then agree whatever order their updates arrive in, and one
+machine at work cannot turn the account red while another machine is free.
+
+Only a change is sent.  Discord limits presence updates, and the gateway keeps
 the value and sends it again after a reconnect.
 """
 
@@ -22,10 +30,15 @@ from __future__ import annotations
 import time
 from collections.abc import Callable
 
-ONLINE_FOR = 120.0  # seconds a finished answer keeps the bot online
+ONLINE_FOR = 300.0  # seconds a finished answer keeps the bot online
 TICK = 5.0          # seconds between looks at what the daemon does
 BUSY_EVERY = 30.0   # seconds between reads of the servers' busy sessions
 BUSY_WORKING = TICK  # while this daemon thinks, the light must turn at once
+PEER_EVERY = 15.0   # seconds between reads of what the other daemons show
+
+# What each daemon shows when the daemons disagree: the best news wins, and
+# the account looks offline only when no daemon can be asked at all.
+RANK = {"online": 3, "idle": 2, "dnd": 1, "invisible": 0}
 
 
 def status_for(*, working: bool, up: int, busy: int, last: float | None,
@@ -35,17 +48,36 @@ def status_for(*, working: bool, up: int, busy: int, last: float | None,
     `up` is how many servers answer, `busy` how many of those have a turn at
     work, and `last` when the bot last answered anything (None for never).
     A server that answers with a turn at work is not the same as a server that
-    is down: one can be asked later, the other cannot be asked at all.  A turn
-    at work is what the server is doing now, not a session list that is full,
-    so it is what makes the status do not disturb.
+    is down: one can be asked later, the other cannot be asked at all.
+
+    The order is the one the daemons agree on.  Work of this daemon is green,
+    not red, because the account shows the work being done: a question waits
+    behind it, but a light that turns red each time the bot thinks says the
+    bot is unavailable while it runs.
     """
     if up == 0:
         return "invisible"
-    if busy >= up:
-        return "dnd"
     if working or (last is not None and now - last <= ONLINE_FOR):
         return "online"
+    if busy >= up:
+        return "dnd"
     return "idle"
+
+
+def merge(*statuses: str) -> str:
+    """The status all daemons show: the best of what each one sees.
+
+    A daemon that did not answer at all is left out by the caller, so a peer
+    link that is down does not make the account look offline while this
+    machine answers.  An unknown status counts as the lowest one, because a
+    daemon that says nothing useful cannot promise that it can take a
+    question.
+    """
+    best = "invisible"
+    for status in statuses:
+        if RANK.get(status, 0) > RANK.get(best, 0):
+            best = status
+    return best
 
 
 class Presence:
@@ -56,11 +88,12 @@ class Presence:
         self.send = send
         self.clock = clock
         self.last: float | None = None
-        self.status = ""
+        self.status = ""   # what is on the gateway
+        self.own = ""      # what this daemon sees, before the others are merged
         self.stopped = False
 
     def touch(self) -> None:
-        """The bot answered something: it stays online for two more minutes."""
+        """The bot answered something: it stays online for five more minutes."""
         self.last = self.clock()
 
     def now(self) -> float:

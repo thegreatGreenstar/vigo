@@ -364,6 +364,8 @@ class App:
         self.busy_up = 0          # how many answered then
         self.busy_working = False  # whether this daemon was working then
         self.busy_servers = 0     # how many of those had a session at work
+        self.peer_at: float | None = None  # when the other daemons' status was read
+        self.peer_status: list[str] = []   # what they said they show then
         # A DM reply is read for the next question, and a group DM has more
         # readers than the asker: its kind is looked up once and kept briefly.
         self.channel_lock = threading.Lock()
@@ -592,19 +594,48 @@ class App:
         self.busy_servers = busy
         return busy
 
+    def _peer_statuses(self, now: float) -> list[str]:
+        """What the other daemons say they show, reread every `PEER_EVERY`.
+
+        A daemon that does not answer its peer port is left out rather than
+        counted as offline: its port may be off, and a machine whose peer link
+        is down must not make the account look gone while this one answers.
+        The read costs a request to each device and a status changes slowly,
+        so it is kept for a while.
+        """
+        if self.peer_at is not None and now - self.peer_at < showing.PEER_EVERY:
+            return self.peer_status
+        said = []
+        for info in self._peer_infos().values():
+            status = str(info.get("status") or "")
+            if status in showing.RANK:
+                said.append(status)
+        self.peer_at = now
+        self.peer_status = said
+        return said
+
     def _refresh_presence(self) -> None:
-        """Look at the daemon and the servers, and show the fit status."""
+        """Look at the daemon, the servers and the other daemons; show the one status.
+
+        A busy server can only lower the status to do not disturb, so the
+        listing of sessions is skipped when this daemon already says online.
+        The status this daemon sees is kept in `presence.own`: that is what a
+        peer is told, and it is never the merged one, which would feed two
+        daemons each other's answer and hold the account green for good.
+        """
         states = self.router.states()
         up = sum(1 for state in states.values() if state.up)
         working = self._working()
         last = self.presence.last
         now = self.presence.now()
         busy = 0
-        if up and (working or last is None or now - last > showing.ONLINE_FOR):
+        if up and not working and (last is None or now - last > showing.ONLINE_FOR):
             busy = self._busy_servers(states, up, working, now)
-        self.presence.show(showing.status_for(
+        mine = showing.status_for(
             working=working, up=up, busy=busy, last=last, now=now,
-        ))
+        )
+        self.presence.own = mine
+        self.presence.show(showing.merge(mine, *self._peer_statuses(now)))
 
     def _watch_presence(self) -> None:
         """Keep the status in step, without letting a probe stop the bot."""
@@ -2889,6 +2920,7 @@ class App:
                            self.config.device, self.peer_password(),
                            checkout=self.checkout, build=self.build,
                            built=self.built,
+                           status=lambda: self.presence.own,
                            queue=self.queue_snapshot,
                            suspend=self._suspend_runs).start()
             except OSError as error:  # the tailnet is not up, or the port is taken

@@ -70,6 +70,16 @@ class PeerTest(unittest.TestCase):
         self.assertEqual(info["build"], "abc1234")
         self.assertEqual(info["version"], __version__)
 
+    def test_it_says_the_status_it_shows(self):
+        """The other daemon merges this with its own; one that has not looked
+        yet says nothing, and an empty status is left out of the merge."""
+        self.assertEqual(PeerClient(self.url, "pw").info()["status"], "")
+        server = PeerServer("127.0.0.1", 0, "fresh-device", "pw",
+                            status=lambda: "online").start()
+        self.addCleanup(server.stop)
+        info = PeerClient(f"http://127.0.0.1:{server.server.server_address[1]}", "pw").info()
+        self.assertEqual(info["status"], "online")
+
     def test_it_reports_what_it_runs_and_waits_on(self):
         """`/vigo queue` on the other daemon reads this: an empty one is an empty list."""
         self.assertEqual(PeerClient(self.url, "pw").info()["queue"], [])
