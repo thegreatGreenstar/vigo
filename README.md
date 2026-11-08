@@ -31,8 +31,13 @@ Discord  <──gateway/HTTP──>  vigo (this program)  <──HTTP──>  op
 
 Only one daemon answers a given use: they all try to acknowledge it at once,
 Discord takes the first, and the rest are told it was already answered and
-stop. Whoever wins can drive every device, so it does not matter which one it
-is, and a device answers even when its own daemon is not running.
+stop. Whoever wins can drive every device, so the device answers even when its
+own daemon is not running. When the two daemons run different code, the one
+with the older checkout steps out before that acknowledgement for a question,
+so the newer code answers: it queues where the older one refuses, and it does
+not put a second prompt into a session the other is working. A peer is asked
+for its commit's time for this, kept a few seconds, and skipped when it does
+not answer.
 
 ### GitHub work
 
@@ -524,6 +529,7 @@ old process. A question that only waited in a line is not carried: it never ran,
 keeps no message text. A crash, a stop or a restart nobody asked for carries nothing either, so the bot
 never answers a channel with work from hours ago.
 
+
 ## The Discord application, in words
 
 What the Developer Portal asks for, if it helps:
@@ -534,11 +540,14 @@ What the Developer Portal asks for, if it helps:
   permission waits for my click. Nothing is stored: no message text, no logs of
   what was said.*
 - **Tags**: `AI`, `Productivity`, `Developer Tools`, `Utilities`
-- **Icon**: `art/vigo-icon-41.png` (512×512), Aogo's blossom, petals shifted to
-  DeepSeek blue, **41** on the wing where Aogo had 55 (Opus 5.5), and **VI** on
-  the hat tag where Aogo had AO. Rebuild it with `./art/make-icon.sh`;
+- **Icon**: `art/vigo-icon-41.png` (512×512), Wimsy's blossom, petals shifted
+  to DeepSeek blue, **41** on the wing where the source had 55 (Opus 5.5), and
+  **VI** on the hat tag where it had AO. Rebuild it with `./art/make-icon.sh`;
   `art/recolor.py` and `art/badge.swift` are what it runs, and
-  `art/aogo-source.png` is the original.
+  `art/aogo-source.png` is the source. Wimsy is the ScarletNX mascot, drawn by
+  Liz; the version here is Aogo's (https://github.com/Aogo-AO55). Both are
+  GPL-3.0-or-later, so the icon is too and is covered by the same licence as
+  the rest of the repository. See `THIRD-PARTY.md`.
 
 ## The commands
 
@@ -884,8 +893,14 @@ was ever written into it.
 - **The history carries the people who wrote it.** Author lines and commit
   messages can name a machine or a network. Read them before publishing, and
   rewrite them if that matters to you.
-- **Choose a licence.** This tree ships none, and a public repository without
-  one is not open source. That choice is the owner's.
+- **Every ref goes public, not only `main`.** Delete merged branches, and read
+  each pull request body: a machine name or an address there is visible too. A
+  rewrite cleans a branch, but GitHub may keep a pull request's old commits
+  reachable. A fresh repository is the only way to remove them completely, and
+  that is a larger cost than the risk usually deserves.
+- **The licence is GPL-3.0-or-later.** See `LICENSE`. The icon is Wimsy,
+  drawn by Liz in Aogo's variant, and is covered by the same licence; see
+  `THIRD-PARTY.md`.
 
 ### Keeping the secrets off the disk
 
@@ -1129,3 +1144,8 @@ the trade a codespace makes, and it costs one manual step.
 | a question says `Queued` | one run at a time per channel; it starts when the one before it ends, or `/vigo stop` clears it |
 | `/vigo upgrade` ended a question that was queued | only a turn already on a device carries over the restart; a question that waited never started, so ask it again |
 | a channel has no session | the first ask creates one; `new:true` starts a fresh one on purpose |
+
+## Licence
+
+Vigo is GPL-3.0-or-later. See `LICENSE`. The icon is Wimsy, drawn by Liz in
+Aogo's variant, and is covered by the same licence; see `THIRD-PARTY.md`.

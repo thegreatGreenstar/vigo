@@ -16,6 +16,7 @@ from vigo.peer import (
     _supervisor,
     _why,
     build_of,
+    built_of,
     update_self,
 )
 
@@ -27,7 +28,7 @@ def git(*args: str, cwd: Path) -> str:
 
 class PeerTest(unittest.TestCase):
     def setUp(self):
-        self.server = PeerServer("127.0.0.1", 0, "fresh-device", "pw").start()
+        self.server = PeerServer("127.0.0.1", 0, "macbook", "pw").start()
         self.url = f"http://127.0.0.1:{self.server.server.server_address[1]}"
 
     def tearDown(self):
@@ -35,8 +36,13 @@ class PeerTest(unittest.TestCase):
 
     def test_it_says_which_daemon_and_which_build(self):
         info = PeerClient(self.url, "pw").info()
-        self.assertEqual(info["device"], "fresh-device")
+        self.assertEqual(info["device"], "macbook")
         self.assertEqual(info["version"], __version__)
+
+    def test_it_says_when_its_commit_was_made(self):
+        """The one number two checkouts can be ordered by: the commit's time."""
+        info = PeerClient(self.url, "pw").info()
+        self.assertEqual(info["built"], built_of())
 
     def test_the_password_is_checked(self):
         with self.assertRaises(OSError):
@@ -58,7 +64,7 @@ class PeerTest(unittest.TestCase):
         self.assertEqual(status, 401)
 
     def test_it_reports_the_build_it_was_given(self):
-        server = PeerServer("127.0.0.1", 0, "fresh-device", "pw", build="abc1234").start()
+        server = PeerServer("127.0.0.1", 0, "macbook", "pw", build="abc1234").start()
         self.addCleanup(server.stop)
         info = PeerClient(f"http://127.0.0.1:{server.server.server_address[1]}", "pw").info()
         self.assertEqual(info["build"], "abc1234")
@@ -68,7 +74,7 @@ class PeerTest(unittest.TestCase):
         """`/vigo queue` on the other daemon reads this: an empty one is an empty list."""
         self.assertEqual(PeerClient(self.url, "pw").info()["queue"], [])
         tasks = [{"channel": "c1", "title": "Discord DM", "running": None, "waiting": ["one"]}]
-        server = PeerServer("127.0.0.1", 0, "fresh-device", "pw", queue=lambda: tasks).start()
+        server = PeerServer("127.0.0.1", 0, "macbook", "pw", queue=lambda: tasks).start()
         self.addCleanup(server.stop)
         info = PeerClient(f"http://127.0.0.1:{server.server.server_address[1]}", "pw").info()
         self.assertEqual(info["queue"], tasks)
@@ -273,6 +279,21 @@ class BuildTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             self.assertEqual(build_of(Path(directory)), "")
 
+    def test_it_reads_when_the_commit_was_made(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            git("init", "-q", str(root), cwd=root)
+            git("config", "user.email", "t@example.com", cwd=root)
+            git("config", "user.name", "t", cwd=root)
+            (root / "one.txt").write_text("one\n", encoding="utf-8")
+            git("add", ".", cwd=root)
+            git("commit", "-qm", "one", cwd=root)
+            self.assertEqual(built_of(root), int(git("log", "-1", "--format=%ct", cwd=root)))
+
+    def test_a_directory_that_is_not_git_has_no_time(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self.assertEqual(built_of(Path(directory)), 0)
+
 
 if __name__ == "__main__":
     unittest.main()
@@ -286,10 +307,10 @@ class PeerPasswordTest(unittest.TestCase):
         from vigo.config import Device, Config
 
         settings = Config(
-            token="t", app_id="1", owner="2", device="fresh-device", password="",
+            token="t", app_id="1", owner="2", device="macbook", password="",
             devices={
-                "fresh-device": Device("fresh-device", "http://127.0.0.1:1", "/a", "mine"),
-                "rotten-device": Device("rotten-device", "http://127.0.0.1:2", "/b", "theirs"),
+                "macbook": Device("macbook", "http://127.0.0.1:1", "/a", "mine"),
+                "workstation": Device("workstation", "http://127.0.0.1:2", "/b", "theirs"),
             },
         )
         app = App(settings, api=None, state=None)
@@ -300,24 +321,24 @@ class PeerPasswordTest(unittest.TestCase):
         from vigo.config import Device, Config
 
         settings = Config(
-            token="t", app_id="1", owner="2", device="fresh-device", password="",
+            token="t", app_id="1", owner="2", device="macbook", password="",
             peer_password="peer-only",
             devices={
-                "fresh-device": Device("fresh-device", "http://127.0.0.1:1", "/a", "opencode"),
+                "macbook": Device("macbook", "http://127.0.0.1:1", "/a", "opencode"),
             },
         )
         app = App(settings, api=None, state=None)
         self.assertEqual(app.peer_password(), "peer-only")
-        self.assertEqual(app._peer_secret(settings.devices["fresh-device"]), "peer-only")
+        self.assertEqual(app._peer_secret(settings.devices["macbook"]), "peer-only")
 
     def test_a_shared_password_is_still_used(self):
         from vigo.app import App
         from vigo.config import Device, Config
 
         settings = Config(
-            token="t", app_id="1", owner="2", device="fresh-device", password="shared",
+            token="t", app_id="1", owner="2", device="macbook", password="shared",
             devices={
-                "fresh-device": Device("fresh-device", "http://127.0.0.1:1", "/a", "shared"),
+                "macbook": Device("macbook", "http://127.0.0.1:1", "/a", "shared"),
             },
         )
         app = App(settings, api=None, state=None)

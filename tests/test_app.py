@@ -308,6 +308,48 @@ class AppTest(unittest.TestCase):
                         "the answer leads; a task names the session it ran in after it")
         self.assertEqual(self.asked()[0], "say hi")
 
+    def test_an_older_daemon_leaves_the_use_to_a_newer_peer(self):
+        peer_url = self._peer(built=2000)
+        with TempDir() as directory:
+            app = self._two_devices(directory, peer_url)
+            app._built = 1000
+            interaction = self.use(app, commands.ASK,
+                                   options=[{"name": "prompt", "type": 3, "value": "hi"}])
+            self.assertIsNone(self.discord.answer_for(interaction),
+                              "the older daemon does not acknowledge the use")
+            self.assertEqual(self.device.prompts, [],
+                             "and no device turn is spent on it")
+
+    def test_a_newer_daemon_answers_beside_an_older_peer(self):
+        peer_url = self._peer(built=1000)
+        with TempDir() as directory:
+            app = self._two_devices(directory, peer_url)
+            app._built = 2000
+            interaction = self.use(app, commands.ASK,
+                                   options=[{"name": "prompt", "type": 3, "value": "hi"}])
+            self.assertIsNotNone(self.discord.answer_for(interaction),
+                                 "the newer daemon acknowledges it")
+            self.assertTrue(self.device.wait_for_prompt())
+
+    def _peer(self, built: int) -> str:
+        """A peer daemon that answers with the commit time a test names."""
+        server = PeerServer("127.0.0.1", 0, "workstation", "pw", built=built).start()
+        self.addCleanup(server.stop)
+        return f"http://127.0.0.1:{server.server.server_address[1]}"
+
+    def _two_devices(self, directory: Path, peer_url: str) -> App:
+        settings = load_settings(
+            directory,
+            devices=[
+                {"name": "macbook", "url": self.device.url, "directory": "/tmp/project"},
+                {"name": "workstation", "url": "http://127.0.0.1:1",
+                 "directory": "/tmp/other", "peer": peer_url},
+            ],
+        )
+        api = Discord("token", settings.app_id, base=self.discord.url)
+        self.app = App(settings, api=api, state=State(directory / "state.json"))
+        return self.app
+
     def test_the_device_is_told_who_reads_the_answer(self):
         self.device.script = [("idle", "fine")]
         with TempDir() as directory:
@@ -976,7 +1018,7 @@ class AppTest(unittest.TestCase):
         self.assertNotIn("the one that ran", written, "that left the queue already")
 
     def test_queue_asks_the_other_daemon_and_names_a_silent_one(self):
-        other = PeerServer("127.0.0.1", 0, "rotten-device", "pw", queue=lambda: [{
+        other = PeerServer("127.0.0.1", 0, "workstation", "pw", queue=lambda: [{
             "channel": "other_chan", "title": "Discord DM",
             "running": 12.0, "waiting": ["their task"],
         }])
@@ -986,11 +1028,11 @@ class AppTest(unittest.TestCase):
         with TempDir() as directory:
             settings = load_settings(
                 directory,
-                device="fresh-device",
+                device="macbook",
                 password="pw",
                 devices=[
-                    {"name": "fresh-device", "url": "http://127.0.0.1:1", "directory": "/a"},
-                    {"name": "rotten-device", "url": "http://127.0.0.1:2", "directory": "/b",
+                    {"name": "macbook", "url": "http://127.0.0.1:1", "directory": "/a"},
+                    {"name": "workstation", "url": "http://127.0.0.1:2", "directory": "/b",
                      "peer": peer_url},
                     {"name": "silent-device", "url": "http://127.0.0.1:3", "directory": "/c",
                      "peer": "http://127.0.0.1:1"},
@@ -1006,7 +1048,7 @@ class AppTest(unittest.TestCase):
         self.assertIn("does not answer on its peer port", written)
 
     def test_the_public_queue_names_no_channel_task_or_device(self):
-        other = PeerServer("127.0.0.1", 0, "rotten-device", "pw", queue=lambda: [{
+        other = PeerServer("127.0.0.1", 0, "workstation", "pw", queue=lambda: [{
             "channel": "other_chan", "title": "Discord DM: Alice",
             "running": 12.0, "waiting": ["their task", "open /Users/alice/secret.txt"],
         }])
@@ -1020,7 +1062,7 @@ class AppTest(unittest.TestCase):
                 password="pw",
                 devices=[
                     {"name": "macbook", "url": "http://127.0.0.1:1", "directory": "/a"},
-                    {"name": "rotten-device", "url": "http://127.0.0.1:2", "directory": "/b",
+                    {"name": "workstation", "url": "http://127.0.0.1:2", "directory": "/b",
                      "peer": peer_url},
                     {"name": "silent-device", "url": "http://127.0.0.1:3", "directory": "/c",
                      "peer": "http://127.0.0.1:1"},
@@ -1042,7 +1084,7 @@ class AppTest(unittest.TestCase):
                          "each task that names somebody keeps its place and loses its text")
         self.assertNotIn("/Users/alice", written)
         self.assertNotIn("Discord", written, "no channel is named")
-        for name in ("macbook", "rotten-device", "silent-device"):
+        for name in ("macbook", "workstation", "silent-device"):
             self.assertNotIn(name, written, f"{name} is not named")
         self.assertIn("running 12s · 2 waiting", written)
         self.assertIn("⚠️ another daemon does not answer on its peer port", written)
@@ -1700,7 +1742,7 @@ class AppTest(unittest.TestCase):
             self._git("push", "-q", "origin", "HEAD:main", cwd=seed)
 
             # the other daemon, on its own checkout, old build, no restart
-            other = PeerServer("127.0.0.1", 0, "rotten-device", "pw",
+            other = PeerServer("127.0.0.1", 0, "workstation", "pw",
                                checkout=peer_checkout, restart=False,
                                version="0.9.0").start()
             self.addCleanup(other.stop)
@@ -1709,11 +1751,11 @@ class AppTest(unittest.TestCase):
             with TempDir() as directory:
                 settings = load_settings(
                     directory,
-                    device="fresh-device",
+                    device="macbook",
                     devices=[
-                        {"name": "fresh-device", "url": "http://127.0.0.1:1",
+                        {"name": "macbook", "url": "http://127.0.0.1:1",
                          "directory": "/a"},
-                        {"name": "rotten-device", "url": "http://127.0.0.1:2",
+                        {"name": "workstation", "url": "http://127.0.0.1:2",
                          "directory": "/b", "peer": peer_url},
                     ],
                 )
@@ -1721,19 +1763,19 @@ class AppTest(unittest.TestCase):
                 app = App(settings, api=api, state=State(directory / "state.json"))
                 self.app = app
                 self.use(app, commands.UPGRADE, options=[
-                    {"name": "device", "type": 3, "value": "rotten-device"},
+                    {"name": "device", "type": 3, "value": "workstation"},
                 ])
                 self.assertTrue(self.discord.wait_for(
-                    lambda: any("rotten-device" in str(content)
+                    lambda: any("workstation" in str(content)
                                 for content in self.said()), 30))
                 said = self.said()[-1]
             self.assertIn("pulled", said)
-            self.assertNotIn("fresh-device", said)
+            self.assertNotIn("macbook", said)
             self.assertTrue((peer_checkout / "two.txt").exists(), "the other checkout moved")
             dm = self.discord.messages.get(self.discord.dm_channels[settings.owner], [])
         self.assertTrue(dm, "the owner is told, not only the channel")
         told = dm[0]["content"]
-        self.assertIn("rotten-device", told, "the alias it moved")
+        self.assertIn("workstation", told, "the alias it moved")
         self.assertIn(f"{was} → {build_of(peer_checkout)}", told,
                       "what it went from and to")
 
