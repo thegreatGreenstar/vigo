@@ -1,5 +1,6 @@
 import os
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -10,6 +11,7 @@ from vigo.peer import (
     PeerServer,
     _in_container,
     _launchd_workdir,
+    _restart_later,
     _supervisor,
     _why,
     build_of,
@@ -200,6 +202,48 @@ class SupervisorTest(unittest.TestCase):
 
         self.assertTrue(told["ok"])
         self.assertFalse(told["restarted"], "no supervisor runs this clone")
+
+
+class CarryOverTest(unittest.TestCase):
+    """The restart writes down what it cuts off, right before it happens."""
+
+    def test_the_hook_runs_before_the_restart_command(self):
+        with tempfile.TemporaryDirectory() as directory:
+            marker = Path(directory) / "order.txt"
+
+            def hook() -> None:
+                with open(marker, "a", encoding="utf-8") as handle:
+                    handle.write("hook\n")
+
+            command = [sys.executable, "-c",
+                       f"open({str(marker)!r}, 'a').write('command\\n')"]
+            _restart_later(command, Path(directory), hook, delay=0.0)
+            self.assertEqual(marker.read_text(encoding="utf-8"), "hook\ncommand\n")
+
+    def test_a_checkout_that_is_not_restarted_keeps_no_record(self):
+        if _in_container():
+            self.skipTest("a container is restarted by the unit that runs it")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            origin = root / "origin.git"
+            git("init", "--bare", "-q", str(origin), cwd=root)
+            seed = root / "seed"
+            git("clone", "-q", str(origin), str(seed), cwd=root)
+            git("config", "user.email", "t@example.com", cwd=seed)
+            git("config", "user.name", "t", cwd=seed)
+            (seed / "file.txt").write_text("one\n", encoding="utf-8")
+            git("add", ".", cwd=seed)
+            git("commit", "-qm", "one", cwd=seed)
+            git("push", "-q", "origin", "HEAD:main", cwd=seed)
+            here = root / "here"
+            git("clone", "-q", "-b", "main", str(origin), str(here), cwd=root)
+
+            wrote: list[str] = []
+            told = update_self(checkout=here, before_restart=lambda: wrote.append("hook"))
+
+        self.assertTrue(told["ok"])
+        self.assertFalse(told["restarted"])
+        self.assertEqual(wrote, [], "no restart, so no run is interrupted")
 
 
 class BuildTest(unittest.TestCase):

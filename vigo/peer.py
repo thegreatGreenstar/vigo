@@ -112,7 +112,8 @@ class _Handler(BaseHTTPRequestHandler):
             self._send(404, {"error": "no route"})
             return
         self._send(200, update_self(checkout=self.server.checkout,
-                                    restart=self.server.restart))
+                                    restart=self.server.restart,
+                                    before_restart=self.server.suspend))
 
 
 def _run(command: list[str], cwd: Path, timeout: float = 120.0) -> tuple[int, str]:
@@ -205,16 +206,34 @@ def _supervisor(checkout: Path, container: bool | None = None) -> list[str] | No
     return None
 
 
-def _restart_later(command: list[str], here: Path) -> None:
-    """Restart once the answer is out, because the restart kills this process."""
-    time.sleep(1.0)
+def _restart_later(command: list[str], here: Path,
+                   before_restart: Callable[[], None] | None = None,
+                   delay: float = 1.0) -> None:
+    """Restart once the answer is out, because the restart kills this process.
+
+    The work this restart will cut off is written down here, as late as it can
+    be: a question that arrives during the second before the command runs is
+    in the record too, and one that ended is not.
+    """
+    time.sleep(delay)
+    if before_restart is not None:
+        try:
+            before_restart()
+        except Exception as error:  # the restart must still happen
+            log.failure("update: cannot write down the work this restart cuts off", error)
     code, said = _run(command, here, timeout=30.0)
     if code != 0:
         log.error(f"update: restart refused ({said or code})")
 
 
-def update_self(checkout: Path | None = None, restart: bool = True) -> dict:
-    """Pull this checkout, and restart through a supervisor when one runs it."""
+def update_self(checkout: Path | None = None, restart: bool = True,
+                before_restart: Callable[[], None] | None = None) -> dict:
+    """Pull this checkout, and restart through a supervisor when one runs it.
+
+    `before_restart` runs one last time before the supervisor takes this
+    process down.  Only an upgrade restarts a daemon, so it is also the one
+    moment at which a run in flight is carried over a start instead of lost.
+    """
     here = Path(checkout or CHECKOUT)
     before = build_of(here)
     code, said = _run(["git", "pull", "--ff-only"], here)
@@ -226,7 +245,8 @@ def update_self(checkout: Path | None = None, restart: bool = True) -> dict:
         return {"ok": False, "said": why, "version": __version__, "before": before}
     command = _supervisor(here) if restart else None
     if command:
-        threading.Thread(target=_restart_later, args=(command, here), daemon=True).start()
+        threading.Thread(target=_restart_later,
+                         args=(command, here, before_restart), daemon=True).start()
     after = build_of(here)
     moved = f"{before or '?'} -> {after or '?'}"
     log.info(f"update: pulled ({moved}; {'restarting' if command else 'restart it here'})")
@@ -239,7 +259,8 @@ class PeerServer:
     def __init__(self, host: str, port: int, device: str, password: str,
                  checkout: Path | None = None, restart: bool = True,
                  version: str = "", build: str = "",
-                 queue: Callable[[], list] | None = None) -> None:
+                 queue: Callable[[], list] | None = None,
+                 suspend: Callable[[], None] | None = None) -> None:
         self.server = ThreadingHTTPServer((host, port), _Handler)
         self.server.device = device  # type: ignore[attr-defined]
         self.server.password = password  # type: ignore[attr-defined]
@@ -250,6 +271,10 @@ class PeerServer:
         # What this daemon runs and waits on, for `/vigo queue` on the other
         # one.  A daemon that holds nothing yet answers with an empty list.
         self.server.queue = queue or (lambda: [])  # type: ignore[attr-defined]
+        # What this daemon's runs are, written down before an upgrade takes the
+        # process down.  The other daemon asks for the update, so the record is
+        # made here, by the daemon that owns the runs.
+        self.server.suspend = suspend or (lambda: None)  # type: ignore[attr-defined]
         # A short poll: `shutdown()` waits for the loop to notice, and half a
         # second per server is half a second per test.
         self.thread = threading.Thread(
