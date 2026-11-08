@@ -48,6 +48,16 @@ class GatewayTest(unittest.TestCase):
         self.assertTrue(self.fake.wait_for(lambda: bool(self.fake.resumes), 8))
         self.assertEqual(self.fake.resumes[0]["session_id"], "sess_test")
 
+    def test_a_refused_resume_identifies_instead_of_resuming_the_dead_session(self):
+        self.start()
+        self.assertTrue(self.fake.wait_for(lambda: bool(self.fake.identifies), 5))
+        self.fake.refuse_resume = True
+        self.fake.drop()
+        self.assertTrue(self.fake.wait_for(lambda: bool(self.fake.resumes), 8))
+        self.assertEqual(self.fake.resumes[0]["session_id"], "sess_test")
+        self.assertTrue(self.fake.wait_for(lambda: len(self.fake.identifies) >= 2, 8),
+                        "the daemon resumed a session Discord had ended, and never identified again")
+
     def test_a_status_set_before_the_connection_goes_out_with_the_identify(self):
         self.gateway = Gateway(self.fake.url, "token", 1,
                                lambda event, data: None, self.states.append)
