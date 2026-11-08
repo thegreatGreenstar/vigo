@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import base64
 import json
+import os
+import signal
 import subprocess
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -121,6 +123,17 @@ def head_of(checkout: Path | None = None) -> str:
     return said.strip() if code == 0 and said else ""
 
 
+def _restart_soon(delay: float = 1.0) -> None:
+    """Leave this process, so the container's supervisor starts it again.
+
+    The HTTP reply has to leave the socket first, because the caller is either
+    the other daemon's `/vigo/update` request or the answer to `/vigo upgrade`.
+    The container entrypoint sees this process exit, stops OpenCode, and exits;
+    systemd then restarts the container.
+    """
+    threading.Timer(delay, lambda: os.kill(os.getpid(), signal.SIGTERM)).start()
+
+
 def update_self(checkout: Path | None = None, restart: bool = True) -> dict:
     """Pull this checkout, and restart through a supervisor when one runs it."""
     here = Path(checkout or CHECKOUT)
@@ -130,8 +143,12 @@ def update_self(checkout: Path | None = None, restart: bool = True) -> dict:
         return {"ok": False, "said": said.splitlines()[-1] if said else "git failed",
                 "version": __version__}
     restarted = False
-    if restart and _run(["systemctl", "--user", "is-active", "--quiet", "vigo.service"], here)[0] == 0:
-        restarted = _run(["systemctl", "--user", "restart", "vigo.service"], here)[0] == 0
+    if restart:
+        if os.environ.get("VIGO_CONTAINER") == "1":
+            _restart_soon()
+            restarted = True
+        elif _run(["systemctl", "--user", "is-active", "--quiet", "vigo.service"], here)[0] == 0:
+            restarted = _run(["systemctl", "--user", "restart", "vigo.service"], here)[0] == 0
     log.info(f"update: pulled ({'restarting' if restarted else 'restart it here'})")
     return {"ok": True, "said": said.splitlines()[-1] if said else "up to date",
             "version": __version__, "restarted": restarted}

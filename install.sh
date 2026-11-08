@@ -1,9 +1,9 @@
 #!/bin/sh
-# Install Vigo on this device: check the Python, make the settings folder, put
-# the command and the login services in place, and say what is left.
+# Install Vigo on this device: make the settings folder, put the command and the
+# login services in place, and say what is left.
 #
-#   ./install.sh                 # launchd agents on macOS, systemd units on Linux
-#   VIGO_PYTHON=python3.13 ./install.sh
+#   ./install.sh                 # launchd agents on macOS, container on Linux
+#   VIGO_PYTHON=python3.13 ./install.sh   # the macOS interpreter
 #
 set -eu
 
@@ -11,17 +11,25 @@ here=$(cd "$(dirname "$0")" && pwd)
 python=${VIGO_PYTHON:-python3}
 config="$HOME/.config/vigo"
 state="$HOME/.local/state/vigo"
+os=$(uname -s)
 
 say() { printf '%s\n' "$*"; }
 
-# 1. a Python that can run it
-if ! "$python" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 12) else 1)'; then
-    say "vigo needs Python 3.12 or newer. This '$python' is:"
-    "$python" -V || true
-    say "Set VIGO_PYTHON to a newer one and run me again."
-    exit 1
-fi
-say "python: $("$python" -V 2>&1)"
+# 1. a Python that can run it (the container brings its own on Linux)
+case "$os" in
+Darwin)
+    if ! "$python" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 12) else 1)'; then
+        say "vigo needs Python 3.12 or newer. This '$python' is:"
+        "$python" -V || true
+        say "Set VIGO_PYTHON to a newer one and run me again."
+        exit 1
+    fi
+    say "python: $("$python" -V 2>&1)"
+    ;;
+*)
+    say "python: supplied by the container"
+    ;;
+esac
 
 # 2. the settings file, made only when it is not there
 install -d -m 700 "$config"
@@ -35,12 +43,19 @@ fi
 
 # 3. the launchers the services run
 install -d -m 755 "$HOME/.local/libexec"
-install -m 755 "$here/deploy/opencode-serve-macos.sh" "$HOME/.local/libexec/opencode-serve-macos.sh"
-install -m 755 "$here/deploy/opencode-serve.sh" "$HOME/.local/libexec/opencode-serve.sh"
-say "launchers: ~/.local/libexec/opencode-serve{,-macos}.sh"
+case "$os" in
+Darwin)
+    install -m 755 "$here/deploy/opencode-serve-macos.sh" "$HOME/.local/libexec/opencode-serve-macos.sh"
+    say "launchers: ~/.local/libexec/opencode-serve-macos.sh"
+    ;;
+*)
+    install -m 755 "$here/deploy/vigo-container.sh" "$HOME/.local/libexec/vigo-container.sh"
+    say "launchers: ~/.local/libexec/vigo-container.sh"
+    ;;
+esac
 
 # 4. start at login
-case "$(uname -s)" in
+case "$os" in
 Darwin)
     agents="$HOME/Library/LaunchAgents"
     install -d -m 755 "$agents"
@@ -60,19 +75,25 @@ Darwin)
     say "        launchctl print gui/\$(id -u)/dev.vigo.bot | head -20"
     ;;
 Linux)
-    if command -v systemctl >/dev/null 2>&1 && [ -d "$HOME/.config" ]; then
+    missing=""
+    for tool in systemctl podman tailscale gh ssh-tpm-agent; do
+        command -v "$tool" >/dev/null 2>&1 || missing="$missing $tool"
+    done
+    if [ -z "$missing" ] && [ -d "$HOME/.config" ]; then
         units="$HOME/.config/systemd/user"
         install -d -m 755 "$units"
-        sed -e "s|^WorkingDirectory=.*|WorkingDirectory=$here|" \
-            -e "s|^ExecStart=/usr/bin/python3 -m vigo|ExecStart=$python -m vigo|" \
-            "$here/deploy/vigo.service" > "$units/vigo.service"
-        install -m 644 "$here/deploy/opencode-serve.service" "$units/opencode-serve.service"
-        chmod 644 "$units/vigo.service"
+        install -m 644 "$here/deploy/vigo.service" "$units/vigo.service"
+        install -m 644 "$here/deploy/vigo-ssh-agent.service" "$units/vigo-ssh-agent.service"
+        install -d -m 700 "$HOME/.local/share/vigo/home"
         systemctl --user daemon-reload 2>/dev/null || true
         say "services: installed into ~/.config/systemd/user"
-        say "          enable them with: systemctl --user enable --now opencode-serve vigo"
+        say "          before the first start:"
+        say "            ./deploy/vigo-identity.sh   # make Vigo's TPM keys, add them to GitHub"
+        say "            ./deploy/build-container.sh # build the image with this host's opencode and gh"
+        say "            systemctl --user enable --now vigo-ssh-agent vigo"
     else
-        say "services: no systemd here, so run it by hand (see the README)"
+        [ -n "$missing" ] && say "services: Linux needs:$missing"
+        say "          install those, or run the bot by hand (see the README)"
     fi
     ;;
 *)
@@ -87,4 +108,12 @@ say "  device    this machine's name, exactly as it appears in devices"
 say "  appID     the application id from the Discord portal"
 say "  token     or tokenCommand, which reads it from the Keychain/TPM"
 say "  password  this machine's OpenCode password, or passwordCommand"
-say "Then check it with: $python -m vigo --check"
+case "$os" in
+Darwin)
+    say "Then check it with: $python -m vigo --check"
+    ;;
+*)
+    say "Then check it with: systemctl --user start vigo"
+    say "                    podman exec vigo python3 -m vigo --check"
+    ;;
+esac

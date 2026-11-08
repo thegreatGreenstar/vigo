@@ -1,21 +1,33 @@
 [Unit]
-Description=Vigo, your OpenCode agent on Discord
-After=network-online.target opencode-serve.service
+Description=Vigo, your OpenCode agent on Discord (rootless container)
+After=network-online.target tailscaled.service vigo-ssh-agent.service
 Wants=network-online.target
-PartOf=opencode-serve.service
+Requires=vigo-ssh-agent.service
 
 [Service]
-Type=simple
-WorkingDirectory=%h/Projects/vigo
-Environment=VIGO_CONFIG=%h/.config/vigo/vigo.json
-# The bot token, sealed to this machine's TPM; the settings file then says
-#   "tokenCommand": "cat \"$CREDENTIALS_DIRECTORY/vigo-token\""
+Type=exec
+# The settings, the peer's password, and the two credentials systemd unseals.
+Environment=VIGO_CONTAINER_ROOT=%h/.local/share/vigo
+Environment=VIGO_CONFIG_FILE=%h/.config/vigo/vigo.json
+Environment=VIGO_PEER_PASSWORD_FILE=%h/.config/vigo/fresh-device.password
 LoadCredentialEncrypted=vigo-token:%h/.config/vigo/vigo-token.cred
-ExecStart=/usr/bin/python3 -m vigo
-Restart=on-failure
+LoadCredentialEncrypted=opencode-password:%h/.config/vigo/opencode.cred
+# Optional: Vigo's own GitHub CLI token.  With no path, a missing credential in
+# ~/.config/credstore.encrypted/gh-token is not an error.
+LoadCredentialEncrypted=gh-token
+ExecStart=%h/.local/libexec/vigo-container.sh
+
+# `podman run` owns the container; when it exits, systemd starts it again.
+Restart=always
 RestartSec=5s
-NoNewPrivileges=yes
-PrivateTmp=yes
+TimeoutStopSec=30s
+KillMode=mixed
+Delegate=yes
+# No NoNewPrivileges or PrivateTmp here: rootless podman needs setuid/file-cap
+# newuidmap, and a private /tmp mount stops it from mapping the subordinate
+# range (newuidmap: write to uid_map failed).  The container itself gets
+# no-new-privileges and its own bounded /tmp tmpfs.
+PrivateTmp=no
 
 [Install]
 WantedBy=default.target

@@ -1,6 +1,10 @@
 #!/bin/sh
 # Start OpenCode's server with the password unsealed from this machine's TPM.
 #
+# Host-only fallback: install.sh now uses deploy/vigo-container.sh, which runs
+# OpenCode inside the container with Vigo.  This script remains for a machine
+# where the host OpenCode is still the one Vigo drives.
+#
 #   sudo install -d -m 700 /etc/vigo
 #   printf '%s' "$(openssl rand -hex 32)" | systemd-creds encrypt --user \
 #       --name=opencode-password - /etc/vigo/opencode.cred
