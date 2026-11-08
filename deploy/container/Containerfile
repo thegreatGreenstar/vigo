@@ -1,24 +1,33 @@
-# A small image for Vigo: Python, git and an SSH client, and nothing else.
+# The minimal daemon image: the Discord token, settings, state and checkout.
 #
-#   podman build -t localhost/vigo deploy/container
-#
-# The checkout is mounted, not copied, so /vigo upgrade pulls into the same tree
-# that runs and a rebuild is needed only when the base or these packages change.
-#
-# There is no USER line on purpose.  A rootless runtime maps container root onto
-# the human who started it, so the mounted checkout and state are that person's
-# files.  A container user would be in the subuid range and could not write them.
+# It carries no OpenCode, no gh and no project toolchain.  The agent image in
+# Containerfile.agent carries those, and is Arch-based so it can run the
+# binaries this Arch host builds in ~/Projects/compiled_scarlet.
 FROM docker.io/library/python:3.14-slim
 
-# git runs /vigo upgrade and the agents' work; ssh reaches the git remote.
+LABEL org.opencontainers.image.title="vigo-daemon" \
+      org.opencontainers.image.description="Vigo's daemon, rootless"
+
 RUN apt-get update \
- && apt-get install -y --no-install-recommends git openssh-client \
+ && apt-get install -y --no-install-recommends ca-certificates git openssh-client \
  && rm -rf /var/lib/apt/lists/*
 
-# The client's own configuration: one key, pinned host keys, no prompt.
 COPY ssh_config known_hosts /etc/vigo/
+COPY ssh_config.linux /etc/ssh/ssh_config.d/vigo.conf
+COPY gitconfig /etc/gitconfig
+COPY vigo-entrypoint.py /usr/local/libexec/vigo-entrypoint.py
+RUN chmod 0755 /usr/local/libexec/vigo-entrypoint.py \
+ && install -d -m 0755 /vigo /run/vigo /run/secrets /config \
+        /home/vigo /home/vigo/.local/state /home/vigo/.ssh
 
 ENV PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1
+    PYTHONDONTWRITEBYTECODE=1 \
+    LANG=C.UTF-8 \
+    HOME=/home/vigo \
+    XDG_STATE_HOME=/home/vigo/.local/state \
+    SSH_AUTH_SOCK=/run/vigo/ssh-agent.sock \
+    VIGO_CONFIG=/config/vigo.json \
+    VIGO_CONTAINER=1
 
-ENTRYPOINT ["python3", "-m", "vigo"]
+WORKDIR /vigo
+ENTRYPOINT ["/usr/local/bin/python3", "/usr/local/libexec/vigo-entrypoint.py"]

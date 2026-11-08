@@ -25,6 +25,18 @@ class LauncherTest(unittest.TestCase):
         self.dir = Path(temporary.name)
         self.state = self.dir / "state"
         self.state.mkdir()
+        # The daemon runs a private checkout, not the project copy.
+        checkout = self.dir / ".local/share/vigo/checkout"
+        (checkout / ".git").mkdir(parents=True)
+        subprocess.run(["git", "-C", str(checkout), "init", "-q"], check=True)
+        subprocess.run(
+            ["git", "-C", str(checkout), "remote", "add", "origin",
+             "git@example.invalid:fake/repo.git"],
+            check=True,
+        )
+        (self.dir / "Projects").mkdir()
+        (self.dir / ".config/vigo").mkdir(parents=True)
+        (self.dir / ".config/vigo/vigo.json").write_text("{}\n", encoding="utf-8")
         self.bin = self.dir / "bin"
         self.bin.mkdir()
         self._stub("uname", 'echo Darwin\n')

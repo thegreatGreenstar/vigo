@@ -27,6 +27,9 @@ KNOWN_KEYS = {
     "password",
     "passwordFile",
     "passwordCommand",
+    "peerPassword",
+    "peerPasswordFile",
+    "peerPasswordCommand",
     "install",
     "stateChannel",
     "users",
@@ -102,6 +105,7 @@ class Config:
     device: str
     password: str
     devices: dict[str, Device]
+    peer_password: str = ""
     users: tuple[str, ...] = ()
     state_channel: str = ""
     install: str = "both"
@@ -348,6 +352,7 @@ def parse(raw: object, base: Path | None = None) -> Config:
     app_id = _snowflake(raw, "appID", "the file")
     owner = _snowflake(raw, "owner", "the file")
     password = _secret(raw, "password", "the file", base)
+    peer_password = _secret(raw, "peerPassword", "the file", base)
     device_name = _str(raw, "device", "the file")
 
     if "devices" not in raw:
@@ -392,6 +397,7 @@ def parse(raw: object, base: Path | None = None) -> Config:
         device=device_name,
         password=password,
         devices=devices,
+        peer_password=peer_password,
         users=tuple(users),
         state_channel=state_channel,
         install=_install(raw),
