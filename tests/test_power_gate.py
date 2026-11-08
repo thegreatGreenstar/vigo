@@ -157,7 +157,9 @@ exit 0
 
     def _run(self, exit_code: int, text: str) -> subprocess.CompletedProcess[str]:
         environ = dict(os.environ)
-        environ["PATH"] = f"{self.bin}:{environ['PATH']}"
+        # The parallel runner shares os.environ with tests that clear it, so a
+        # missing PATH here is a race in the runner and not a refusal to run.
+        environ["PATH"] = f"{self.bin}:{environ.get('PATH', '')}"
         environ["POWER_EXIT"] = str(exit_code)
         environ["POWER_TEXT"] = text
         environ["PODMAN_LOG"] = str(self.podman)
