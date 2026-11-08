@@ -2416,7 +2416,7 @@ class App:
             said += f" · {reason}"
         return said
 
-    def queue_snapshot(self) -> list[dict]:
+    def queue_snapshot(self, answers: dict[str, tuple[OpenCode, dict, list]] | None = None) -> list[dict]:
         """This daemon's channels that run or wait, with every task in line.
 
         Titles, not ids: the session's title names the channel the way the
@@ -2425,15 +2425,16 @@ class App:
         public form of the queue redacts it for Discord.
 
         Each entry says how many agents work on its run, because the queue
-        that names a task should say what is on it.
+        that names a task should say what is on it.  `answers` is the devices'
+        own word about what runs, read once for the whole view.
         """
         with self.runs_lock:
             entries = [
                 (channel, self.runs.get(channel), list(self.waiting.get(channel) or []))
                 for channel in sorted(set(self.runs) | set(self.waiting))
             ]
-        agents = self._agents_by_session(
-            [(run.session, run.device) for _, run, _ in entries if run])
+        if answers is None:
+            answers = self._device_answers({run.device for _, run, _ in entries if run})
         found: list[dict] = []
         for channel, run, waiting in entries:
             remembered = self.state.session_for(channel) or {}
@@ -2441,38 +2442,85 @@ class App:
                 "channel": channel,
                 "title": str(remembered.get("title") or "untitled"),
                 "running": round(run.elapsed, 1) if run else None,
+                "prompt": run.prompt if run else "",
                 "waiting": [worker.prompt for worker in waiting],
-                "agents": agents.get(run.session, 0) if run else 0,
+                "agents": self._agents_of(run, answers),
             })
         return found
 
-    def _agents_by_session(self, tasks: list[tuple[str, str]]) -> dict[str, int]:
-        """How many agents work on each task, by the session the task runs in.
+    def _device_answers(self, names: set[str] | None = None) -> dict[str, tuple[OpenCode, dict, list]]:
+        """What each device says runs now, and the sessions it lists.
 
-        `tasks` is (session id, device name) for each run.  One answer about
-        what runs, and one listing of the sessions, says it for every task on a
-        device: a subagent is a session of its own under the task's session.
-        A device that does not answer leaves its counts out rather than wrong.
+        One read per device answers the agent count of a line and finds the
+        sessions that no line names.  `names` limits the read to the devices
+        that a line runs on, which is what a peer's queue needs.  A device that
+        does not answer has no entry: a count it could not give is left out
+        rather than guessed.
         """
-        found: dict[str, int] = {}
-        by_device: dict[str, list[str]] = {}
-        for session, device_name in tasks:
-            if session:
-                by_device.setdefault(device_name, []).append(session)
-        for device_name, session_ids in by_device.items():
-            device = self.config.device_named(device_name)
-            if device is None:
+        found: dict[str, tuple[OpenCode, dict, list]] = {}
+        for device in self.config.devices.values():
+            if names is not None and device.name not in names:
                 continue
             client = OpenCode(device.url, device.password, timeout=2.0)
             try:
-                active = client.active()
-                listed = client.sessions(limit=100)
+                found[device.name] = (client, client.active(), client.sessions(limit=100))
             except OpenCodeError as error:
-                log.info(f"queue: the agent count is not known ({error.message})")
-                continue
-            for session in session_ids:
-                found[session] = agents_on(active, listed, session)
+                log.info(f"queue: the device does not answer ({error.message})")
         return found
+
+    @staticmethod
+    def _agents_of(run: asking.Run | None,
+                   answers: dict[str, tuple[OpenCode, dict, list]]) -> int:
+        """How many agents work on a line's own run, from the device it runs on."""
+        if run is None or run.device not in answers:
+            return 0
+        _client, active, listed = answers[run.device]
+        return agents_on(active, listed, run.session)
+
+    def _device_runs(self, answers: dict[str, tuple[OpenCode, dict, list]],
+                     skip: set[object]) -> list[dict]:
+        """The sessions a device still works on, for a channel no line names.
+
+        A run outlives the daemon that started it, and `/vigo goal` opens a
+        turn with no run at all, so the device's own record is the one place
+        both are seen.  The channel is the one the session was made for, and a
+        goal names the work it does.  A session with no goal keeps no text,
+        because its question went with its daemon.  `skip` holds the channels
+        that a line already runs, on this daemon or on a peer.
+        """
+        found: dict[str, dict] = {}
+        for client, active, listed in answers.values():
+            for info in listed:
+                busy = busy_since(info)
+                if busy is None:
+                    continue
+                metadata = info.get("metadata")
+                channel = (str(metadata.get(asking.CHANNEL_KEY) or "")
+                           if isinstance(metadata, dict) else "")
+                if not channel or channel in skip or channel in found:
+                    continue
+                session = str(info.get("id") or "")
+                found[channel] = {
+                    "channel": channel,
+                    "title": str(info.get("title") or "untitled"),
+                    "running": round(max(0.0, time.time() - busy / 1000.0), 1),
+                    "prompt": self._goal_of(client, session),
+                    "waiting": [],
+                    "agents": agents_on(active, listed, session),
+                }
+        return sorted(found.values(), key=lambda row: str(row["channel"]))
+
+    @staticmethod
+    def _goal_of(client: OpenCode, session: str) -> str:
+        """The work a goal session names, or "" for a session that has none."""
+        try:
+            held = client.goal(session)
+        except OpenCodeError as error:
+            log.info(f"queue: the goal is not known ({error.message})")
+            return ""
+        if not held:
+            return ""
+        return str(held.get("objective") or "")
 
     def _queue_text(self, public: bool = False) -> str:
         """Every channel that runs or waits, here and on the other daemons.
@@ -2486,9 +2534,17 @@ class App:
         name, no device's name, and no task that names a person, a path or a
         machine.  It keeps the shape of the queue, which is what the owner
         shows when the work is the point and the people are not.
+
+        A line lives in the memory of the daemon that took its questions, so a
+        run that outlived its daemon, and a goal set with no question, have no
+        line at all.  The device still says it is working, which is what
+        `/vigo status` reads, so the sessions it runs are listed here too.  A
+        channel that a daemon already reports as running is not listed again.
         """
+        answers = self._device_answers()
+        local = self.queue_snapshot(answers)
         # (a device's name, its rows or None when it has none, and why) here first
-        groups: list[tuple[str, list[dict] | None, str]] = [("", self.queue_snapshot(), "")]
+        groups: list[tuple[str, list[dict] | None, str]] = [("", local, "")]
         for name in self.config.devices:
             if name == self.config.device:
                 continue
@@ -2506,6 +2562,13 @@ class App:
                 groups.append((name, None, "runs an older vigo, which reports no queue"))
                 continue
             groups.append((name, queue, ""))
+        held = {entry.get("channel") for _, entries, _ in groups
+                for entry in (entries or []) if isinstance(entry, dict)
+                and entry.get("running") is not None}
+        rows = self._device_runs(answers, held)
+        if rows:
+            local = local + rows
+            groups[0] = ("", local, "")
         if public:
             said = self._queue_public(groups)
             said = self._fit(said, more="… (the rest does not fit here)")
@@ -2556,6 +2619,8 @@ class App:
             at_work = (f" · {agents} agent{'' if agents == 1 else 's'}"
                        if isinstance(agents, int) and agents > 0 else "")
             lines.append(f"{doing}{at_work}{count}")
+            if isinstance(running, (int, float)):
+                lines.append(self._running_line(entry, public=True))
             for number, prompt in enumerate(waiting, 1):
                 lines.append(f"{number}. “{self._shareable(prompt)}”")
         listed: list[str] = []
@@ -2574,8 +2639,7 @@ class App:
         said = text.shorten(prompt, 60)
         return said if text.shareable(said, tuple(self.config.devices)) else "redacted task"
 
-    @staticmethod
-    def _queue_block(entries: list, device: str) -> str:
+    def _queue_block(self, entries: list, device: str) -> str:
         """One daemon's channels: what runs there, and every task that waits."""
         lines = [f"**{device}**" if device else "**This daemon**"]
         rows = [entry for entry in entries if isinstance(entry, dict)]
@@ -2592,9 +2656,24 @@ class App:
             at_work = (f" · {agents} agent{'' if agents == 1 else 's'}"
                        if isinstance(agents, int) and agents > 0 else "")
             lines.append(f"“{entry.get('title') or 'untitled'}”: {doing}{at_work}{count}")
+            if isinstance(running, (int, float)):
+                lines.append(self._running_line(entry, public=False))
             for number, prompt in enumerate(waiting, 1):
                 lines.append(f"{number}. “{text.shorten(prompt, 60)}”")
         return "\n".join(lines)
+
+    def _running_line(self, entry: dict, public: bool) -> str:
+        """The task at work, in slot 0, so the list holds it and the header is not all.
+
+        A task that no daemon holds keeps its place without its text: its
+        question went with the daemon that took it, and the device's goal is
+        the only name the work still has.
+        """
+        prompt = str(entry.get("prompt") or "")
+        if not prompt:
+            return "0. (the task that runs)"
+        said = self._shareable(prompt) if public else text.shorten(prompt, 60)
+        return f"0. “{said}”"
 
     def _line_text(self, channel_id: str) -> list[str]:
         """Every task that waits in this channel, and the last three that ran.

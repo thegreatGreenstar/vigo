@@ -674,7 +674,7 @@ What the Developer Portal asks for, if it helps:
 | `/vigo goal objective:<text> [device] [hidden]` | owner | gives the device an objective to keep working toward, with no question, in a session of its own; `pause`, `resume` and `clear` control the goal it already has |
 | `/vigo quick prompt:<text> [device] [hidden]` | owner | one answer, with no session and no tools; the message stays as thinking until the answer is ready, then becomes it, with no line before, and the device is told the same two-paragraph limit as a question. An approved person is refused: a one-off leaves no session, so the share of the plan cannot be counted for it |
 | `/vigo status` | owner | the channel's session, its device, tokens and cost, and the subagents at work under it; every question that waits, and the last three that ran |
-| `/vigo queue [public]` | owner | every channel that runs or waits, on this daemon and the other ones, every task in each line, and how many agents work on each task; `public:true` shows the channel a redacted copy |
+| `/vigo queue [public]` | owner | every channel that runs or waits, on this daemon and the other ones, every task in each line, and how many agents work on each task. The task at work is item 0 and the tasks behind it are 1 and up, and a run that no daemon holds any more is still read from the device. `public:true` shows the channel a redacted copy |
 | `/vigo devices` | owner | what is up, and which one a question would go to |
 | `/vigo stop` | owner | interrupts the channel's run, and drops the questions that wait behind it |
 | `/vigo upgrade [device]` | owner | pulls and restarts a daemon that runs a different commit; empty does every one of them, and the owner gets a DM naming each device and the commit it moved from and to. A turn already running on that daemon carries over the restart, and its answer still arrives |
@@ -713,6 +713,14 @@ somewhere else is found without knowing where to look. A daemon that does not
 answer its peer port is said to be silent, never left out. A line lives in the
 memory of the daemon that took its questions, so a restart drops what waited,
 and those questions have to be asked again.
+
+A queue lists the task at work first, as item 0, and the tasks behind it from
+1. The item at work does not need a line in a daemon's memory: the device is
+asked which of its sessions still runs, and a session made for a channel is
+that channel's run. So a run that outlived its daemon, and a goal that works
+with no question, both keep their place. A goal names the work in item 0. A run
+whose daemon has gone keeps the place without its text, because the question
+went with that daemon.
 
 The deferred message becomes "Got it, " plus one short phrase the device wrote
 for the request — "fixing the failing CI job", "explaining why CI is red" — so

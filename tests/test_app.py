@@ -1257,6 +1257,112 @@ class AppTest(unittest.TestCase):
         self.assertIn("2. “the task behind it”", written)
         self.assertNotIn("the one that ran", written, "that left the queue already")
 
+    def test_the_queue_lists_the_run_in_slot_zero(self):
+        """The task at work is in the list, and the tasks behind it start at 1."""
+        with TempDir() as directory:
+            app = self.make(directory)
+            app.state.remember_session(CHANNEL, "macbook", "ses_1", "Discord #general")
+            app.register_run(CHANNEL, asking.Run(session="ses_1", device="macbook",
+                                                 started=time.monotonic(),
+                                                 prompt="the task that runs"))
+            app.waiting[CHANNEL] = [self.worker(app, "the waiting task")]
+            self.use(app, commands.QUEUE)
+            written = self.said()[-1]
+        self.assertIn("0. “the task that runs”", written)
+        self.assertIn("1. “the waiting task”", written)
+        self.assertLess(written.index("0. “"), written.index("1. “"))
+
+    def test_a_queue_that_only_runs_is_not_empty(self):
+        """A run with nothing behind it is still the queue's one task."""
+        with TempDir() as directory:
+            app = self.make(directory)
+            app.state.remember_session(CHANNEL, "macbook", "ses_1", "Discord #general")
+            app.register_run(CHANNEL, asking.Run(session="ses_1", device="macbook",
+                                                 started=time.monotonic(),
+                                                 prompt="the task that runs"))
+            self.use(app, commands.QUEUE)
+            written = self.said()[-1]
+        self.assertIn("0. “the task that runs”", written)
+        self.assertIn("nothing waits", written)
+
+    def test_the_queue_reads_a_run_no_daemon_holds(self):
+        """The device is working, and no daemon's memory has the line.
+
+        A run outlives the daemon that started it, and `/vigo goal` opens a turn
+        with no run at all.  `/vigo status` reads the device's own record, so
+        the queue must read it too instead of saying nothing runs.
+        """
+        with TempDir() as directory:
+            app = self.make(directory)
+            session = self.device.new_session(
+                "Discord #general", metadata={asking.CHANNEL_KEY: CHANNEL})
+            self.device.started_turn(session)
+            self.device.goals[session] = {
+                "id": "goal_1", "objective": "sort out the failing build",
+                "status": "active", "rounds": 0, "maxRounds": 50,
+            }
+            self.use(app, commands.QUEUE)
+            written = self.said()[-1]
+        self.assertIsNone(app.run_for(CHANNEL), "no daemon holds the line")
+        self.assertIn("“Discord #general”: running", written)
+        self.assertIn("0. “sort out the failing build”", written)
+
+    def test_a_run_a_peer_reports_is_not_listed_twice(self):
+        """The device is busy on a session the peer's line already holds.
+
+        Both daemons read the devices, so the one that does not hold the line
+        would derive a second row for the same channel without this.
+        """
+        other = PeerServer("127.0.0.1", 0, "workstation", "pw", queue=lambda: [{
+            "channel": CHANNEL, "title": "Discord #general",
+            "running": 12.0, "prompt": "their copy", "waiting": [],
+        }])
+        other.start()
+        self.addCleanup(other.stop)
+        peer_url = f"http://127.0.0.1:{other.server.server_address[1]}"
+        with TempDir() as directory:
+            settings = load_settings(
+                directory,
+                device="macbook",
+                password="pw",
+                devices=[
+                    {"name": "macbook", "url": self.device.url, "directory": "/tmp/project"},
+                    {"name": "workstation", "url": "http://127.0.0.1:2", "directory": "/b",
+                     "peer": peer_url},
+                ],
+            )
+            api = Discord("token", settings.app_id, base=self.discord.url)
+            app = App(settings, api=api, state=State(directory / "state.json"))
+            self.app = app
+            session = self.device.new_session(
+                "Discord #general", metadata={asking.CHANNEL_KEY: CHANNEL})
+            self.device.started_turn(session)
+            self.device.goals[session] = {
+                "id": "goal_1", "objective": "sort out the failing build",
+                "status": "active", "rounds": 0, "maxRounds": 50,
+            }
+            self.use(app, commands.QUEUE)
+            written = self.said()[-1]
+        self.assertEqual(written.count("0. "), 1, "the channel is named once")
+        self.assertIn("their copy", written)
+        self.assertNotIn("sort out the failing build", written,
+                         "the row the peer already reports is not read again")
+
+    def test_the_public_queue_redacts_the_run_in_slot_zero(self):
+        with TempDir() as directory:
+            app = self.make(directory)
+            app.state.remember_session(CHANNEL, "macbook", "ses_1", "Discord #general")
+            app.register_run(CHANNEL, asking.Run(session="ses_1", device="macbook",
+                                                 started=time.monotonic(),
+                                                 prompt="read /Users/alice/notes.txt"))
+            app.waiting[CHANNEL] = [self.worker(app, "fix the failing test")]
+            self.use(app, commands.QUEUE,
+                     options=[{"name": "public", "type": 5, "value": True}])
+            written = self.said()[-1]
+        self.assertIn("0. “redacted task”", written)
+        self.assertIn("1. “fix the failing test”", written)
+        self.assertNotIn("/Users/alice", written)
+
     def test_queue_asks_the_other_daemon_and_names_a_silent_one(self):
         other = PeerServer("127.0.0.1", 0, "workstation", "pw", queue=lambda: [{
             "channel": "other_chan", "title": "Discord DM",
@@ -1284,6 +1390,8 @@ class AppTest(unittest.TestCase):
             self.use(app, commands.QUEUE)
             written = self.said()[-1]
         self.assertIn("“Discord DM”: running 12s · 1 waiting", written)
+        self.assertIn("0. (the task that runs)", written,
+                      "a peer that reports no text still has the item at work")
         self.assertIn("1. “their task”", written)
         self.assertIn("does not answer on its peer port", written)
 
