@@ -4,7 +4,7 @@ The daemons share no protocol and write nothing to Discord about themselves.
 Each one serves two answers on a port of its own, behind the same password as
 its OpenCode server:
 
-    GET  /vigo/info     {"device": "fresh-device", "version": "1.0.0"}
+    GET  /vigo/info     {"device": "macbook", "version": "1.0.0"}
     POST /vigo/update   git pull in this checkout; restart when a supervisor runs it
 
 That port is off unless the settings name one (`peerPort`), because it must be

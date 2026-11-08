@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
-"""Shift Aogo's warm petals to DeepSeek blue, and keep everything else.
+"""Shift Wimsy's warm petals to DeepSeek blue, and keep everything else.
 
     python3 art/recolor.py art/aogo-source.png art/vigo-icon.png [--hue 227]
+
+Wimsy is drawn by Liz; the variant used here is Aogo's.  Vigo is
+GPL-3.0-or-later.  See THIRD-PARTY.md.
 
 Standard library only.  The orange is turned to the target hue while its
 saturation and lightness stay where they are, so every shade of the petals
