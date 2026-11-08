@@ -49,7 +49,7 @@ Darwin)
     say "launchers: ~/.local/libexec/opencode-serve-macos.sh"
     ;;
 *)
-    say "launchers: $here/deploy/vigo-container.sh"
+    say "launchers: installed by deploy/container/install.sh"
     ;;
 esac
 
@@ -79,16 +79,11 @@ Linux)
         command -v "$tool" >/dev/null 2>&1 || missing="$missing $tool"
     done
     if [ -z "$missing" ] && [ -d "$HOME/.config" ]; then
-        units="$HOME/.config/systemd/user"
-        install -d -m 755 "$units"
-        install -m 644 "$here/deploy/container/vigo-container.service" "$units/vigo-container.service"
-        install -m 644 "$here/deploy/vigo-ssh-agent.service" "$units/vigo-ssh-agent.service"
-        install -d -m 700 "$HOME/.local/share/vigo/home"
-        systemctl --user daemon-reload 2>/dev/null || true
-        say "services: installed into ~/.config/systemd/user"
+        "$here/deploy/container/install.sh"
+        say "services: installed by deploy/container/install.sh"
         say "          before the first start:"
         say "            ./deploy/vigo-identity.sh   # make Vigo's TPM keys, add them to GitHub"
-        say "            ./deploy/build-container.sh # build the image with this host's opencode and gh"
+        say "            ./deploy/build-container.sh # build the pinned image"
         say "            systemctl --user enable --now vigo-ssh-agent vigo-container"
     else
         [ -n "$missing" ] && say "services: Linux needs:$missing"

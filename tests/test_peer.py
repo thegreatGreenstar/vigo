@@ -284,6 +284,21 @@ class PeerPasswordTest(unittest.TestCase):
         app = App(settings, api=None, state=None)
         self.assertEqual(app.peer_password(), "mine")
 
+    def test_a_peer_password_overrides_the_device_password(self):
+        from vigo.app import App
+        from vigo.config import Device, Config
+
+        settings = Config(
+            token="t", app_id="1", owner="2", device="fresh-device", password="",
+            peer_password="peer-only",
+            devices={
+                "fresh-device": Device("fresh-device", "http://127.0.0.1:1", "/a", "opencode"),
+            },
+        )
+        app = App(settings, api=None, state=None)
+        self.assertEqual(app.peer_password(), "peer-only")
+        self.assertEqual(app._peer_secret(settings.devices["fresh-device"]), "peer-only")
+
     def test_a_shared_password_is_still_used(self):
         from vigo.app import App
         from vigo.config import Device, Config

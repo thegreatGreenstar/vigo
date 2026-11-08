@@ -1,7 +1,7 @@
 #!/bin/sh
 # Start OpenCode's server with the password unsealed from this machine's TPM.
 #
-# Host-only fallback: install.sh now uses deploy/vigo-container.sh, which runs
+# Host-only fallback: install.sh now uses deploy/container/run.sh, which runs
 # OpenCode inside the container with Vigo.  This script remains for a machine
 # where the host OpenCode is still the one Vigo drives.
 #

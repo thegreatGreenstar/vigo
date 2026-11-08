@@ -1,0 +1,161 @@
+# The agent image: OpenCode, gh, and the general development toolchain.
+#
+# The base is chosen by deploy/build-container.sh: CachyOS on x86-64, because
+# this host is CachyOS and its builds must run here; Arch on arm64, because
+# CachyOS publishes no arm64 image and the podman machine on Apple silicon is
+# arm64.  The package names are the same.
+ARG AGENT_BASE=docker.io/cachyos/cachyos:latest
+FROM ${AGENT_BASE}
+
+ARG OPENCODE_VERSION=2.2.6
+ARG OPENCODE_SHA256_ARM64=f2d27600c367e45057d6a16f6a5c2aa8d77b41a9b10d4bc3d849c2f88870e944
+ARG OPENCODE_SHA256_X64=08bb21d6326ce740d91cce7ebe88a6536933f6e1e30353b91a06b01f25da306c
+ARG GH_VERSION=2.103.3
+ARG GH_SHA256_ARM64=ee32df2323c8847f5fac6cb6b4b69ca75828e9329a8f22f677021f7b3306ce63
+ARG GH_SHA256_AMD64=4c806978ffce1cec70853302a56d70ac6da4f19bae7adca4e1a8ab00633dd91d
+
+LABEL org.opencontainers.image.title="vigo-agent" \
+      org.opencontainers.image.description="Vigo's agent, rootless" \
+      org.opencontainers.image.version="${OPENCODE_VERSION}"
+
+RUN pacman-key --init \
+ && pacman-key --populate archlinux cachyos 2>/dev/null || pacman-key --populate archlinux
+
+RUN pacman -Syu --noconfirm --needed \
+        alsa-lib \
+        autoconf \
+        automake \
+        base-devel \
+        boost \
+        ca-certificates \
+        catch2 \
+        ccache \
+        clang \
+        cmake \
+        curl \
+        extra-cmake-modules \
+        ffmpeg \
+        fmt \
+        gdb \
+        git \
+        glslang \
+        go \
+        hidapi \
+        jq \
+        libdecor \
+        libglvnd \
+        libpulse \
+        libtool \
+        libusb \
+        libva \
+        libvdpau \
+        libx11 \
+        libxcursor \
+        libxext \
+        libxfixes \
+        libxi \
+        libxkbcommon \
+        libxkbcommon-x11 \
+        libxrandr \
+        libxss \
+        libxtst \
+        libzip \
+        lld \
+        llvm \
+        lz4 \
+        mesa \
+        meson \
+        mold \
+        nasm \
+        ninja \
+        nlohmann-json \
+        nodejs \
+        npm \
+        openssh \
+        openssl \
+        patch \
+        perl \
+        pkgconf \
+        pipewire \
+        python \
+        qt6-base \
+        qt6-charts \
+        qt6-multimedia \
+        qt6-svg \
+        qt6-tools \
+        qt6-wayland \
+        renderdoc \
+        ripgrep \
+        rust \
+        sccache \
+        shaderc \
+        spirv-headers \
+        spirv-tools \
+        sdl3 \
+        unzip \
+        vulkan-headers \
+        vulkan-icd-loader \
+        vulkan-intel \
+        vulkan-radeon \
+        vulkan-swrast \
+        vulkan-tools \
+        vulkan-utility-libraries \
+        vulkan-validation-layers \
+        wayland \
+        wayland-protocols \
+        zip \
+        zstd \
+ && pacman -Scc --noconfirm
+
+RUN set -eux; \
+    case "$(uname -m)" in \
+        aarch64|arm64) arch=arm64; sum="$OPENCODE_SHA256_ARM64" ;; \
+        x86_64|amd64) arch=x64;   sum="$OPENCODE_SHA256_X64" ;; \
+        *) echo "no OpenCode build for $(uname -m)" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSLo /tmp/opencode.tar.gz \
+        "https://github.com/sst/opencode/releases/download/v${OPENCODE_VERSION}/opencode-linux-${arch}.tar.gz"; \
+    echo "${sum}  /tmp/opencode.tar.gz" | sha256sum -c -; \
+    tar -xzf /tmp/opencode.tar.gz -C /usr/local/bin opencode; \
+    rm -f /tmp/opencode.tar.gz; \
+    opencode --version
+
+RUN set -eux; \
+    case "$(uname -m)" in \
+        aarch64|arm64) arch=arm64; sum="$GH_SHA256_ARM64" ;; \
+        x86_64|amd64) arch=amd64; sum="$GH_SHA256_AMD64" ;; \
+        *) echo "no gh build for $(uname -m)" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSLo /tmp/gh.tar.gz \
+        "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_${arch}.tar.gz"; \
+    echo "${sum}  /tmp/gh.tar.gz" | sha256sum -c -; \
+    tar -xzf /tmp/gh.tar.gz -C /tmp; \
+    install -m 0755 "/tmp/gh_${GH_VERSION}_linux_${arch}/bin/gh" /usr/local/bin/gh; \
+    rm -rf /tmp/gh.tar.gz "/tmp/gh_${GH_VERSION}_linux_${arch}"; \
+    gh --version
+
+COPY ssh_config known_hosts /etc/vigo/
+COPY ssh_config.linux /etc/ssh/ssh_config.d/vigo.conf
+COPY gitconfig /etc/gitconfig
+COPY opencode.json /etc/vigo/opencode.json
+COPY vigo-entrypoint.py /usr/local/libexec/vigo-entrypoint.py
+RUN chmod 0755 /usr/local/libexec/vigo-entrypoint.py \
+ && install -d -m 0755 /vigo /run/vigo /run/secrets /config \
+        /home/vigo /home/vigo/.config/opencode /home/vigo/.local/share \
+        /home/vigo/.local/state /home/vigo/.ssh /home/vigo/.cache
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    LANG=C.UTF-8 \
+    HOME=/home/vigo \
+    XDG_CONFIG_HOME=/home/vigo/.config \
+    XDG_DATA_HOME=/home/vigo/.local/share \
+    XDG_STATE_HOME=/home/vigo/.local/state \
+    XDG_CACHE_HOME=/home/vigo/.cache \
+    SSH_AUTH_SOCK=/run/vigo/ssh-agent.sock \
+    VIGO_CONFIG=/config/vigo.json \
+    VIGO_CONTAINER=1 \
+    APPIMAGE_EXTRACT_AND_RUN=1
+
+WORKDIR /vigo
+ENTRYPOINT ["/usr/bin/python3", "/usr/local/libexec/vigo-entrypoint.py"]

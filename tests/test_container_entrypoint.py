@@ -19,23 +19,37 @@ class SecretTest(unittest.TestCase):
     def setUp(self):
         self.entry = load_entrypoint()
 
+    def test_a_file_wins(self):
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8") as handle:
+            handle.write("from-file\n")
+            handle.flush()
+            with mock.patch.dict(os.environ, {"SECRET": "from-env"}):
+                self.assertEqual(
+                    self.entry.read_secret(handle.name, "SECRET", required=True),
+                    "from-file",
+                )
+
+    def test_the_environment_is_the_fallback(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "missing"
+            with mock.patch.dict(os.environ, {"SECRET": "from-env"}):
+                self.assertEqual(
+                    self.entry.read_secret(str(path), "SECRET", required=True),
+                    "from-env",
+                )
+
     def test_a_missing_optional_secret_is_empty(self):
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "no-such-secret"
-            self.assertEqual(self.entry.read_secret(str(path), required=False), "")
+            path = Path(directory) / "missing"
+            with mock.patch.dict(os.environ, {}, clear=True):
+                self.assertEqual(self.entry.read_secret(str(path), "SECRET", required=False), "")
 
     def test_a_missing_required_secret_stops(self):
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "no-such-secret"
-            with self.assertRaises(SystemExit):
-                self.entry.read_secret(str(path), required=True)
-
-    def test_an_empty_required_secret_stops(self):
-        with tempfile.NamedTemporaryFile("w", encoding="utf-8") as handle:
-            handle.write("\n")
-            handle.flush()
-            with self.assertRaises(SystemExit):
-                self.entry.read_secret(handle.name, required=True)
+            path = Path(directory) / "missing"
+            with mock.patch.dict(os.environ, {}, clear=True):
+                with self.assertRaises(SystemExit):
+                    self.entry.read_secret(str(path), "SECRET", required=True)
 
 
 class EnvironmentTest(unittest.TestCase):
@@ -56,12 +70,29 @@ class EnvironmentTest(unittest.TestCase):
         self.assertEqual(env["GH_TOKEN"], "the-token")
 
 
-class DaemonOnlyTest(unittest.TestCase):
+class RoleTest(unittest.TestCase):
     def setUp(self):
         self.entry = load_entrypoint()
 
-    def test_daemon_only_is_opt_in(self):
-        with mock.patch.dict(os.environ, {}, clear=True):
-            self.assertFalse(self.entry.daemon_only())
-        with mock.patch.dict(os.environ, {"VIGO_DAEMON_ONLY": "1"}, clear=True):
-            self.assertTrue(self.entry.daemon_only())
+    def test_an_unknown_role_stops(self):
+        with mock.patch.dict(os.environ, {"VIGO_ROLE": "other"}, clear=True):
+            with self.assertRaises(SystemExit):
+                self.entry.main()
+
+    def test_the_daemon_becomes_vigo(self):
+        with mock.patch.dict(os.environ, {"VIGO_ROLE": "daemon"}, clear=True):
+            with mock.patch("os.execv", side_effect=SystemExit) as execv:
+                with self.assertRaises(SystemExit):
+                    self.entry.main()
+        self.assertEqual(execv.call_args.args[1][:3], [execv.call_args.args[0], "-m", "vigo"])
+
+    def test_the_agent_becomes_opencode(self):
+        with mock.patch.dict(
+            os.environ,
+            {"VIGO_ROLE": "agent", "VIGO_OPENCODE_PASSWORD": "pw"},
+            clear=True,
+        ):
+            with mock.patch("os.execvpe") as execvpe:
+                self.entry.main()
+        self.assertEqual(execvpe.call_args.args[0], "opencode")
+        self.assertIn("serve", execvpe.call_args.args[1])

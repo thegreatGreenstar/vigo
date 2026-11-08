@@ -2,18 +2,9 @@
 <!--
   Keep Vigo's container running at login, on macOS.
 
-  Fill in the two placeholders (install.sh does the same for its own agents) and
-  load it:
-
-    sed -e "s|__CHECKOUT__|$HOME/Projects/vigo|g" \
-        -e "s|__HOME__|$HOME|g" \
-        deploy/container/dev.vigo.container.plist.in \
-        > ~/Library/LaunchAgents/dev.vigo.container.plist
-    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.vigo.container.plist
-
-  Add VIGO_PEER_PORT to EnvironmentVariables when the settings name a peerPort,
-  because a published port is the only way the other device reaches it through
-  the podman machine.
+  deploy/container/install.sh fills in __KIT__ and __HOME__ and loads it.  Add
+  VIGO_BIND_ADDRESS to EnvironmentVariables when another device must reach this
+  one through the podman machine; the default is 127.0.0.1.
 -->
 <plist version="1.0">
 <dict>
@@ -22,7 +13,7 @@
 
     <key>ProgramArguments</key>
     <array>
-        <string>__CHECKOUT__/deploy/container/run.sh</string>
+        <string>__KIT__/run.sh</string>
     </array>
 
     <key>EnvironmentVariables</key>
