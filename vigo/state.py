@@ -1,8 +1,9 @@
 """What this device remembers between runs.
 
-Only ids and times: which Discord channel is talking to which OpenCode
-session, and which permission card is which request.  The file is per device,
-in `~/.local/state/vigo/state.json`, folder 700 and file 600.
+Ids and times, and the title it gave a session: which Discord channel is
+talking to which OpenCode session, which permission card is which request, and
+the turn an upgrade's restart cut off.  The file is per device, in
+`~/.local/state/vigo/state.json`, folder 700 and file 600.
 """
 
 from __future__ import annotations
@@ -16,6 +17,7 @@ from pathlib import Path
 from . import log
 
 ANSWER_AGE = 7 * 86400  # seconds a message stays a way back into its conversation
+SUSPEND_AGE = 3600.0   # seconds carried-over work may wait for its restart
 
 
 def default_dir() -> Path:
@@ -28,7 +30,7 @@ class State:
         self.path = Path(path or (default_dir() / "state.json"))
         self.lock = threading.Lock()
         self.data: dict = {"sessions": {}, "tickets": {}, "forms": {}, "answers": {},
-                           "channels": {}}
+                           "channels": {}, "suspended": {}}
         self._load()
 
     def _load(self) -> None:
@@ -44,6 +46,7 @@ class State:
                 self.data.setdefault("forms", {})
                 self.data.setdefault("answers", {})
                 self.data.setdefault("channels", {})
+                self.data.setdefault("suspended", {})
                 self._migrate_sessions()
         except (OSError, json.JSONDecodeError) as error:
             broken = self.path.with_suffix(".bad")
@@ -135,6 +138,47 @@ class State:
                     if not line:
                         self.data["sessions"].pop(channel_id, None)
             self._write()
+
+    # -- the work an upgrade interrupts ------------------------------------
+
+    def suspend_runs(self, carried: dict[str, dict]) -> None:
+        """Write down the work a restart for an upgrade will cut off.
+
+        Only an upgrade writes here.  A run that a crash or a stop ends is
+        over, and an answer posted hours later is not the one its channel
+        waits for, so nothing else may leave a record behind.
+        """
+        with self.lock:
+            self.data["suspended"] = carried
+            self._write()
+
+    def take_suspended(self, age: float = SUSPEND_AGE) -> dict[str, dict]:
+        """The carried-over work, once, for the process the restart started.
+
+        It is given up as it is read: the new process resumes it, and a run
+        that it loses again is lost, as any other crash loses one.  A record
+        older than `age` is dropped, because the restart it waited for did not
+        happen and the turn it names is over.
+        """
+        with self.lock:
+            held = self.data.get("suspended")
+            self.data["suspended"] = {}
+            if not isinstance(held, dict):
+                held = {}
+            cutoff = time.time() - age
+            kept: dict[str, dict] = {}
+            stale = 0
+            for channel, entry in held.items():
+                at = entry.get("at") if isinstance(entry, dict) else None
+                if not isinstance(at, (int, float)) or at < cutoff:
+                    stale += 1
+                    continue
+                kept[channel] = entry
+            if held:
+                self._write()
+        if stale:
+            log.info(f"state: {stale} carried-over turn(s) waited past their restart")
+        return kept
 
     # -- permission cards -------------------------------------------------
 
