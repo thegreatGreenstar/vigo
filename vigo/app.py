@@ -9,7 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from . import ask as asking
-from . import commands, goal, lease as leasing, log, presence as showing, text
+from . import commands, goal, lease as leasing, log, presence as showing, text, usage
 from .allowlist import AllowError, AllowList
 from .config import Config, Device
 from .discord_api import Discord, DiscordError
@@ -41,6 +41,29 @@ def describe_prompt(prompt: str) -> str:
         "about, starting with a verb that ends in -ing, with no quotes and no "
         f"full stop:\n\n{prompt}"
     )
+
+
+def guest_refused(reason: str) -> str:
+    """What an approved person is told when the plan's share says no.
+
+    It names the limit and what ends it, and nothing of the machine: no
+    device, no path, no id, and no number of the owner's plan beyond the one
+    that explains the wait.
+    """
+    if reason == "limited":
+        return ("The owner's plan is at its usage limit right now, so approved "
+                "questions wait. Ask again when it resets.")
+    if reason == "share":
+        return ("Approved questions have used the share of the owner's plan that "
+                "is kept for them. Ask again when the plan's window resets.")
+    if reason in ("hourly", "user-hourly"):
+        return "Approved questions have used their allowance for this hour. Ask again soon."
+    if reason in ("daily", "user-daily"):
+        return "Approved questions have used their allowance for today. Ask again tomorrow."
+    if reason == "paused":
+        return "The owner has paused questions from approved people."
+    return ("The plan's usage cannot be read right now, so approved questions wait. "
+            "Ask the owner to check the machine.")
 
 
 def ask_note(owner: bool, hidden: bool, where: str) -> str:
@@ -1259,7 +1282,7 @@ class App:
         if sub == commands.ASK:
             self._ask(options, token, channel_id, channel_name, who, pick)
         elif sub == commands.QUICK:
-            self._quick(options, token, channel_id, pick)
+            self._quick(options, token, channel_id, who, pick)
         elif sub == commands.GOAL:
             self._goal(options, token, channel_id, channel_name, pick)
         elif sub == commands.STATUS:
@@ -1321,6 +1344,18 @@ class App:
                 "what waits; ask again when one finishes.",
             )
             return
+        owner = who == self.config.owner
+        if not owner:
+            # An approved person spends the owner's plan, so the plan's own
+            # meters decide whether this question runs at all: a third of the
+            # spent allowance, and an hourly and daily cap on the way there.
+            # The check is here, before the question is queued or a session is
+            # opened, so a refusal costs the plan nothing.
+            verdict = usage.screen(self.config, who, pick.name or "")
+            if not verdict.allowed:
+                log.info(f"ask: the guest's plan share refuses this question ({verdict.reason})")
+                self._say(token, guest_refused(verdict.reason))
+                return
         title = f"Discord #{channel_name}" if channel_name else "Discord DM"
         worker = asking.Ask(
             self,
@@ -1484,11 +1519,25 @@ class App:
             said += " `/vigo status` says what the device holds."
         self._say(token, said)
 
-    def _quick(self, options: dict, token: str, channel_id: str, pick: Pick) -> None:
+    def _quick(self, options: dict, token: str, channel_id: str, who: str,
+               pick: Pick) -> None:
         """One question, answered once: no session, no tools, nothing kept."""
         prompt = str(options.get("prompt") or "").strip()
         if not prompt:
             self._say(token, "The question is empty.")
+            return
+        if who != self.config.owner:
+            # A one-off leaves no session and the device reports no tokens for
+            # it, so a share of the plan cannot be counted against the person
+            # who asked.  A question keeps the work in a session of its own,
+            # where the accounting sees it.
+            log.info("quick: an approved person asked for a one-off")
+            self._say(
+                token,
+                "`/vigo quick` is the owner's: it leaves no session, so its use of "
+                "the plan cannot be counted. Ask a question instead, and it runs in "
+                "a session of your own.",
+            )
             return
         if pick.name is None:
             log.info(f"quick: no device ({pick.reason})")
@@ -1778,6 +1827,15 @@ class App:
         goal_line = self._goal_text(device, remembered)
         if goal_line:
             lines.append(goal_line)
+        if self.config.guests.share > 0:
+            # What approved people spend is the owner's to see: the plan is
+            # the owner's subscription, and a refusal is understood before it
+            # happens when the number is in front of them.
+            try:
+                lines.append(usage.summary(self.config))
+            except usage.UsageError as error:
+                log.info(f"status: the guest share cannot be read ({error})")
+                lines.append("**Guests**: the plan's usage cannot be read")
         line = self._line_text(channel_id)
         if line:
             lines.append("")
@@ -2167,6 +2225,13 @@ class App:
         elif not approved:
             lines.append("")
             lines.append("Only the bot's owner may ask.")
+        else:
+            lines.append("")
+            lines.append(
+                "You may ask questions, up to the share of the owner's plan that is "
+                "kept for approved people. Work on the device, and every command "
+                "that names it, is the owner's."
+            )
         return "\n".join(lines)
 
     # -- running ----------------------------------------------------------

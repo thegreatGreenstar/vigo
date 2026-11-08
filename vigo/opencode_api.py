@@ -12,6 +12,7 @@ import json
 import queue
 import socket
 import threading
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from typing import Any
@@ -180,13 +181,75 @@ class OpenCode:
         data = self._call("GET", f"/api/session/{session_id}")
         return data.get("data", {}) if isinstance(data, dict) else {}
 
-    def messages(self, session_id: str, limit: int = 20, order: str = "desc",
-                 kind: str | None = None) -> list[dict]:
+    def message_page(self, session_id: str, limit: int = 20, order: str = "desc",
+                     kind: str | None = None, cursor: str = "") -> dict:
+        """One page of a session's messages, with the cursors the device gives."""
         query = f"limit={int(limit)}&order={order}"
         if kind:
             query += f"&type={kind}"
+        if cursor:
+            query += f"&cursor={urllib.parse.quote(cursor)}"
         data = self._call("GET", f"/api/session/{session_id}/message?{query}")
-        return data.get("data", []) if isinstance(data, dict) else []
+        return data if isinstance(data, dict) else {}
+
+    def messages(self, session_id: str, limit: int = 20, order: str = "desc",
+                 kind: str | None = None) -> list[dict]:
+        return self.message_page(session_id, limit, order, kind).get("data", [])
+
+    def messages_since(self, session_id: str, since_ms: float) -> list[dict]:
+        """The session's messages newer than a time, newest first.
+
+        A session's own total is for its whole life, which is not what a
+        rolling window asks.  Each assistant message carries what that step
+        used, so the messages newer than the time sum exactly the part the
+        window holds.  The device pages the list, and the first message older
+        than the time ends the walk.
+        """
+        found: list[dict] = []
+        cursor = ""
+        seen: set[str] = set()
+        while True:
+            page = self.message_page(session_id, limit=200, order="desc", cursor=cursor)
+            rows = page.get("data") or []
+            if not rows:
+                return found
+            for message in rows:
+                created = float((message.get("time") or {}).get("created") or 0)
+                if created and created < since_ms:
+                    return found
+                found.append(message)
+            cursor = str(((page.get("cursor") or {}).get("next")) or "")
+            # A device that hands back a cursor already followed would keep
+            # this walk going for ever; the tokens it repeats would be counted
+            # twice, so the walk ends instead.
+            if not cursor or cursor in seen:
+                return found
+            seen.add(cursor)
+
+    def stats(self, start_ms: float, end_ms: float) -> dict:
+        """What every session on the device spent between two times.
+
+        This is the plan's own record of a window: `tokens` is the input,
+        output and reasoning, and `cost` the money, of the sessions the device
+        ran.  It counts the owner's work too, which is what makes a share of
+        the plan computable at all.
+        """
+        data = self._call(
+            "GET",
+            f"/api/experimental/session/stats?from={int(start_ms)}&to={int(end_ms)}",
+        )
+        return data.get("data", {}) if isinstance(data, dict) else {}
+
+    def limits(self) -> dict:
+        """The OpenCode Go allowance: rolling, weekly and monthly meters.
+
+        Each meter says the percent of its window that is spent, whether the
+        window is already limited, and when it resets.  This is the plan's own
+        answer, so a cap built on it needs no guess at a limit's size.
+        """
+        data = self._call("GET", "/api/experimental/usage/limits")
+        payload = data.get("data", {}) if isinstance(data, dict) else {}
+        return payload if isinstance(payload, dict) else {}
 
     def create_session(self, directory: str, title: str, model: dict | None = None,
                        agent: str | None = None, metadata: dict | None = None) -> dict:

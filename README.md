@@ -75,6 +75,12 @@ addition.
 - **Allowed users can ask, but cannot approve.** Tool permissions go to the
   owner's DMs. An approved person's question cannot make the agent run a shell
   command without the owner's click.
+- **What an allow may spend is capped.** The plan is the owner's, so approved
+  people together may use a third of it. Their questions stop there, with a
+  message that says so, and the owner is never capped: every question they ask
+  runs. An approved person's question runs in a session of its own, because
+  the plan's usage is counted by session. "The share of the plan an allow
+  carries" below says how it is measured and what to set.
 - **Nothing is stored about what was said.** No message text is logged; the
   log has ids, outcomes and durations. Answers live in Discord, as they do for
   any bot.
@@ -172,6 +178,11 @@ Then fill it in:
   "password": "the OPENCODE_PASSWORD",
   "users": [],                         // ids always allowed to ask
   "model": { "providerID": "opencode-go", "id": "deepseek-v4.1-flash" },
+  "guests": {                           // what approved people may spend
+    "share": 0.333,                     // of the plan's rate limit, together
+    "hourly": 500000, "daily": 2000000, // tokens, all of them
+    "perUserHourly": 250000, "perUserDaily": 1000000
+  },
   "devices": [
     { "name": "macbook", "url": "http://127.0.0.1:4096",
       "directory": "/Users/you/Projects/ScarletNX" },
@@ -192,6 +203,7 @@ Then fill it in:
 | `users` | ids that may always ask, besides the owner |
 | `install` | `both` (default), `user` or `guild`: which install kinds the command supports. Keep `both`, because a user install can be used in servers too |
 | `model` | provider, model id, optional `variant` |
+| `guests` | the share of the plan approved people may spend, and their hourly and daily token caps. A third of the plan and the defaults in the example when absent; 0 turns a cap off, and `share: 0` pauses approved people completely |
 | `devices` | name, base URL and project directory of each machine |
 | `activityWindow` | seconds of "recent use" that make a device the one to use (0 disables) |
 | `timeout` | seconds before a run says the device is still working (30–3600); it keeps watching |
@@ -425,9 +437,9 @@ What the Developer Portal asks for, if it helps:
 
 | Command | Who | What happens |
 | --- | --- | --- |
-| `/vigo ask prompt:<text> [file] [device] [hidden] [new]` | approved users | asks the device you last worked on; the question is acknowledged at once and the answer follows as a new message, public in the channel unless `hidden:true`, in which case only you see the question and answer. A task gets a goal, which the device works toward in a session of its own. A file attached with it, or a reply to an answer that carries one, is fetched and read on that device: a log or a dump never has to be pasted |
+| `/vigo ask prompt:<text> [file] [device] [hidden] [new]` | approved users | asks the device you last worked on; the question is acknowledged at once and the answer follows as a new message, public in the channel unless `hidden:true`, in which case only you see the question and answer. A task gets a goal, which the device works toward in a session of its own. An approved person's ask runs in a session of its own, so the share of the plan counts it. A file attached with it, or a reply to an answer that carries one, is fetched and read on that device: a log or a dump never has to be pasted |
 | `/vigo goal objective:<text> [device] [hidden]` | approved users | gives the device an objective to keep working toward, with no question, in a session of its own; `pause`, `resume` and `clear` control the goal it already has |
-| `/vigo quick prompt:<text> [device] [hidden]` | approved users | one answer, with no session and no tools; the message stays as thinking until the answer is ready, then becomes it, with no line before, and the device is told the same two-paragraph limit as a question |
+| `/vigo quick prompt:<text> [device] [hidden]` | owner | one answer, with no session and no tools; the message stays as thinking until the answer is ready, then becomes it, with no line before, and the device is told the same two-paragraph limit as a question. An approved person is refused: a one-off leaves no session, so the share of the plan cannot be counted for it |
 | `/vigo status` | owner | the channel's session, its device, tokens and cost, and the subagents at work under it; every question that waits, and the last three that ran |
 | `/vigo queue [public]` | owner | every channel that runs or waits, on this daemon and the other ones, every task in each line, and how many agents work on each task; `public:true` shows the channel a redacted copy |
 | `/vigo devices` | owner | what is up, and which one a question would go to |
@@ -590,6 +602,46 @@ see, or a message edited into something it cannot parse, changes stop with an
 error naming the problem, and nothing is overwritten. Prefer `stateChannel`: a
 DM works only when you and the bot share a server that lets you receive DMs
 from its members.
+
+### The share of the plan an allow carries
+
+The plan is your subscription, so an allow spends your plan and not someone
+else's. Two records bound that spend, and both come from the devices:
+
+- The plan's own meters, `/api/experimental/usage/limits`, report the percent
+  of the rolling, weekly and monthly windows that is spent. This is the rate
+  limit itself, so no size of a limit has to be guessed.
+- The tokens of a window come from `/api/experimental/session/stats` for the
+  whole device. The guest part comes from the messages of the sessions that
+  belong to an approved person. Those sessions carry `vigoGuest` with the
+  asker's id in their metadata. A session made before that mark is still found,
+  because a guest's channel key carries the asker after a colon, and a subagent
+  counts as the session that delegated it.
+
+`percent * guest tokens / all tokens` is the percent of the plan that approved
+people spent. Their questions are refused when that reaches `share` of the
+plan, a third by default. A guest who is the only one using the plan therefore
+stops at a third of it. A guest who arrives after you spent two thirds gets
+what is left of that third.
+
+A test reproduces the rule on a scripted month of a 30M-token plan: 30
+questions of 500k tokens each. Without the cap the guests spend 15M, half the
+plan. With the cap they stop at 10M, a third of it. The plan's own report on
+the machine that set the defaults read 8.3M tokens in one day, input, output
+and reasoning, so the default daily cap of 2M for all guests together is under
+a third of that. The per-person cap of 1M keeps one guest from taking the
+whole of it before the others ask. The hourly caps stop a burst before the
+plan's meters can show it.
+
+The owner is never checked against the share: every question they ask runs.
+`/vigo status` shows what approved people spent, as a line naming today's and
+this hour's tokens and the percent of the plan they hold. A refusal tells the
+person which limit it was, and never names a device, a path or an id.
+
+The check needs a plan that reports its meters, which OpenCode Go does. A
+device whose report cannot be read, or a total that does not hold the guest
+tokens it lists, refuses an approved person's question rather than guess, and
+the log says why. `share: 0` pauses approved people completely.
 
 ## Protecting `main`
 
@@ -788,6 +840,7 @@ with the same caveat about the running process.
 | --- | --- |
 | `~/.config/vigo/vigo.json` | the settings, mode 0600 |
 | `~/.local/state/vigo/state.json` | channel → the session it has on each device, permission card tickets, the allowlist message's id, and the turn an upgrade's restart is about to cut off (ids and times only); folder 0700, file 0600 |
+| OpenCode sessions | the channel a session serves, and for an approved person's session the asker's id, in the session's metadata on the device |
 | Discord | the answers, and the allowlist message |
 
 A state file that cannot be read is kept as `state.json.bad` and a fresh one
@@ -888,6 +941,8 @@ the trade a codespace makes, and it costs one manual step.
 | a question says `still running` | the run passed `timeout`, so the line that question already shows, queued or got-it, ends with the note; the run keeps watching, `/vigo status` shows it, `/vigo stop` ends it |
 | the answer says `never started` | the device admitted the question and its session never began the turn: `opencode serve` there is stuck, so restart it and ask again |
 | the answer says the model is rate limited, or has no quota left | the plan is spent for now: wait, or `/vigo quick` for a one-off that starts no session, and the log holds the device's own words |
+| an approved person says `/vigo quick` and is refused | that command is the owner's: a one-off leaves no session, so the guest share cannot be counted for it. An ask runs in a session of their own and is capped |
+| an approved person's question says the share of the plan is used, or that its usage cannot be read | the plan's meters live in `/api/experimental/usage/limits`, which OpenCode Go answers: check the version there, and raise `guests.share` or the caps only on purpose |
 | the answer says the device returned no text | the turn produced nothing: the machine slept under it, or the session never ran. Ask again; a run that crossed a sleep ends like this |
 | a goal says `paused` | the device restarted while the goal was active; `/vigo goal resume` starts it again |
 | a question says `Queued` | one run at a time per channel; it starts when the one before it ends, or `/vigo stop` clears it |
