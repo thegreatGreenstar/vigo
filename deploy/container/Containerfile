@@ -1,22 +1,53 @@
-# A small image for Vigo: Python, git and an SSH client, and nothing else.
+# One image for both containers of Vigo's pod: the daemon and its agent.
 #
 #   podman build -t localhost/vigo deploy/container
 #
-# The checkout is mounted, not copied, so /vigo upgrade pulls into the same tree
-# that runs and a rebuild is needed only when the base or these packages change.
+# Python, git, an SSH client and one pinned OpenCode binary, and nothing else.
+# The checkout, the projects and the state are mounted, not copied, so a rebuild
+# is needed only when the base, these packages or OpenCode move.
 #
 # There is no USER line on purpose.  A rootless runtime maps container root onto
 # the human who started it, so the mounted checkout and state are that person's
 # files.  A container user would be in the subuid range and could not write them.
 FROM docker.io/library/python:3.14-slim
 
-# git runs /vigo upgrade and the agents' work; ssh reaches the git remote.
+# The agent's binary, pinned by version and by the SHA-256 of the release
+# archive.  The archive is fetched over TLS and checked before it is unpacked,
+# so a mirror or a proxy that answers for the release cannot swap the binary.
+# `gh release download` on the host, through the filtered CA bundle, produced
+# these sums from SHA256SUMS at v2.2.6.
+ARG OPENCODE_VERSION=2.2.6
+ARG OPENCODE_SHA256_ARM64=f2d27600c367e45057d6a16f6a5c2aa8d77b41a9b10d4bc3d849c2f88870e944
+ARG OPENCODE_SHA256_X64=08bb21d6326ce740d91cce7ebe88a6536933f6e1e30353b91a06b01f25da306c
+
 RUN apt-get update \
- && apt-get install -y --no-install-recommends git openssh-client \
+ && apt-get install -y --no-install-recommends git openssh-client ca-certificates curl \
  && rm -rf /var/lib/apt/lists/*
 
-# The client's own configuration: one key, pinned host keys, no prompt.
+RUN set -eux; \
+    case "$(dpkg --print-architecture)" in \
+        arm64) arch=arm64; sum="$OPENCODE_SHA256_ARM64" ;; \
+        amd64) arch=x64;   sum="$OPENCODE_SHA256_X64" ;; \
+        *) echo "no OpenCode build for $(dpkg --print-architecture)" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSLo /tmp/opencode.tar.gz \
+        "https://github.com/sst/opencode/releases/download/v${OPENCODE_VERSION}/opencode-linux-${arch}.tar.gz"; \
+    echo "${sum}  /tmp/opencode.tar.gz" | sha256sum -c -; \
+    tar -xzf /tmp/opencode.tar.gz -C /usr/local/bin opencode; \
+    rm -f /tmp/opencode.tar.gz; \
+    opencode --version
+
+# The client's own configuration: one key, pinned host keys, no prompt.  The
+# agent gets the same file, because it may push the branch it works on.
 COPY ssh_config known_hosts /etc/vigo/
+# Who a commit made in the container belongs to, and nothing else.
+COPY gitconfig /etc/gitconfig
+# The agent's own OpenCode settings, with no MCP server and no host files.
+COPY opencode.json /etc/vigo/opencode/opencode.json
+COPY agent-entrypoint.sh /usr/local/bin/vigo-agent
+RUN chmod 0755 /usr/local/bin/vigo-agent \
+ && mkdir -p /home/agent/.local/share/opencode /home/agent/.config/opencode \
+             /home/agent/.cache /home/agent/.local/state
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1

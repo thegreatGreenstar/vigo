@@ -1,0 +1,11 @@
+# The identity a commit made inside the agent container carries.
+#
+# The agent works as VIGO-VI, the account whose key the container holds.  There
+# is no signing here: the agent account needs none, and no hardware key can
+# enter a Linux container.
+[user]
+	name = VIGO-VI
+	email = 77800979+VIGO-VI@users.noreply.github.com
+
+[init]
+	defaultBranch = main
