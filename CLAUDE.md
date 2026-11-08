@@ -237,7 +237,13 @@ Run the full suite once, then stage everything and commit.
 Vigo signs every commit as `VIGO-VI`. On Linux the signing key is a TPM key held by `vigo-ssh-agent`; on macOS it is
 the container's SSH key. The signature carries Vigo's identity and costs no YubiKey and no Touch ID, because it is
 that machine's key and not greenstar's. Do not sign as greenstar for the agent, and do not turn signing off to make a
-commit look like the owner's.
+commit look like the owner's. Every commit the agent pushes must show `Verified` on GitHub. The signing key is the one
+registered to `VIGO-VI`, never the owner's global signing key.
+
+Every GitHub action runs as `VIGO-VI` too, never as greenstar's account. The commit author, the `gh` token and the
+pull request all carry that account. Use the `VIGO-VI` token from the sealed `gh-token` credential for every `gh`
+command. Never open, edit, mark ready or close a pull request as greenstar. A pull request authored by greenstar's
+account is a mistake even when its content is right, so close it and open the work again as `VIGO-VI`.
 
 ## Pull requests
 
