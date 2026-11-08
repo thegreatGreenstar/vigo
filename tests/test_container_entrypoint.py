@@ -20,12 +20,12 @@ class SecretTest(unittest.TestCase):
         self.entry = load_entrypoint()
 
     def test_a_file_wins(self):
-        with tempfile.NamedTemporaryFile("w", encoding="utf-8") as handle:
-            handle.write("from-file\n")
-            handle.flush()
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "secret"
+            path.write_text("from-file\n", encoding="utf-8")
             with mock.patch.dict(os.environ, {"SECRET": "from-env"}):
                 self.assertEqual(
-                    self.entry.read_secret(handle.name, "SECRET", required=True),
+                    self.entry.read_secret(str(path), "SECRET", required=True),
                     "from-file",
                 )
 

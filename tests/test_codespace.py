@@ -71,7 +71,8 @@ class Codespace(unittest.TestCase):
         environ.update(environment)
         return subprocess.run(
             ["sh", str(SCRIPT), "--base", "main", *arguments],
-            cwd=ROOT, env=environ, capture_output=True, text=True, timeout=180,
+            cwd=ROOT, env=environ, capture_output=True, text=True, encoding="utf-8",
+            timeout=180,
         )
 
     def calls(self) -> list[str]:
