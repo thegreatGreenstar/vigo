@@ -101,8 +101,11 @@ credentials without a login keychain.
 [Service]
 # ScarletNX games, saves and shader cache
 Environment=VIGO_AGENT_SCARLETNX=1
-# Optional: hardware Vulkan, host Wayland, and encrypted-dump keys
+# Optional: hardware Vulkan (the render node only), host Wayland, and encrypted-dump keys
 #Environment=VIGO_AGENT_GPU=1
+# The render node is required for a title whose shaders use vote or shuffle:
+# llvmpipe reports a subgroup size of 8, the console's is 32, so those draws
+# are skipped and the title can show a logo on a black background.
 #Environment=VIGO_AGENT_WAYLAND=1
 #Environment=VIGO_AGENT_KEYS=1
 ```

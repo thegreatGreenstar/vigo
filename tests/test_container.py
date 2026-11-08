@@ -138,6 +138,12 @@ class Pod(unittest.TestCase):
         for name in ("VIGO_AGENT_GPU", "VIGO_AGENT_WAYLAND", "VIGO_AGENT_KEYS", "VIGO_AGENT_DATA"):
             self.assertIn(name, self.text)
 
+    def test_gpu_is_the_render_node_only(self) -> None:
+        # card* carries modesetting and EDID; a headless Vulkan driver needs
+        # only the render node, and the narrower device is the boundary.
+        self.assertIn("--device /dev/dri/renderD128", self.text)
+        self.assertNotIn("--device /dev/dri ", self.text)
+
 
 class Images(unittest.TestCase):
     def test_the_two_images_are_built_and_used(self) -> None:

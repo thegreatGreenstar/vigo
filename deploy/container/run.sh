@@ -194,9 +194,13 @@ else
     if [ "${VIGO_AGENT_SCARLETNX:-0}" = 1 ] && [ -d "$home/.local/share/scarletnx" ]; then
         set -- "$@" --mount "type=bind,src=$home/.local/share/scarletnx,dst=$home/.local/share/scarletnx"
     fi
-    # These are opt-in because they widen the boundary.
-    if [ "${VIGO_AGENT_GPU:-0}" = 1 ] && [ -d /dev/dri ]; then
-        set -- "$@" --device /dev/dri --group-add keep-groups
+    # These are opt-in because they widen the boundary. The render node is the
+    # only one a Vulkan driver needs: card* adds modesetting and EDID, which a
+    # headless game never uses. Software Vulkan (llvmpipe) reports a subgroup
+    # size of 8, and the console's is 32, so a title whose shaders use vote or
+    # shuffle loses those draws. RADV reports 64.
+    if [ "${VIGO_AGENT_GPU:-0}" = 1 ] && [ -e /dev/dri/renderD128 ]; then
+        set -- "$@" --device /dev/dri/renderD128 --group-add keep-groups
     fi
     if [ "${VIGO_AGENT_WAYLAND:-0}" = 1 ] && [ -S "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/wayland-0" ]; then
         set -- "$@" \

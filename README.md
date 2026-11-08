@@ -438,13 +438,16 @@ Wayland and key access are opt-in:
 # in a vigo-container.service.d/agent.conf drop-in
 [Service]
 Environment=VIGO_AGENT_SCARLETNX=1  # ~/.local/share/scarletnx, for ScarletNX games
-Environment=VIGO_AGENT_GPU=1        # --device /dev/dri, for real Vulkan
+Environment=VIGO_AGENT_GPU=1        # --device /dev/dri/renderD128, for real Vulkan
 Environment=VIGO_AGENT_WAYLAND=1    # the host wayland-0 socket
 Environment=VIGO_AGENT_KEYS=1       # ~/.switch, read-only, for encrypted dumps
 ```
 
 Without those, headless runs use lavapipe and the validation layers. A missing key, GPU or display
-fails in the project, not in Vigo.
+fails in the project, not in Vigo. Without the GPU, lavapipe's subgroup size is 8 where the console's is
+32, so a title whose shaders use vote or shuffle loses those draws: Luigi's Mansion 3 then draws the title
+logo on black instead of the hotel. The render node is enough; `card*` adds modesetting and EDID that a
+headless game does not use.
 
 Logs:
 
@@ -472,7 +475,7 @@ fixed by mounting more of the host or by using host networking:
 | Case | Why the pod cannot do it |
 | --- | --- |
 | macOS Metal, MoltenVK or kosmickrisp rendering | the podman machine is a Linux VM and has no Metal |
-| Hardware Vulkan through a host GPU driver | the pod gets `/dev/dri` only when `VIGO_AGENT_GPU=1`, and the host driver may still be the only one that matches |
+| Hardware Vulkan through a host GPU driver | the agent gets `/dev/dri/renderD128` only when `VIGO_AGENT_GPU=1`, and the host driver may still be the only one that matches |
 | A GUI on the host display, host audio, controllers or USB devices | those host devices and sockets are not in the pod |
 | An MCP server that reaches a service on the host loopback, such as a profiler | pasta does not put the host loopback in the pod |
 | A host kernel module, host-only driver or a binary built against a newer glibc | the pod has its own kernel and userspace, and the agent image has its own glibc |
