@@ -1,0 +1,34 @@
+[Unit]
+Description=Vigo and its own OpenCode in a rootless podman container
+After=network-online.target tailscaled.service vigo-ssh-agent.service
+Wants=network-online.target
+Requires=vigo-ssh-agent.service
+
+[Service]
+Type=exec
+WorkingDirectory=%h/Projects/vigo
+# The settings, the peer's password, and the credentials systemd unseals.
+Environment=VIGO_CONTAINER_ROOT=%h/.local/share/vigo
+Environment=VIGO_CONFIG_FILE=%h/.config/vigo/vigo.json
+Environment=VIGO_PEER_PASSWORD_FILE=%h/.config/vigo/fresh-device.password
+LoadCredentialEncrypted=vigo-token:%h/.config/vigo/vigo-token.cred
+LoadCredentialEncrypted=opencode-password:%h/.config/vigo/opencode.cred
+# Optional: Vigo's own GitHub CLI token.  With no path, a missing credential in
+# ~/.config/credstore.encrypted/gh-token is not an error.
+LoadCredentialEncrypted=gh-token
+ExecStart=%h/Projects/vigo/deploy/vigo-container.sh
+
+# `podman run` owns the container; when it exits, systemd starts it again.
+Restart=always
+RestartSec=5s
+TimeoutStopSec=30s
+KillMode=mixed
+Delegate=yes
+# No NoNewPrivileges or PrivateTmp here: rootless podman needs file-capability
+# newuidmap, and a private /tmp mount stops it from mapping the subordinate
+# range (newuidmap: write to uid_map failed).  The container itself gets
+# no-new-privileges and its own bounded /tmp tmpfs.
+PrivateTmp=no
+
+[Install]
+WantedBy=default.target

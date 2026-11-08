@@ -52,14 +52,15 @@ class Entry:
 
 
 class AllowList:
-    def __init__(self, config: Config, api: Discord, state: State):
+    def __init__(self, config: Config, api: Discord, state: State) -> None:
         self.config = config
         self.api = api
         self.state = state
         self.owner = config.owner
         self.listed = set(config.users)
         self._channel: str | None = None
-        self._message: str | None = None
+        self._bot: str | None = None  # this bot's own user id, asked once
+        self._saw_own = False  # whether the scan met a message this bot wrote
         self.where = "not ready"
 
     # -- where the list lives ---------------------------------------------
@@ -83,47 +84,104 @@ class AllowList:
         self.where = "the bot's DM with you"
         return channel
 
-    def _find(self, channel: str) -> str | None:
+    def _mine(self) -> str:
+        """This bot's own user id, which is the application's.
+
+        The list is a message, so it is only as trustworthy as the person who
+        wrote it: in a channel where somebody else can post, a message that
+        opens with the marker would otherwise grant whoever wrote it what it
+        asks for.  The id is asked once, because it never changes, and a
+        Discord that will not say it stops the read rather than guessing.
+        """
+        if self._bot is None:
+            try:
+                self._bot = str(self.api.me().get("id") or "")
+            except DiscordError as error:
+                raise AllowError(
+                    f"cannot ask Discord which user this bot is ({error.message})"
+                ) from error
+            if not self._bot:
+                raise AllowError("Discord did not name this bot's user id")
+        return self._bot
+
+    def _own(self, message: dict) -> bool:
+        """Whether this bot posted the message, so its content may be read."""
+        author = message.get("author")
+        who = str((author or {}).get("id") or "") if isinstance(author, dict) else ""
+        if who and who == self._mine():
+            self._saw_own = True
+            return True
+        if (message.get("content") or "").startswith(MARKER):
+            log.debug(f"allowlist: a list-shaped message from {who or 'an unknown author'} is ignored")
+        return False
+
+    def _own_message(self, channel: str) -> dict | None:
+        """The bot's own list message, read once.
+
+        The id this daemon remembered is tried first: one GET answers the
+        whole decision.  A message that is gone, or one that is not the bot's,
+        sends the search back to the channel's newest messages.
+        """
         remembered = self.state.state_message(channel)
+        self._saw_own = False
         if remembered:
             reply = self.api._call("GET", f"/channels/{channel}/messages/{remembered}")
-            if reply.ok:
-                return remembered
-            if not isinstance(reply.body, dict) or reply.body.get("code") != 10008:
+            if reply.ok and isinstance(reply.body, dict):
+                if self._own(reply.body):
+                    return reply.body
+                # Somebody else's message under that id: forget it, and find
+                # the bot's own rather than reading or overwriting this one.
+                log.error("allowlist: the message it remembered is not this bot's; "
+                          "reading the list again from the channel")
+                self.state.remember_state_message(channel, "")
+            elif not isinstance(reply.body, dict) or reply.body.get("code") != 10008:
                 raise AllowError(
                     f"cannot read the allowlist in {self.where} ({reply.status}); "
                     "set 'stateChannel' to a private channel the bot can read"
                 )
-            self.state.remember_state_message(channel, "")
+            else:
+                self.state.remember_state_message(channel, "")
         try:
-            found = self.api.messages(channel, limit=50)
+            found = self.api.messages(channel, limit=100)
         except DiscordError as error:
             raise AllowError(
                 f"cannot read {self.where} ({error.message}); "
                 "set 'stateChannel' to a private channel the bot can read"
             ) from error
-        for message in found:
-            content = message.get("content") or ""
-            if content.startswith(MARKER):
-                self.state.remember_state_message(channel, message["id"])
-                return message["id"]
+        before = ""
+        # A busy channel can push the list out of the newest page.  Walk back
+        # a bounded way rather than call the list missing: treating a flood as
+        # no list would let the next allow write a new one and drop the rest.
+        for _page in range(10):
+            for message in found:
+                content = message.get("content") or ""
+                mine = self._own(message)
+                self._saw_own = self._saw_own or mine
+                if content.startswith(MARKER) and mine:
+                    self.state.remember_state_message(channel, message["id"])
+                    return message
+            if not found:
+                break
+            before = str(found[-1].get("id") or "")
+            if not before or len(found) < 100:
+                break
+            try:
+                found = self.api.messages(channel, limit=100, before=before)
+            except DiscordError as error:
+                raise AllowError(
+                    f"cannot read {self.where} ({error.message}); "
+                    "set 'stateChannel' to a private channel the bot can read"
+                ) from error
         return None
 
     # -- reading ----------------------------------------------------------
 
     def entries(self) -> list[Entry]:
         channel = self._home()
-        message_id = self._find(channel)
-        if not message_id:
+        message = self._own_message(channel)
+        if message is None:
             return []
-        try:
-            reply = self.api._call("GET", f"/channels/{channel}/messages/{message_id}")
-        except DiscordError:
-            return []
-        if not reply.ok or not isinstance(reply.body, dict):
-            self.state.remember_state_message(channel, "")
-            return []
-        content = reply.body.get("content") or ""
+        content = message.get("content") or ""
         if not content.startswith(MARKER):
             raise AllowError(f"the message in {self.where} is not the allowlist any more")
         raw = content[len(MARKER) :].strip()
@@ -157,7 +215,17 @@ class AllowList:
 
     def _store(self, entries: list[Entry]) -> None:
         channel = self._home()
-        message_id = self._find(channel)
+        found = self._own_message(channel)
+        message_id = str((found or {}).get("id") or "")
+        if not message_id and self._saw_own:
+            # This bot wrote in the channel, but no list was in reach.  A new
+            # message would become the list and the old entries would be lost,
+            # so nothing changes until the old one can be read.
+            raise AllowError(
+                f"the allowlist in {self.where} cannot be found in the newest "
+                "messages; nothing was changed. Set 'stateChannel' to a private "
+                "channel that holds the list"
+            )
         body = {"v": 1, "allowed": [entry.as_json() for entry in entries]}
         content = f"{MARKER}\n{json.dumps(body, separators=(',', ':'))}"
         if len(content) > 1950:
@@ -235,11 +303,11 @@ class AllowList:
         try:
             entries = self.entries()
         except AllowError as error:
-            return f"⚠️ {error}"
+            return f"{error}"
         lines = [f"The allowlist is in {self.where}."]
         if entries:
             for entry in sorted(entries, key=lambda item: item.until or 0):
-                lines.append(f"• **{metadata_name(entry.name)}** (`{entry.id}`) — {entry.until_text()}")
+                lines.append(f"• **{metadata_name(entry.name)}** (`{entry.id}`), {entry.until_text()}")
         else:
             lines.append("• nobody is allowed for a time.")
         if self.config.users:

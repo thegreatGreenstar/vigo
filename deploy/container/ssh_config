@@ -1,0 +1,19 @@
+# The SSH client inside Vigo's container, for git over SSH.
+#
+# Vigo has its own GitHub account and its own key, so there is one host and one
+# key.  The key is a podman secret mounted at /run/secrets/vigo-ssh-key with
+# mode 0400: ssh refuses a private key that others can read.
+#
+# The host keys are in known_hosts, pinned, so a new container trusts nothing
+# new and a changed key stops the pull instead of being accepted.
+#
+# A key with no passphrase is correct here.  No agent and no Keychain can enter
+# the container, and this key can do only what Vigo's own account may do.
+Host github.com github-read github-write
+    HostName github.com
+    User git
+    IdentityFile /run/secrets/vigo-ssh-key
+    IdentitiesOnly yes
+    UserKnownHostsFile /etc/vigo/known_hosts
+    StrictHostKeyChecking yes
+    BatchMode yes

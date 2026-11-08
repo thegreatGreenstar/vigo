@@ -69,6 +69,17 @@ class ConfigTest(unittest.TestCase):
                 configuration.load(write_settings(directory, raw))
         self.assertIn("http", str(caught.exception))
 
+    def test_a_url_carries_no_user_or_password(self):
+        for key in ("url", "peer"):
+            with self.subTest(key=key):
+                entry = {"name": "macbook", "url": "http://127.0.0.1:1", "directory": "/a"}
+                entry[key] = "http://opencode:secret@127.0.0.1:1"
+                raw = base_settings(devices=[entry])
+                with TempDir() as directory:
+                    with self.assertRaises(configuration.ConfigError) as caught:
+                        configuration.load(write_settings(directory, raw))
+                self.assertIn("password", str(caught.exception))
+
     def test_a_directory_is_absolute(self):
         raw = base_settings(devices=[
             {"name": "macbook", "url": "http://127.0.0.1:1", "directory": "project"},
@@ -129,6 +140,49 @@ class ConfigTest(unittest.TestCase):
                          '{"providerID": "opencode-go", "id": "deepseek-v4.1-flash"}')
 
     # -- secrets out of the file ------------------------------------------
+
+    def test_the_guest_budget_defaults_to_a_third(self):
+        with TempDir() as directory:
+            settings = configuration.load(write_settings(directory, base_settings()))
+        self.assertAlmostEqual(settings.guests.share, 1 / 3)
+        self.assertEqual(settings.guests.hourly, 500_000)
+        self.assertEqual(settings.guests.daily, 2_000_000)
+        self.assertEqual(settings.guests.per_user_hourly, 250_000)
+        self.assertEqual(settings.guests.per_user_daily, 1_000_000)
+
+    def test_the_guest_budget_takes_its_numbers(self):
+        with TempDir() as directory:
+            settings = configuration.load(write_settings(directory, base_settings(
+                guests={"share": 0.5, "hourly": 0, "daily": 1_000,
+                        "perUserHourly": 10, "perUserDaily": 20},
+            )))
+        self.assertAlmostEqual(settings.guests.share, 0.5)
+        self.assertEqual(settings.guests.hourly, 0)
+        self.assertEqual(settings.guests.daily, 1_000)
+        self.assertEqual(settings.guests.per_user_hourly, 10)
+        self.assertEqual(settings.guests.per_user_daily, 20)
+
+    def test_a_guest_share_outside_zero_and_one_is_refused(self):
+        for share in (-0.1, 1.4, "a third"):
+            with TempDir() as directory:
+                with self.assertRaises(configuration.ConfigError) as caught:
+                    configuration.load(write_settings(directory, base_settings(
+                        guests={"share": share})))
+            self.assertIn("share", str(caught.exception))
+
+    def test_a_guest_budget_with_an_unknown_key_is_refused(self):
+        with TempDir() as directory:
+            with self.assertRaises(configuration.ConfigError) as caught:
+                configuration.load(write_settings(directory, base_settings(
+                    guests={"monthly": 5})))
+        self.assertIn("monthly", str(caught.exception))
+
+    def test_a_guest_cap_is_a_whole_number(self):
+        with TempDir() as directory:
+            with self.assertRaises(configuration.ConfigError) as caught:
+                configuration.load(write_settings(directory, base_settings(
+                    guests={"daily": 1.5})))
+        self.assertIn("daily", str(caught.exception))
 
     def test_the_token_may_come_from_a_file(self):
         raw = base_settings()

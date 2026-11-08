@@ -19,6 +19,10 @@
     <dict>
         <key>PATH</key>
         <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <!-- Git calls ssh from PATH, and Homebrew's ssh does not know Apple's
+             UseKeychain in ~/.ssh/config; the system one unlocks the read key. -->
+        <key>GIT_SSH_COMMAND</key>
+        <string>/usr/bin/ssh</string>
     </dict>
 
     <key>RunAtLoad</key>

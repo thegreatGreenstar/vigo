@@ -1,8 +1,19 @@
 """One question, asked on a device, answered in Discord.
 
-The message is deferred, stays as Discord's own "thinking" indicator while the
-agent works, and is edited into the answer when it is ready.  A tool that needs
-permission asks its owner in a DM, and the run waits for the answer.
+The deferred message becomes a short "got it" at once, so the person knows the
+question arrived.  The answer is a new message when the agent is done: an edit
+would carry no notification.  A tool that needs permission, or a question the
+agent asks, goes to its owner in a DM, and the run waits for the answer.  Past
+``timeout`` the line the question already shows — the queued line or the got-it
+line — gains a note that the device is still working, and the run keeps
+watching: the channel is still busy, so the next question waits.
+
+The interaction's token is what posts the answer where the question was, and
+Discord stops taking it 15 minutes after the interaction.  A question that
+waited in the channel's queue can pass that before it starts, so the answer
+falls back to the channel's own token, and to a direct message for one only
+the asker may see.  In every case the answer goes to the person who asked, never
+to the owner, whose DM would show them what an approved person asked.
 """
 
 from __future__ import annotations
@@ -11,15 +22,26 @@ import queue
 import threading
 import time
 from dataclasses import dataclass, field
+from datetime import datetime
+from typing import Protocol
 
-from . import log, text
-from .opencode_api import EventStream, OpenCode, OpenCodeError
+from . import github, lease as leasing, log, text
+from .allowlist import AllowList
+from .config import Config, Device
+from .discord_api import Discord
+from .notify import send_dm
+from .opencode_api import EventStream, OpenCode, OpenCodeError, busy_since
+from .state import State
+from .usage import GUEST_KEY
 
 FOOTER = {
     "succeeded": "",
-    "failed": "❌ the agent failed",
-    "interrupted": "⏹️ stopped",
-    "timeout": "⏳ still running on the device",
+    "failed": "the agent failed",
+    "interrupted": "stopped",
+    "never started": (
+        "the device took the question and never started on it. "
+        "`opencode serve` there is stuck: restart it, then ask again."
+    ),
 }
 
 END_EVENTS = {
@@ -27,8 +49,282 @@ END_EVENTS = {
     "session.execution.interrupted": "interrupted",
 }
 
+# What every piece of work is told, a question and a goal alike: the plan is a
+# subscription, and a fan-out that ignores it buys failures instead of answers.
+# Three is a ceiling, not a target: one subagent is as right as three when one
+# is what the work needs.  The session that runs the work must be a primary
+# agent, because OpenCode runs a subagent only through the subagent tool, and a
+# subagent cannot start another one.
+SUBTASKS = 3
+# What every piece of work is told about the thing it is part of: the model has
+# no other way to know it is Vigo, and a question like "explain how Vigo works"
+# was answered with "which Vigo?" because the prompt held only the question.
+SELF = (
+    "You are Vigo, a Discord bot that drives OpenCode agents on the owner's own "
+    "machines. A daemon runs on each device, and each daemon can reach every "
+    "device's `opencode serve`, so one question is answered on one of them; only "
+    "the owner may approve a tool. The question arrived from Discord and your "
+    "answer is posted there."
+)
+# How long an answer may be, told to every answer that reaches Discord: a
+# question, a goal, and a one-off alike.  A channel reads many of these, so the
+# work that matters goes first and the rest stays where it was done.
+BRIEF = (
+    "Keep the answer to two short paragraphs at most: say what you did and what "
+    "matters, and leave the rest out. Be only as long as the answer needs: one "
+    "line is right when one line is the answer."
+)
+# What a turn of a session can offer that a one-off cannot: there is a place the
+# rest of the answer stays, and a way to ask for it.
+STAYS = (
+    "The whole answer stays in the session, and the person asks again when they "
+    "want more."
+)
+RULES = (
+    f"You may hand parts of this work to subagents, at most {SUBTASKS} at a time, "
+    "only where it helps: use fewer when fewer are enough, and none when none is. "
+    "A subagent starts with fresh context: it does not see this conversation, and "
+    "it cannot start another subagent. Give each one the exact files, the exact "
+    "result and the constraints, start independent parts in the background, and "
+    "read every report before you trust it. The judgement and the final answer "
+    "stay with you. Report what they did.\n\n"
+    "When the work went to GitHub, report it the way a maintainer reports it there: "
+    "the verdict in the first sentence, then the facts that change what the reader "
+    "does next, each with its number (a pull request or issue, a commit, a file and "
+    "line, a count of tests), then what still waits for a person. That is one short "
+    "paragraph, about fifty words, and a list of four facts is the long one. No "
+    "thanks, no restating of the request, and no walk through the diff.\n\n"
+    "Sign what you write on GitHub as \"From Vigo (an agent)\", once and once "
+    "only. A pull request or an issue ends with it, on a line of its own. A "
+    "comment starts with it: \"From Vigo (an agent): <the reply>\". Never sign "
+    "it with the name of the model that ran you: the model varies, and Vigo "
+    "does not.\n\n"
+    f"{BRIEF} {STAYS}"
+)
+
+# One answer may take a few messages: Discord takes 2000 characters in each,
+# and an answer that needs more is sent whole instead of cut mid-sentence.  A
+# runaway answer stops at this many, and the last one says where the rest is.
+ANSWER_PARTS = 4
+MORE = "… (the rest of this answer is in the session)"
+
+# The session's metadata key that names the Discord channel it serves.  The
+# device keeps it, so both daemons and any restart find the same session
+# instead of making another one.
+CHANNEL_KEY = "vigoChannel"
+
+# How long to wait between looks at a session another daemon is working on.
+POLL = 0.5
+
+# How long an answer of ours counts as the one already in the channel, in
+# seconds.  Longer than a retry or a restart takes, shorter than a person
+# asking the same thing again.
+RECENT = 300.0
+
+# How long Discord keeps taking an interaction's token, in seconds: 15 minutes
+# for a followup, for an edit of the deferred message, and for an ephemeral
+# message of its own.  A question that waits in this channel's queue spends
+# part of that time before it even starts, so a run of ten minutes can answer
+# past it.  The minute of margin leaves the requests themselves to fit.
+LIFE = 14 * 60.0
+
+
+def _failure(data: dict) -> str:
+    """The device's own words for why a turn failed, from its event.
+
+    The shapes differ with the OpenCode release, so every place the text can be
+    is read; none of it goes to Discord unread, and `text.cause` picks the line.
+    """
+    for key in ("message", "reason", "error"):
+        value = data.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+        if isinstance(value, dict):
+            for inner in ("message", "reason"):
+                said = value.get(inner)
+                if isinstance(said, str) and said.strip():
+                    return said
+    return ""
+
+
+def _recent(stamp: object, seconds: float) -> bool:
+    """Whether Discord's ISO timestamp is within that many seconds of now."""
+    if not isinstance(stamp, str) or not stamp:
+        return False
+    try:
+        when = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    return abs(time.time() - when.timestamp()) <= seconds
+
+
+def _grown(line: str, note: str, limit: int = 2000) -> str:
+    """The line with the note at its end, and the note whole.
+
+    A line near Discord's limit gives way to the note it gains, with an
+    ellipsis where the line was cut, so the note is never the half that is
+    lost.
+    """
+    room = limit - len(note) - 2
+    if len(line) > room:
+        line = line[:max(room - 1, 0)].rstrip() + "…"
+    return f"{line}\n\n{note}"
+
+
+class Host(Protocol):
+    """What a run needs from the app: its settings, what it remembers, its Discord."""
+
+    config: Config
+    state: State
+    api: Discord
+    allow: AllowList
+
+
+def open_session(app: Host, client: OpenCode, device: Device, channel_id: str,
+                 new: bool, title: str, agent: str = "",
+                 worker: bool = False, guest: str = "") -> str:
+    """This channel's session on that device, or a new one.
+
+    Shared with `/vigo goal`, which needs a session to hang an objective on
+    but never asks a question.
+
+    Only an explicit `new` makes a session the device already holds go unused.
+    Restarts and two daemons answering the same channel used to create one
+    session each, so a device filled up with "Discord DM": this daemon reads
+    its own state first, then asks the device, which marks the session it made
+    with the channel it belongs to.
+
+    `worker` makes a session of the task's own, never the channel's: the work
+    runs there under `agent`, a primary agent, and OpenCode lists it, so the
+    person can open that session and carry on in it directly.  The channel
+    remembers it, so a follow-up and `/vigo status` reach the session the work
+    is in.
+
+    `guest` is the id of the approved person who asked.  It is written to the
+    session's metadata so the plan's usage can be split between the owner and
+    the people the owner allowed, and so a session that predates the mark is
+    found and marked the first time it is used again.
+    """
+    metadata = {CHANNEL_KEY: channel_id}
+    if guest:
+        metadata[GUEST_KEY] = guest
+    if worker:
+        created = client.create_session(
+            device.directory, title or "Discord", model=app.config.model.as_ref(),
+            agent=agent or None, metadata=metadata,
+        )
+        session = created.get("id")
+        if not session:
+            raise OpenCodeError(0, "no session id", "POST /api/session")
+        app.state.remember_session(channel_id, device.name, session, title)
+        log.info(f"session: the task runs in its own session on {device.name}")
+        return session
+    found = ""
+    if not new:
+        remembered = app.state.session_on(channel_id, device.name)
+        if remembered and _alive(client, remembered["session"]):
+            found = remembered["session"]
+        else:
+            adopted = _adopt(client, channel_id)
+            if adopted:
+                log.info("session: this channel already has one on the device; using it")
+                app.state.remember_session(channel_id, device.name,
+                                           str(adopted.get("id") or ""), title)
+                found = str(adopted.get("id") or "")
+    if found:
+        _mark_guest(client, found, guest)
+        return found
+    created = client.create_session(
+        device.directory, title or "Discord", model=app.config.model.as_ref(),
+        metadata=metadata,
+    )
+    session = created.get("id")
+    if not session:
+        raise OpenCodeError(0, "no session id", "POST /api/session")
+    app.state.remember_session(channel_id, device.name, session, title)
+    return session
+
+
+def _mark_guest(client: OpenCode, session_id: str, guest: str) -> None:
+    """Write the guest's mark on a session that was made without it.
+
+    The mark is the one internal record that says a session's tokens belong to
+    an approved person rather than the owner, so a session from before the
+    mark is marked the next time it is used.  A device that refuses the patch
+    still runs the question: the channel key of a guest already carries the
+    asker, which is the fallback the usage accounting reads.
+    """
+    if not guest:
+        return
+    try:
+        info = client.session(session_id)
+        metadata = dict(info.get("metadata") or {})
+        if metadata.get(GUEST_KEY) == guest:
+            return
+        metadata[GUEST_KEY] = guest
+        client.set_metadata(session_id, metadata)
+    except OpenCodeError as error:
+        log.info(f"session: the guest mark was not written ({error.message})")
+
+
+def channel_session(client: OpenCode, channel_id: str) -> str:
+    """The session the device says this channel already has, or "".
+
+    A daemon that has just started remembers none of this channel's sessions,
+    and the other daemon may hold the goal.  The device's own record is the one
+    place both of them read, so `/vigo goal` checks it before it makes a second
+    goal for the channel.
+    """
+    found = _adopt(client, channel_id)
+    return str((found or {}).get("id") or "")
+
+
+def _alive(client: OpenCode, session_id: str) -> bool:
+    try:
+        client.session(session_id)
+        return True
+    except OpenCodeError:
+        return False
+
+
+def _adopt(client: OpenCode, channel_id: str) -> dict | None:
+    """The session this channel already has on the device, if the device says so.
+
+    A device lists its sessions newest first, so the newest one naming this
+    channel wins — the same answer a `new` ask would have left behind.  The
+    whole entry is returned, because a guest's session is marked from it.
+    """
+    try:
+        for info in client.sessions(limit=100):
+            metadata = info.get("metadata")
+            if isinstance(metadata, dict) and str(metadata.get(CHANNEL_KEY) or "") == channel_id:
+                return info
+    except OpenCodeError:
+        pass  # a device that will not list them gets a new one, and says so
+    return None
+
+
 # The message stays empty (Discord shows "is thinking...") until the answer is
 # ready. No interim text is sent, by choice: the answer or nothing.
+
+# The deferred message says it was received, and the answer is its own message
+# so Discord notifies the person who asked.  An answer longer than one message
+# goes out in several: a cut one used to stop mid-sentence with nothing to say
+# so, and it read as the agent giving up.
+
+
+@dataclass
+class Resume:
+    """Where a turn that an upgrade's restart interrupted had got to.
+
+    The session is the device's, which kept working while vigo restarted, and
+    the two marks are what tell this turn from the ones before it: the time of
+    the prompt, and the newest message that was there when it went in.
+    """
+
+    session: str
+    prompted_at: float
+    before: str
 
 
 @dataclass
@@ -36,7 +332,12 @@ class Run:
     session: str
     device: str
     started: float
+    prompt: str = ""
+    user: str = ""     # who asked, so an approved asker's in-flight work is counted
     stop: threading.Event = field(default_factory=threading.Event)
+    # The question that owns this run, which an upgrade writes down before its
+    # restart: the queue shows a run, but only the question knows how to end it.
+    ask: Ask | None = None
 
     @property
     def elapsed(self) -> float:
@@ -46,26 +347,77 @@ class Run:
 class Ask:
     """Ask one device one question, and keep its Discord message current."""
 
-    def __init__(self, app, *, token: str, channel_id: str, user_id: str,
+    def __init__(self, app: Host, *, token: str, channel_id: str, user_id: str,
                  device_name: str, prompt: str, new: bool, title: str,
-                 hidden: bool = False):
+                 hidden: bool = False, goal: str = "", reply_in_channel: bool = False,
+                 private: bool = False, note: str = "",
+                 asked_at: float = 0.0, session_key: str = "",
+                 resume: Resume | None = None) -> None:
         self.app = app
         self.token = token
         self.channel_id = channel_id
         self.hidden = hidden
+        self.private = private
         self.user_id = user_id
+        # The channel's session is the owner's conversation.  An approved
+        # asker gets a session of their own, so their question never reads the
+        # owner's history and the owner never reads theirs.  A run carried
+        # over a restart computes it the same way, because it knows who asked.
+        self.session_key = session_key or (
+            channel_id if user_id == app.config.owner else f"{channel_id}:{user_id}"
+        )
         self.device_name = device_name
         self.device = app.config.device_named(device_name)
         self.client = OpenCode(self.device.url, self.device.password)
         self.prompt = prompt
+        self.note = note
+        self.failure = ""
+        self.task_title = ""
+        self.goal = goal
+        self.reply_in_channel = reply_in_channel
         self.new = new
         self.title = title
-        self.run = Run(session="", device=device_name, started=time.monotonic())
+        # When Discord received the interaction, not when the run starts: the
+        # token's 15 minutes begin there, and the queue can hold the run back.
+        self.asked_at = asked_at or time.monotonic()
+        self.resume = resume
+        self.run = Run(session="", device=device_name, started=time.monotonic(),
+                       prompt=prompt, user=user_id)
+        self.run.ask = self
         self.buffer = ""
+        self.lease: leasing.Lease | None = None
         self.waiting = False
         self.prompted_at = 0.0
+        self.before = ""   # the session's newest message when we asked
+        self.forms: set[str] = set()
+        self.permissions: set[str] = set()
+        self.shown = ""    # the line this question already shows in Discord, if any
+        self.message_id = ""  # that line's message, when it is not the interaction's own
 
     # -- the message ------------------------------------------------------
+
+    def _allowed(self) -> bool:
+        """Whether the person who asked may still ask, read again at the start.
+
+        An allow can end while a question waits its turn, so the decision is
+        made again here rather than only when the command arrived.
+        """
+        if self.user_id == self.app.config.owner:
+            return True
+        try:
+            return self.app.allow.may_ask(self.user_id)
+        except Exception:  # a list that cannot be read refuses, never allows
+            return False
+
+    def question(self) -> str:
+        """The question, with what the device should know of who reads the answer.
+
+        The device never hears of Discord otherwise: without this line an
+        answer written for the person who asked can end up in a channel where
+        everyone reads it, and the message cannot tell that it is the wrong
+        place for a key or for someone else's details.
+        """
+        return "\n\n".join(part for part in (self.note, SELF, self.prompt, RULES) if part)
 
     def _edit(self, content: str) -> bool:
         try:
@@ -78,39 +430,114 @@ class Ask:
             log.debug(f"ask: cannot edit the message ({error})")
             return False
 
+    def _set_line(self, content: str) -> bool:
+        """Put this text on the line the question already shows, if it has one.
+
+        A question has one line in the channel: the queued line, or the got-it
+        line.  A note or an error about the same question belongs on that line,
+        not in a second message beside it.  The channel's own id carries it,
+        and the id still works when Discord no longer takes the interaction's
+        token, which is the case for a question that waited in the queue past
+        the token's fifteen minutes.  The token is the way when Discord
+        returned no id.  False when there is no line, or Discord takes neither
+        way.
+        """
+        if not self.shown:
+            return False
+        said = content[:2000]
+        if self.message_id:
+            try:
+                self.app.api.edit(self.channel_id, self.message_id, {
+                    "content": said,
+                    "allowed_mentions": {"parse": []},
+                })
+                self.shown = said
+                return True
+            except Exception as error:
+                log.info(f"ask: cannot edit the question's line ({error})")
+        if not self.reply_in_channel:
+            if not self._token_live():
+                return False
+            if self._edit(said):
+                self.shown = said
+                return True
+        return False
+
+    def _append(self, content: str) -> bool:
+        """Add a line to the end of the line this question already shows.
+
+        The note stays whole even when the line is near Discord's limit: a note
+        cut in half says nothing about why the run continues.
+        """
+        if not self.shown:
+            return False
+        return self._set_line(_grown(self.shown, content))
+
     def _final(self, body: str, outcome: str, cost: float, tokens: dict,
                steps: int = 0, context: int = 0) -> None:
         note = FOOTER.get(outcome, "")
-        content = body.strip() or "_nothing to say_"
+        if outcome == "failed":
+            # A failure the person can act on: a limit, a quota, a context, a
+            # key.  The device's own text stays in the log, never in Discord.
+            note = "❌ " + text.cause(self.failure)
+        # Everyone in a channel reads this answer, and the agent can read a
+        # key or a token while it works: a value shaped like one is replaced
+        # before it goes out.  A hidden answer is read by the person who asked,
+        # and so is one in a one-to-one DM; a group DM is not one of those.
+        removed = ""
+        if not self.hidden and not self.private:
+            body, removed = text.scrub(body)
+        body = body.strip()
+        # GitHub work goes first, so a reader meets the pull request before the
+        # prose about it.  Only work the answer names is here, and a link the
+        # answer already put on its first line is not said again.
+        front = github.mark(body)
+        if front:
+            body = f"{front}\n\n{body}" if body else front
+        if not body and not note and steps == 0:
+            # A turn that produced nothing at all: the machine slept under it,
+            # or the device took the question and never ran it.  That is not an
+            # empty answer, and it must not read like one.
+            body = "the device returned no text for this question"
+        content = body or "_nothing to say_"
         if note:
             content += f"\n\n{note}"
-        chunks = text.chunk(content) or ["_nothing to say_"]
-        # The deferred response is the message this run owns, so the answer
-        # goes into it: an edit keeps it where the question was asked and keeps
-        # the ephemeral state Discord deferred it with.  A followup must not be
-        # the first thing sent: Discord turns one sent before the deferred
-        # message has any content into an edit of it, so a later "delete the
-        # original" would delete the answer itself.  Only the overflow becomes
-        # followups, and they are ephemeral when the answer is.
-        if not self._edit(chunks[0]):
-            if self.hidden:
-                log.error("ask: the run outlived its ephemeral message; the answer is lost")
+        goal_line = self._goal_line()
+        if goal_line:
+            content += f"\n\n{goal_line}"
+        if self.task_title:
+            # The session's title is the task's first words, and the answer is
+            # read by the channel: a title that names a path, an address or a
+            # secret keeps the session but not the words.
+            title = text.shorten(self.task_title, 80)
+            if text.shareable(title, tuple(self.app.config.devices)):
+                content += (f"\n\nThis ran in its own OpenCode session, “{title}”; "
+                            "open it there to carry on with the work.")
             else:
-                log.info("ask: the deferred message is gone; posting the answer in the channel")
-                for piece in chunks:
-                    self._late_answer(piece)
+                content += ("\n\nThis ran in an OpenCode session of its own; "
+                            "open it there to carry on with the work.")
+        if removed:
+            content += (
+                f"\n\n🔒 a {removed} was removed from this answer; "
+                "`hidden:true` shows the answer whole."
+            )
+        # An answer longer than one message goes out in several, in order, so
+        # nobody reads a sentence that stops because Discord's limit was hit.
+        parts = text.messages(content, ANSWER_PARTS, more=MORE) or ["_nothing to say_"]
+        # The answer is a new message, after the "got it": Discord notifies on
+        # a new message but not on an edit, and the "got it" stays as the
+        # record that the question arrived.
+        if self._already_answered(parts[0]):
+            # Two runs can watch one device turn, and both would post it.
+            log.info("ask: the channel already has that answer; not posting it twice")
+        elif self.reply_in_channel or not self.token:
+            # The question came as a message, or it outlived the interaction
+            # that carried it over a restart: either way there is nothing to
+            # edit that Discord still takes, so the answer is a message.
+            for part in parts:
+                self._late_answer(part, check=False)
         else:
-            extra = {"flags": 64} if self.hidden else {}
-            for piece in chunks[1:]:
-                try:
-                    self.app.api.followup(self.token, {
-                        "content": piece,
-                        "allowed_mentions": {"parse": []},
-                        **extra,
-                    })
-                except Exception as error:
-                    log.error(f"ask: cannot post the rest of the answer ({error})")
-                    break
+            self._deliver(parts)
         log.info(
             f"ask: {self.device_name} · {text.duration(self.run.elapsed)} · "
             f"{steps} step(s) · context {text.tokens(context)} · "
@@ -118,43 +545,209 @@ class Ask:
             f"{text.money(cost)}"
         )
 
-    def _late_answer(self, content: str) -> None:
-        """The interaction's 15 minutes ran out: post it where the question was."""
-        if self.hidden:
-            log.error("ask: the answer is too late for an ephemeral message")
+    def _deliver(self, parts: list[str]) -> None:
+        """Post the answer where its reader still is when it is ready.
+
+        The interaction's token is the first way: it reaches a channel where
+        this bot is not a member, which is where a user install answers, and it
+        is the only way an ephemeral answer can be shown.  Discord stops taking
+        it 15 minutes after the interaction, though, and a question that waited
+        in the queue can pass that before it starts: then the channel's own
+        token takes a public answer, and the owner's DM a private one.  Nothing
+        is posted twice, and a part that fails hands the rest of the answer
+        over with it.
+        """
+        for number, part in enumerate(parts):
+            extra = {"flags": 64} if self.hidden else {}
+            if self._token_live() and self._followup(part, extra):
+                continue
+            if not self.hidden and self._send(part):
+                continue
+            first = number == 0
+            for rest in parts[number:]:
+                self._dm(rest, first=first)
+                first = False
             return
+
+    def _followup(self, part: str, extra: dict) -> bool:
+        """Post one part on the interaction's token, if Discord still takes it."""
         try:
-            self.app.api.send(self.channel_id, {
-                "content": content[:2000],
+            posted = self.app.api.followup(self.token, {
+                "content": part[:2000],
+                "allowed_mentions": {"parse": []},
+                **extra,
+            })
+        except Exception as error:
+            log.debug(f"ask: cannot post the answer on the interaction ({error})")
+            return False
+        self._record(posted)
+        return True
+
+    def _send(self, part: str) -> bool:
+        """Post one part in the channel, as a message that is not on a timer."""
+        try:
+            posted = self.app.api.send(self.channel_id, {
+                "content": part[:2000],
                 "allowed_mentions": {"parse": []},
             })
         except Exception as error:
-            log.error(f"ask: cannot post the answer at all ({error})")
+            log.info(f"ask: cannot post the answer in the channel ({error})")
+            return False
+        self._record(posted)
+        return True
+
+    def _token_live(self) -> bool:
+        """Whether Discord still takes this question's interaction token."""
+        return time.monotonic() - self.asked_at < LIFE
+
+    def _goal_line(self) -> str:
+        """Where the goal stands now, for the person who set it.
+
+        A goal outlives a turn, so "the answer is in" does not say whether the
+        work is finished.  The device knows: `complete` is the line the person
+        waits for, and a paused one must not look like a running one.
+        """
+        if not self.goal or not self.run.session:
+            return ""
+        try:
+            held = self.client.goal(self.run.session)
+        except OpenCodeError as error:
+            log.info(f"ask: cannot read the goal ({error.message})")
+            return ""
+        if not isinstance(held, dict) or not held:
+            return ""
+        status = str(held.get("status") or "")
+        if status == "complete":
+            return "**the goal is met**"
+        if status == "paused":
+            reason = str(held.get("reason") or "").strip()
+            if reason:
+                reason = text.scrub(reason)[0]
+            return f"the goal is paused{': ' + reason if reason else ''}"
+        rounds, most = held.get("rounds"), held.get("maxRounds")
+        if status == "active" and isinstance(rounds, int):
+            return f"the goal is still active (round {rounds} of {most})"
+        if status == "active":
+            return "the goal is still active"
+        return ""
+
+    def _record(self, message: object) -> None:
+        """Remember a message this run posted, so a reply to it is a question."""
+        if not isinstance(message, dict):
+            return
+        message_id = str(message.get("id") or "")
+        if message_id:
+            try:
+                self.app.state.remember_answer(message_id, self.channel_id)
+            except OSError as error:
+                # The answer is already out.  Remembering where it landed is a
+                # convenience for a reply, not a reason to post it a second
+                # time: a state file that cannot be written must not duplicate
+                # the answer in the channel.
+                log.error(f"ask: cannot remember the answer ({error})")
+
+    def _late_answer(self, content: str, check: bool = True) -> bool:
+        """Post a part where the question was, without the interaction's token.
+
+        An answer that cannot go there is not thrown away: a hidden one has an
+        ephemeral message that expired, and a channel where this bot is not a
+        member refuses the post.  A direct message to the person who asked takes
+        it then, so a goal that ran for an hour still reaches them.
+
+        `check` is off for the parts after the first of an answer in several
+        messages: the run looked for the answer once, and a part that happens to
+        match an earlier message is not a reason to drop the rest.
+        """
+        if self.hidden:
+            log.info("ask: an ephemeral message cannot carry this answer; "
+                     "sending it to the asker")
+            return self._dm(content)
+        if check and self._already_answered(content):
+            log.info("ask: the channel already has that answer; not posting it twice")
+            return True
+        if self._send(content):
+            return True
+        return self._dm(content)
+
+    def _dm(self, content: str, first: bool = False) -> bool:
+        """The answer reaches the person when Discord will not take it there.
+
+        A direct message is the one place this bot can always open, because the
+        bot is a member of it whatever the channel is.  It goes to whoever
+        asked: the owner's DM would show an approved person's answer to the
+        owner, which is the leak this split exists to stop.  `first` names the
+        question the answer belongs to: an answer that arrives on its own, in a
+        place the person did not ask in, must not read like a new question's.
+        """
+        said = content
+        if first and self.prompt:
+            said = (f"**the answer to “{text.subject(self.prompt, 60)}”**\n\n"
+                    f"{content}")
+        try:
+            send_dm(self.app.config, self.user_id, said, api=self.app.api)
+            log.info("ask: the answer went to the asker's DM")
+            return True
+        except Exception as error:  # noqa: BLE001 - any failure means it did not arrive
+            log.error(f"ask: the DM did not take the answer ({error})")
+            return False
+
+    def _already_answered(self, content: str) -> bool:
+        """Whether this exact answer is already in the channel, from us, just now.
+
+        Two runs can watch one device turn — the run beside it in this daemon
+        before the queue was fixed, or the other daemon answering the same
+        channel — and each posts the answer to a message that has expired.  The
+        channel is the record they share, so the second one stays quiet.
+        """
+        said = content.strip()[:2000]
+        if not said:
+            return False
+        try:
+            recent = self.app.api.messages(self.channel_id, limit=10)
+        except Exception as error:  # a channel that cannot be read proves nothing
+            log.debug(f"ask: cannot read the channel to check ({error})")
+            return False
+        for message in recent:
+            if not (message.get("author") or {}).get("bot"):
+                continue
+            if (message.get("content") or "").strip() != said:
+                continue
+            if _recent(message.get("timestamp"), RECENT):
+                return True
+        return False
 
     def _tell(self, content: str) -> None:
-        """An error from the run, visible even when the deferred message is gone."""
-        if not self._edit(content):
+        """An error from the run, on the question's line when it still has one."""
+        if self.shown:
+            if self._set_line(content):
+                return
+        elif self.token and not self.reply_in_channel and self._edit(content):
+            # No line to grow, but the deferred message of a live interaction
+            # is still this run's to edit: that is where the person is looking.
+            # A turn carried over a restart has no token: its line is gone.
+            return
+        if not self._token_live() or not self._edit(content):
             self._late_answer(content)
 
     # -- the session ------------------------------------------------------
 
     def _open_session(self) -> str:
-        remembered = self.app.state.session_for(self.channel_id)
-        if remembered and not self.new and remembered.get("device") == self.device_name:
-            try:
-                self.client.session(remembered["session"])
-                return remembered["session"]
-            except OpenCodeError:
-                log.info("ask: the remembered session is gone; making a new one")
-        created = self.client.create_session(
-            self.device.directory, self.title or "Discord",
-            model=self.app.config.model.as_ref(),
+        guest = "" if self.user_id == self.app.config.owner else self.user_id
+        if not self.goal:
+            return open_session(
+                self.app, self.client, self.device, self.session_key, self.new, self.title,
+                guest=guest,
+            )
+        # A task is work, not a question: it runs in a session of its own, so
+        # the conversation stays a conversation and the person can open the
+        # work where it happens.  Its agent is a primary one, because the rule
+        # lets the work delegate subagents, and a subagent agent cannot.
+        self.task_title = f"{self.title} · {text.subject(self.prompt, 40)}"
+        return open_session(
+            self.app, self.client, self.device, self.session_key, self.new,
+            self.task_title, agent=self.client.worker_agent(), worker=True,
+            guest=guest,
         )
-        session = created.get("id")
-        if not session:
-            raise OpenCodeError(0, "no session id", "POST /api/session")
-        self.app.state.remember_session(self.channel_id, self.device_name, session, self.title)
-        return session
 
     # -- the answer -------------------------------------------------------
 
@@ -170,7 +763,17 @@ class Ask:
         tokens = {"input": 0, "output": 0, "reasoning": 0}
         steps = 0
         context = 0
-        for message in reversed(messages):
+        # The message that was newest when the prompt went in ends the turn
+        # before this one, and nothing older is part of this answer.  A turn
+        # that a restart interrupted reads its answer after the fact, and the
+        # time below is a guess where the id is a fact.
+        rows = list(reversed(messages))
+        if self.before:
+            for position, message in enumerate(rows):
+                if str(message.get("id") or "") == self.before:
+                    rows = rows[position + 1:]
+                    break
+        for message in rows:
             if message.get("type") != "assistant":
                 continue
             created = float((message.get("time") or {}).get("created") or 0)
@@ -210,57 +813,202 @@ class Ask:
         request_id = data.get("id")
         if not request_id:
             return
+        if str(request_id) in self.permissions:
+            return
+        self.permissions.add(str(request_id))
         self.waiting = True
         try:
-            self.app.ask_permission(
+            sent = self.app.ask_permission(
                 device=self.device_name,
                 session=session,
                 request=str(request_id),
                 action=str(data.get("action") or "a tool"),
                 resources=[str(item) for item in (data.get("resources") or [])][:4],
                 channel=self.channel_id,
+                owner=self.user_id == self.app.config.owner,
             )
         except Exception as error:
             log.error(f"ask: cannot ask for permission ({error})")
             self.waiting = False
+            return
+        self._tell(
+            "A tool needs the owner's approval. It went to their DMs."
+            if sent and self.user_id != self.app.config.owner else
+            "A tool needs your approval. Check your DMs."
+            if sent else
+            "A tool needs your approval, but I could not send you a DM."
+            if self.user_id == self.app.config.owner else
+            "A tool needs the owner's approval, but I could not reach them."
+        )
+
+    def _form(self, session: str, form: dict) -> None:
+        """Relay a question the agent asked, once."""
+        form_id = str(form.get("id") or "")
+        if not form_id or form_id in self.forms:
+            return
+        fields = [item for item in (form.get("fields") or []) if isinstance(item, dict)]
+        if not fields:
+            log.error("ask: the agent asked a form with no fields")
+            return
+        self.forms.add(form_id)
+        self.waiting = True
+        try:
+            sent = self.app.ask_question(
+                device=self.device_name,
+                session=session,
+                form=form_id,
+                title=str(form.get("title") or "Question"),
+                fields=fields,
+                channel=self.channel_id,
+                guest=self.user_id != self.app.config.owner,
+            )
+        except Exception as error:
+            log.error(f"ask: cannot ask the question ({error})")
+            self.waiting = False
+            return
+        if not sent:
+            told = "The agent asked a question, but I could not send it to you."
+        elif self.user_id == self.app.config.owner:
+            told = "The agent asked a question. Check your DMs."
+        else:
+            told = "The agent asked a question. It went to the bot's owner."
+        self._tell(told)
+
+    def _pending_forms(self, session: str) -> None:
+        """The stream is gone, so ask the device what it still waits on."""
+        try:
+            pending = self.client.forms(session)
+        except OpenCodeError:
+            return
+        for form in pending:
+            if isinstance(form, dict) and form.get("sessionID") == session:
+                self._form(session, form)
 
     # -- the run ----------------------------------------------------------
+
+    def record(self) -> dict:
+        """What a restart for an upgrade must keep to carry this turn over.
+
+        It holds no question and no answer: the device has both, and the state
+        file keeps no conversation text.  It holds no interaction token either,
+        because that died with the interaction and a token is the one secret of
+        a run.  What is here is where the turn is and how to tell it from the
+        ones before it.
+        """
+        return {
+            "user_id": self.user_id,
+            "device": self.device_name,
+            "hidden": self.hidden,
+            "goal": bool(self.goal),
+            "session": self.run.session,
+            "prompted_at": self.prompted_at,
+            "before": self.before,
+        }
 
     def run_it(self) -> None:
         try:
             self._run()
         except Exception as error:  # a run always ends, and always unregisters
             log.error(f"ask: broke on {self.device_name}: {type(error).__name__}: {error}")
-            self._tell(f"❌ the run on `{self.device_name}` broke: {text.shorten(str(error), 300)}")
+            self._tell("The run broke. The log says what.")
         finally:
-            self.app.unregister_run(self.channel_id)
+            # The only place that gives the channel up, and it gives up *this*
+            # run: a second call from `_run`'s own paths used to take the next
+            # run's place and start another beside it.
+            if self.lease is not None:
+                self.lease.release()
+            self.app.unregister_run(self.channel_id, self.run)
 
     def _run(self) -> None:
         started = time.monotonic()
         self.run.started = started
+        if not self._allowed():
+            # An allow can end while a question waits its turn.  The decision
+            # is made again here, so a question that was approved when it was
+            # asked does not run on access that has since been taken back.
+            log.info("ask: the asker's access ended before the run started")
+            self._tell("Your access ended before this question started, so it did not run.")
+            return
+        if self.resume is not None:
+            self._resume()
+            return
         try:
             session = self._open_session()
         except OpenCodeError as error:
             log.info(f"ask: cannot open a session ({error.message})")
-            self._tell("❌ the device would not open a session.")
+            self._tell("The device would not open a session.")
             return
         self.run.session = session
         self.app.register_run(self.channel_id, self.run)
+        self.lease = leasing.Lease(self.client, session, self.device_name)
+        if not self._wait_for_turn(session, time.monotonic() + self.app.config.timeout):
+            if self.run.stop.is_set():
+                self._tell("Stopped.")
+            else:
+                log.info("ask: the channel is taken; this one did not run")
+                self._tell(
+                    "Another vigo is asking in this channel, so this one did not run. "
+                    "Ask again when it is free.",
+                )
+            return
         session_stop = threading.Event()
         stream = EventStream(self.device.url, self.device.password, session_stop).start()
         stream.ready.wait(3.0)
 
         try:
             self.prompted_at = time.time() * 1000.0
-            self.client.prompt(session, self.prompt)
+            self.before = self._newest_id(session)
+            if self.goal:
+                self.client.set_goal(session, f"{SELF}\n\n{self.goal}\n\n{RULES}")
+            else:
+                self.client.prompt(session, self.question())
         except OpenCodeError as error:
             session_stop.set()
             log.info(f"ask: the prompt was refused ({error.message})")
-            self._tell("❌ the device would not take the question.")
-            self.app.unregister_run(self.channel_id)
+            self._tell("The device would not take the question.")
             return
 
-        deadline = started + self.app.config.timeout
+        outcome = self._watch(session, stream)
+        session_stop.set()
+        stream.close()
+        self._finish(session, outcome)
+
+    def _resume(self) -> None:
+        """Carry on a turn that a restart for an upgrade cut off.
+
+        Its prompt reached the device before the old process ended, and the
+        device kept working on it, so nothing is asked again and nothing is
+        claimed: this watches the same session to its end and posts the answer
+        the channel would have had.  A turn that ended while the daemon was
+        down left no event to read, so the session itself is asked first.
+        """
+        session = self.resume.session
+        self.run.session = session
+        self.prompted_at = self.resume.prompted_at
+        self.before = self.resume.before
+        self.app.register_run(self.channel_id, self.run)
+        session_stop = threading.Event()
+        stream = EventStream(self.device.url, self.device.password, session_stop).start()
+        stream.ready.wait(3.0)
+        # A form the agent asked while no daemon listened is still on the
+        # device, and the turn does not move until somebody answers it.
+        self._pending_forms(session)
+        # The stream carries nothing from before it connected, so a turn that
+        # ended in between is read from the session's newest message.
+        outcome = ("succeeded" if self._verdict(session) == "finished"
+                   else self._watch(session, stream))
+        session_stop.set()
+        stream.close()
+        self._finish(session, outcome)
+
+    def _watch(self, session: str, stream: EventStream) -> str:
+        """Watch the turn to its end, and say how it ended.
+
+        The wait for a free device is not time on the turn, so the deadline
+        starts here, not when the run did.
+        """
+        deadline = time.monotonic() + self.app.config.timeout
+        noted = False
         stream_dead = False
         poll_at = 0.0
         succeeded_at = 0.0
@@ -268,9 +1016,29 @@ class Ask:
 
         while not self.run.stop.is_set():
             now = time.monotonic()
-            if now > deadline:
-                outcome = "timeout"
-                break
+            if self.lease is not None:
+                self.lease.renew()
+            if not noted and now > deadline:
+                # Past `timeout`, say where it is and keep watching while the
+                # device works: `/vigo status` must not call the channel idle,
+                # and the next question in the channel must keep waiting.  But
+                # a device that took the question and never started on it will
+                # never say anything, and this run would hold the channel for
+                # ever with every later question behind it: end, and say why.
+                noted = True
+                verdict = self._verdict(session)
+                if verdict == "finished":
+                    outcome = "succeeded"
+                    break
+                if verdict == "never started":
+                    outcome = "never started"
+                    break
+                # The note goes at the end of the line this question already
+                # shows: a second message beside it splits one question into
+                # two, and the person reads the queued line as stale.
+                note = "Still running on the device. `/vigo stop` ends it."
+                if not self._append(note):
+                    self._tell(note)
             if succeeded_at and now - succeeded_at > 3.0:
                 outcome = "succeeded"
                 break
@@ -279,6 +1047,7 @@ class Ask:
             if stream_dead:
                 if now >= poll_at:
                     poll_at = now + 2.0
+                    self._pending_forms(session)
                     if self._is_idle(session):
                         outcome = "succeeded"
                         break
@@ -299,43 +1068,126 @@ class Ask:
 
             if event:
                 data = event.get("data") or {}
-                if data.get("sessionID") == session:
-                    kind = event.get("type", "")
+                kind = event.get("type", "")
+                form = data.get("form")
+                if isinstance(form, dict) and form.get("sessionID") == session:
+                    self._form(session, form)
+                elif data.get("sessionID") == session:
                     self._note(event)
                     if kind == "permission.asked":
                         self._permission(session, data)
                     elif kind == "permission.replied":
                         self.waiting = False
+                    elif kind in ("form.replied", "form.cancelled"):
+                        self.waiting = False
                     elif kind == "session.execution.succeeded":
                         succeeded_at = now
                     elif kind in END_EVENTS:
                         outcome = END_EVENTS[kind]
+                        if kind == "session.execution.failed":
+                            self.failure = _failure(data)
                         break
                     elif kind == "session.idle":
                         outcome = "succeeded"
                         break
 
-
         if not outcome:
             outcome = "interrupted" if self.run.stop.is_set() else "succeeded"
-        session_stop.set()
-        stream.close()
+        return outcome
 
+    def _finish(self, session: str, outcome: str) -> None:
+        """The turn is over: read its answer, and post it where it belongs."""
         answer, cost, tokens, steps, context = self._collect(session)
-        if not answer and outcome == "timeout":
-            answer = (
-                "The question is still running.\n"
-                "`/vigo status` shows it; `/vigo stop` ends it."
-            )
         self._final(answer, outcome, cost, tokens, steps, context)
-        self.app.unregister_run(self.channel_id)
+        if self.failure:
+            log.info(f"ask: {outcome}: {self.failure}")
         log.info(f"ask: done on {self.device_name} ({outcome})")
 
     def _is_idle(self, session: str) -> bool:
-        try:
-            for message in self.client.messages(session, limit=6, order="desc"):
-                if message.get("type") == "idle":
-                    return True
-        except OpenCodeError:
-            pass
+        """Whether this turn has ended, judged by its own idle.
+
+        A session keeps the idle of every turn it finished, so one from the
+        turn before is not this turn's end.  Only an idle newer than the
+        message that was newest at the prompt counts, which is what `_verdict`
+        reads: a session with a long turn and a short turn in it ended early
+        here once, and the answer stopped mid-sentence.
+        """
+        return self._verdict(session) == "finished"
+
+    def _wait_for_turn(self, session: str, until: float) -> bool:
+        """Wait until the device is free and this run holds the channel.
+
+        Two things have to be true before a prompt, and either alone leaves a
+        way for two questions to meet in one turn. The device says when it is
+        working on the session; the lease says which daemon owns the channel,
+        which the device cannot know. `until` bounds the wait, because a
+        question that waited `timeout` is one that did not run.
+        """
+        announced = False
+        while not self.run.stop.is_set():
+            # Once ours, it stays ours until we release it or somebody takes a
+            # stale one, so the claim is made once and the wait is for the
+            # device to finish the turn it is on.
+            if self.lease is None:
+                held = "unknown"
+            elif self.lease.mine:
+                held = "mine"
+            else:
+                held = self.lease.claim()
+            if held == "mine":
+                try:
+                    if busy_since(self.client.session(session)) is None:
+                        return True
+                except OpenCodeError:
+                    return True  # cannot tell: ask, and the run reports what happens
+            elif held == "unknown":
+                return True  # the device keeps no lease: ask, and the log says so
+            if not announced:
+                log.info("ask: the channel is taken or the device is busy; waiting")
+                announced = True
+            left = until - time.monotonic()
+            if left <= 0:
+                return False
+            # Never sleep past the deadline: a short `timeout` should be short.
+            time.sleep(min(POLL, left))
         return False
+
+    def _newest_id(self, session: str) -> str:
+        """The id of the session's newest message, or "" if it has none."""
+        try:
+            newest = self.client.messages(session, limit=1, order="desc")
+        except OpenCodeError:
+            return ""
+        return str(newest[0].get("id") or "") if newest else ""
+
+    def _verdict(self, session: str) -> str:
+        """What the device says about this question, read once past `timeout`.
+
+        The test is the session's own newest message, not a clock and not the
+        device's `busy` stamp: a device that took the question and hung writes
+        nothing, and it may still stamp itself busy doing it.  Vigo learned
+        both shapes the hard way, so neither is trusted here.
+
+        - `finished`: the newest message is an idle that was not there when we
+          asked, so the answer is on the device even though no event carried it.
+        - `never started`: the session has not changed since we asked.  Nothing
+          is going to run the question, and watching further would hold this
+          channel for ever with every later question behind it.
+        - `running` or `waiting`: the device took it and is working, or will not
+          answer at all.  Both keep the old behaviour: keep watching.
+        """
+        try:
+            newest = self.client.messages(session, limit=1, order="desc")
+        except OpenCodeError as error:
+            # A session that is gone will never run it; a device that does not
+            # answer at all proves nothing, and keeps the old behaviour.
+            return "never started" if error.status == 404 else "waiting"
+        if not newest:
+            # Nothing on the session, now or when we asked: it wrote nothing.
+            return "never started"
+        message = newest[0]
+        if str(message.get("id") or "") == self.before:
+            return "never started"
+        if message.get("type") == "idle":
+            return "finished"
+        return "running"

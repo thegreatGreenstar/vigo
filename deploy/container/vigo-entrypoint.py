@@ -28,6 +28,13 @@ CHECKOUT = os.environ.get("VIGO_CHECKOUT", "/vigo")
 PORT = os.environ.get("OPENCODE_PORT", "4096")
 HOSTNAME = os.environ.get("OPENCODE_HOSTNAME", "0.0.0.0")
 STARTUP_TIMEOUT = float(os.environ.get("VIGO_OPENCODE_TIMEOUT", "90"))
+def daemon_only() -> bool:
+    """Whether this is main's macOS path, which keeps OpenCode on the host.
+
+    The podman machine cannot share the Keychain or a Unix agent socket, so
+    that path runs only the daemon and takes its secrets from the environment.
+    """
+    return os.environ.get("VIGO_DAEMON_ONLY") == "1"
 
 
 def log(text: str) -> None:
@@ -114,6 +121,10 @@ def exit_status(code: int) -> int:
 
 
 def main() -> int:
+    if daemon_only():
+        # main's macOS launcher supplies the token and password as environment
+        # secrets and keeps OpenCode on the host; become the daemon alone.
+        os.execv(sys.executable, [sys.executable, "-m", "vigo"])
     secret = password()
     gh_token = read_secret(GH_TOKEN_FILE, required=False)
     if gh_token:

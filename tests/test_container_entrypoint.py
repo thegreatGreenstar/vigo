@@ -54,3 +54,14 @@ class EnvironmentTest(unittest.TestCase):
         with mock.patch.dict(os.environ, {}, clear=True):
             env = self.entry.environment("the-password", "the-token")
         self.assertEqual(env["GH_TOKEN"], "the-token")
+
+
+class DaemonOnlyTest(unittest.TestCase):
+    def setUp(self):
+        self.entry = load_entrypoint()
+
+    def test_daemon_only_is_opt_in(self):
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertFalse(self.entry.daemon_only())
+        with mock.patch.dict(os.environ, {"VIGO_DAEMON_ONLY": "1"}, clear=True):
+            self.assertTrue(self.entry.daemon_only())
