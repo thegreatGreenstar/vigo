@@ -211,12 +211,42 @@ class ResumeTest(unittest.TestCase):
             self.device.add_message(session, "assistant", content=[
                 {"type": "text", "text": "working"},
             ])
+            self.device.started_turn(session)
             worker = asking.Ask(app, token="tok", channel_id=CHANNEL, user_id=OWNER,
                                 device_name="macbook", prompt="q", new=False, title="t")
             worker.before = str(before["id"])
-            self.assertFalse(worker._is_idle(session), "the earlier idle is not this end")
+            self.assertNotEqual(worker._verdict(session), "finished",
+                                "the earlier idle is not this end")
             self.device.add_message(session, "idle")
-            self.assertTrue(worker._is_idle(session))
+            self.assertEqual(worker._verdict(session), "finished")
+
+    def test_a_carried_turn_the_device_no_longer_runs_is_ended(self):
+        """The upgrade's restart can stop the device too, and the turn with it.
+
+        The event stream and the execution both went with the restart, so
+        nothing will ever write this turn's idle.  The new process says the
+        turn was cut, posts the part the device wrote, and lets the channel go.
+        """
+        with TempDir() as directory:
+            self.device.script = [("lost", "part of the work")]
+            app = self.make(directory)
+            self.use(app, commands.ASK, options=[{"name": "prompt", "type": 3,
+                                                  "value": "long work"}])
+            self.assertTrue(self.device.wait_for_prompt())
+            session = app.run_for(CHANNEL).session
+            app._suspend_runs()
+            self.kill(app)
+            # The turn is now what a device left behind by its own restart
+            # looks like: it wrote part of an answer and no idle followed.
+            self.device.lost_turn(session)
+
+            second = self.make(directory)
+            second._resume_suspended()
+            self.assertTrue(self.discord.wait_for(
+                lambda: len(self.in_channel("part of the work")) == 1, 10))
+            self.assertTrue(self.discord.wait_for(lambda: second.run_for(CHANNEL) is None, 5))
+        self.assertIn("stopped this turn", self.in_channel("part of the work")[0])
+        self.assertEqual(self.asked(), ["long work"], "the turn was read, not asked again")
 
     def test_a_carried_turn_for_a_device_that_left_the_file_is_dropped(self):
         with TempDir() as directory:

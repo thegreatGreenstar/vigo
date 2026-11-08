@@ -10,8 +10,6 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlsplit
 
-from vigo.opencode_api import busy_since
-
 
 class FakeOpenCode:
     def __init__(self, name: str = "macbook", password: str = "pw",
@@ -28,7 +26,10 @@ class FakeOpenCode:
         self.goals: dict[str, dict] = {}
         self.hold_next = 0          # swallow this many admissions, as a stuck drain did
         self.hold_busy = False      # ... and stamp the session busy while doing it
+        self.write_only = False     # write the question, then never start the turn
         self.stay_busy = False      # a turn that ends leaves the session busy
+        self.active: set[str] = set()   # what `/api/session/active` answers
+        self.stream_cut = threading.Event()   # the device stops carrying events
         self.generated: list[str] = []
         self.permission_replies: list[tuple[str, str, str]] = []
         self.form_replies: list[tuple[str, str, dict]] = []
@@ -90,9 +91,10 @@ class FakeOpenCode:
         for subscriber in subscribers:
             subscriber.put(event)
 
-    def add_message(self, session: str, kind: str, **fields) -> dict:
+    def add_message(self, session: str, kind: str, when: dict | None = None,
+                    **fields) -> dict:
         message = {"id": self.next_id("msg"), "type": kind,
-                   "time": {"created": time.time() * 1000}, **fields}
+                   "time": when or {"created": time.time() * 1000}, **fields}
         with self.lock:
             self.messages.setdefault(session, []).append(message)
         return message
@@ -137,17 +139,23 @@ class FakeOpenCode:
         return totals
 
     def running(self) -> dict[str, dict]:
-        """What `/api/session/active` answers: the sessions a turn runs in."""
-        with self.lock:
-            return {session: {"type": "running"} for session, info in self.sessions.items()
-                    if busy_since(info) is not None}
+        """What `/api/session/active` answers: the sessions a turn runs in.
 
-    def started_turn(self, session: str) -> None:
+        The list is separate from the busy stamp, because the real device's
+        are: a turn that is torn down leaves the stamp behind and the list
+        empty, which is the shape that held a channel for ever.
+        """
+        with self.lock:
+            return {session: {"type": "running"} for session in self.active}
+
+    def started_turn(self, session: str, active: bool = True) -> None:
         """Mark the session busy, as the device does while an agent works."""
         with self.lock:
             stamps = self.sessions[session]["time"]
             stamps["busy"] = time.time() * 1000
             stamps.pop("idle", None)
+            if active:
+                self.active.add(session)
 
     def finished_turn(self, session: str) -> None:
         """Mark the session idle, as the device does when the agent stops."""
@@ -156,6 +164,24 @@ class FakeOpenCode:
             stamps["busy"] = time.time() * 1000
             stamps["idle"] = stamps["busy"] + 1
             stamps["updated"] = stamps["idle"]
+            self.active.discard(session)
+
+    def lost_turn(self, session: str) -> None:
+        """The device stops running the turn without writing its idle.
+
+        A restart or a crash of the device does this: the stamp still says a
+        turn began and nothing ever ends it.
+        """
+        with self.lock:
+            self.active.discard(session)
+
+    def cut_events(self) -> None:
+        """End every event stream, as a restart of the device does."""
+        self.stream_cut.set()
+        with self.lock:
+            subscribers = list(self.subscribers)
+        for subscriber in subscribers:
+            subscriber.put(None)
 
     def wait_for_prompt(self, timeout: float = 5.0) -> bool:
         end = time.monotonic() + timeout
@@ -181,13 +207,17 @@ class FakeOpenCode:
             if self.hold_busy:
                 # The device did this on the real machine: a turn it never
                 # actually ran, stamped busy, with the question still undelivered.
-                self.started_turn(session)
+                self.started_turn(session, active=False)
             return
         if kind == "synthetic":
             self.add_message(session, "synthetic", text=text,
                              metadata={"source": "goal"})
         else:
             self.add_message(session, "user", text=text)
+        if self.write_only:
+            # The prompt was written, and the drain that should run it is stuck:
+            # no turn stamps the session and no script runs.
+            return
         self.started_turn(session)
         threading.Thread(target=self.run_script, args=(session,), daemon=True).start()
 
@@ -264,6 +294,20 @@ class FakeOpenCode:
                     "sessionID": session,
                     "message": step[1] if len(step) > 1 else "the turn failed",
                 })
+                return
+            elif action == "cut":
+                # The event stream ends before the turn does: a restart of the
+                # device, or its reader dropping.  The run has to poll then.
+                self.cut_events()
+            elif action == "lost":
+                # A turn the device stops running without writing its idle:
+                # part of an answer is on the session, and nothing ends it.
+                self.add_message(
+                    session, "assistant",
+                    content=[{"type": "text", "text": step[1] if len(step) > 1 else "half an answer"}],
+                    cost=0.002, tokens={"input": 120, "output": 8},
+                )
+                self.lost_turn(session)
                 return
             elif action == "idle":
                 self.add_message(session, "assistant",
@@ -384,11 +428,13 @@ class FakeOpenCode:
                     try:
                         self.wfile.write(b": ready\n\n")
                         self.wfile.flush()
-                        while not fake.hang_events.is_set():
+                        while not fake.hang_events.is_set() and not fake.stream_cut.is_set():
                             try:
                                 event = channel.get(timeout=0.2)
                             except queue.Empty:
                                 continue
+                            if event is None or fake.stream_cut.is_set():
+                                break
                             raw = f"data: {json.dumps(event)}\n\n".encode()
                             self.wfile.write(raw)
                             self.wfile.flush()
