@@ -144,6 +144,19 @@ Torn between two sizes: pick the smaller, and say so.
 8. **An answer that reaches more than its asker is scrubbed.** A channel, a group DM and a task title get the shape
    check and the personal-text check. A hidden answer and a one-to-one DM do not. A redirect is not followed and a
    gateway that is not Discord's is refused, because each carries a credential.
+9. **The pod is not the host.** Metal on macOS, host GPU drivers, the host display, audio, USB, host
+   loopback MCP servers and host-only data require the host OpenCode copy or a native runner. Do not
+   add host networking, a broad home mount or a device just to make one test pass. Document the
+   capability that needs the host, never a hostname, address or user name.
+10. **The repository is public.** Every example, test, commit message and doc in the tree uses placeholders. No
+    hostname, tailnet or LAN address, real user name, home path with a real user, serial number, token, password or
+    private key goes into the tree. Use `you`, `peer-host`, `macbook`, `pc` and documentation address ranges. The
+    user's own settings file may hold the real values; the repository may not.
+11. **On Linux the pod is the boundary.** Vigo and its agent run in two rootless podman containers: the daemon holds
+   the Discord token and the settings, and the agent holds `~/Projects`, its own home and the `gh` token. Both use a
+   read-only root, no capabilities, no-new-privileges, pasta networking and ports only on the tailnet address. The
+   private TPM keys stay on the host; the containers get an agent socket. Do not put the token in the agent, put the
+   projects in the daemon, or widen the mounts/use host networking to fix a bug without saying what that exposes.
 
 ## Where this design comes from, and when we last looked
 
@@ -200,24 +213,31 @@ asks for `DIRECT_MESSAGES` only: no privileged intent, and no guild message is r
 somebody else's message are ignored, and a stranger is refused.
 
 `deploy/` holds the service units and the launchers that unseal the password (Keychain on macOS, systemd-creds on
-Linux). `deploy/container/` holds the rootless container: the image, the launcher, the SSH client configuration and
-the service files. `art/` holds the icon pipeline.
+Linux). `deploy/container/` holds the rootless container: the images, the launcher, the SSH client configuration, the
+service files and `SETUP.md`, which lists the host-only packages, secrets, keys and mounts. `art/` holds the icon pipeline.
 
-The daemon runs in that container on a machine that installs it. `dev.vigo.container` runs
-`deploy/container/run.sh`. The token and the OpenCode password come from `printenv`, which the podman secrets set. The
-container's one key is `~/.ssh/vigo_container_ed25519`. The container's `ssh_config` maps `github.com` and the
-checkout's `github-read` and `github-write` aliases to that key. A rebuild must keep them, or `/vigo upgrade` fails
-inside the container. The launcher starts the podman machine when it does not answer, because the Homebrew package
-does not start that VM at login. On that machine the host job's plist is `dev.vigo.bot.plist.off`.
+On Linux the pod runs the daemon and its agent in two containers. `deploy/container/run.sh` uses systemd credentials,
+the `vigo-ssh-agent` TPM socket, pasta networking, read-only roots, no capabilities and no-new-privileges; it
+publishes 4096 and 4098 only on the tailnet address. The daemon mounts the checkout, settings and state; the agent
+mounts `~/Projects`, its own home and the `gh` token. `deploy/build-container.sh` makes the minimal daemon image and
+the tools-rich agent image from the pinned release checksums.
+
+On macOS the same two-container pod runs inside the podman machine. The token and the OpenCode password are podman
+secrets, because the Keychain cannot enter the VM; the agent gets the password and the optional gh token, and the
+daemon gets the token, password and the one SSH key it needs to pull. `~/Library/LaunchAgents/dev.vigo.container.plist`
+runs `deploy/container/run.sh`. The launcher starts the podman machine when it does not answer, because the Homebrew
+package does not start that VM at login. A rebuild must keep the pinned `ssh_config`, `known_hosts` and the key path,
+or `/vigo upgrade` fails inside the container.
 
 ## Commits
 
 Batch the work: **one commit per request, or fewer**. Never one per change, and never while changes are still landing.
 Run the full suite once, then stage everything and commit.
 
-Commit signing is off for the agent account `VIGO-VI`, as of 2026-11-06: a commit asks for no YubiKey, no Touch ID
-and no PIN, and the history accepts it unsigned. Do not turn signing back on to make a commit look like the owner's.
-On a machine whose agent key is its TPM, the signature is that machine's and costs no hand either.
+Vigo signs every commit as `VIGO-VI`. On Linux the signing key is a TPM key held by `vigo-ssh-agent`; on macOS it is
+the container's SSH key. The signature carries Vigo's identity and costs no YubiKey and no Touch ID, because it is
+that machine's key and not greenstar's. Do not sign as greenstar for the agent, and do not turn signing off to make a
+commit look like the owner's.
 
 ## Pull requests
 

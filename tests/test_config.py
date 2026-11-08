@@ -27,6 +27,13 @@ class ConfigTest(unittest.TestCase):
         self.assertIn("surprise", str(caught.exception))
 
     @unittest.skipIf(os.name == "nt", "Windows guards with ACLs, not these bits")
+    def test_a_peer_password_is_separate_from_the_opencode_password(self):
+        raw = base_settings()
+        raw["peerPassword"] = "peer-only"
+        with TempDir() as directory:
+            settings = configuration.load(write_settings(directory, raw))
+        self.assertEqual(settings.peer_password, "peer-only")
+
     def test_a_readable_file_stops_it(self):
         with TempDir() as directory:
             path = write_settings(directory, base_settings())
