@@ -37,6 +37,38 @@ OP_PING = 0x9
 OP_PONG = 0xA
 OP_PRESENCE = 0x3
 
+# The longest frame this client takes.  Discord's own limit for a message is far
+# below it, and a length is eight bytes from the server: without a bound, one
+# bad header asks for an allocation the machine cannot make.
+MOST_FRAME = 8 * 1024 * 1024
+# The most the handshake head may hold.  Discord's answer is a few hundred
+# bytes; a server that never sends its blank line must not fill the memory.
+MOST_HEAD = 64 * 1024
+
+# Where a gateway may be.  The REST call that names it is trusted only as far
+# as TLS, and this machine's trust store is not the only one an attacker can
+# reach: an answered REST call must not send the bot's token to a host of its
+# own.  A loopback address is the test server and a gateway on the same machine.
+DISCORD_HOSTS = (".discord.gg", ".discord.com")
+LOOPBACK_HOSTS = ("127.0.0.1", "::1", "localhost")
+
+
+def gateway_url_ok(url: str) -> bool:
+    """Whether this address is a gateway the bot may send its token to."""
+    parsed = urllib.parse.urlsplit(url)
+    if parsed.scheme not in ("ws", "wss") or parsed.username or parsed.password:
+        return False
+    host = (parsed.hostname or "").lower()
+    if not host:
+        return False
+    if host in LOOPBACK_HOSTS:
+        return True
+    if parsed.scheme != "wss":
+        return False
+    return any(host == suffix.lstrip(".") or host.endswith(suffix)
+               for suffix in DISCORD_HOSTS)
+
+
 
 class GatewayClosed(Exception):
     pass
@@ -67,6 +99,8 @@ def _frame(opcode: int, payload: bytes) -> bytes:
 class WebSocket:
     def __init__(self, url: str, timeout: float = 20.0) -> None:
         parsed = urllib.parse.urlsplit(url)
+        if parsed.scheme not in ("ws", "wss") or parsed.username or parsed.password:
+            raise GatewayClosed("the gateway address is not a websocket URL")
         self.host = parsed.hostname or ""
         self.port = parsed.port or (443 if parsed.scheme == "wss" else 80)
         self.path = parsed.path or "/"
@@ -86,6 +120,15 @@ class WebSocket:
             context = ssl.create_default_context()
             raw = context.wrap_socket(raw, server_hostname=self.host)
         self.sock = raw
+        try:
+            self._handshake()
+        except GatewayClosed:
+            # A socket left open under a refused handshake is a descriptor no
+            # later close reaches: this one owns it, and gives it back.
+            self.close()
+            raise
+
+    def _handshake(self) -> None:
         key = base64.b64encode(os.urandom(16)).decode()
         request = (
             f"GET {self.path} HTTP/1.1\r\n"
@@ -96,15 +139,23 @@ class WebSocket:
             "Sec-WebSocket-Version: 13\r\n"
             "\r\n"
         )
-        raw.sendall(request.encode())
+        if self.sock is None:
+            raise GatewayClosed("not connected")
+        self.sock.sendall(request.encode())
         head = self._read_head()
         if b" 101 " not in head.split(b"\r\n", 1)[0]:
             raise GatewayClosed(f"handshake refused: {head.split(chr(13).encode())[0].decode(errors='replace')}")
         expected = base64.b64encode(hashlib.sha1((key + GUID).encode()).digest()).decode()
+        accept = ""
         for line in head.split(b"\r\n")[1:]:
             name, _, value = line.partition(b":")
-            if name.strip().lower() == b"sec-websocket-accept" and value.strip().decode() != expected:
-                raise GatewayClosed("handshake answer does not match the key")
+            if name.strip().lower() == b"sec-websocket-accept":
+                accept = value.strip().decode(errors="replace")
+        # The answer has to prove it read this request's key: a host that
+        # answers 101 without it never agreed to be a WebSocket, and the
+        # identify frame after it carries the token.
+        if accept != expected:
+            raise GatewayClosed("handshake answer does not match the key")
 
     def _read_head(self) -> bytes:
         head = b""
@@ -115,6 +166,8 @@ class WebSocket:
             if not piece:
                 raise GatewayClosed("closed during the handshake")
             head += piece
+            if len(head) > MOST_HEAD:
+                raise GatewayClosed(f"the handshake head is past {MOST_HEAD} bytes")
         head, _, rest = head.partition(b"\r\n\r\n")
         self.buffer += rest
         return head
@@ -152,6 +205,10 @@ class WebSocket:
             length = struct.unpack("!H", self._read(2, deadline))[0]
         elif length == 127:
             length = struct.unpack("!Q", self._read(8, deadline))[0]
+        if length > MOST_FRAME:
+            raise GatewayClosed(
+                f"a frame of {length} bytes is past the {MOST_FRAME} one may hold"
+            )
         mask = self._read(4, deadline) if masked else b""
         payload = self._read(length, deadline) if length else b""
         if masked:

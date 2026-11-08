@@ -47,6 +47,21 @@ class Pins(unittest.TestCase):
         runner = read("tests/in-codespace.sh")
         self.assertIn(f'versions=${{*:-"{" ".join(PYTHONS)}"}}', runner)
 
+    def test_every_action_is_pinned_to_a_commit(self) -> None:
+        """A tag moves: a release can be repointed at other code after review.
+
+        GitHub's own guidance is a full-length commit SHA, with the version in
+        a comment so a reader still knows what runs.
+        """
+        workflow = read(".github/workflows/tests.yml")
+        uses = re.findall(r"uses:\s+(\S+)(?:\s+#\s*(\S+))?", workflow)
+        self.assertTrue(uses, "the workflow uses no action")
+        for action, comment in uses:
+            name, _, ref = action.partition("@")
+            self.assertRegex(name, r"\A[\w.-]+/[\w.-]+\Z", action)
+            self.assertRegex(ref, r"\A[0-9a-f]{40}\Z", f"{action} is not a commit SHA")
+            self.assertRegex(comment or "", r"\Av\d+", f"{action} names no version")
+
     def test_the_linux_matrix_is_not_in_the_workflow(self) -> None:
         """A runner covers macOS and Windows; a codespace covers Linux."""
         workflow = read(".github/workflows/tests.yml")

@@ -91,12 +91,30 @@ class ChunkTest(unittest.TestCase):
         for body, what in (
             ("ghp_0123456789abcdefghijABCDEFGHIJ", "GitHub token"),
             ("AKIAIOSFODNN7EXAMPLE", "AWS key"),
+            ("AIza" + "A" * 35, "Google key"),
             ("xoxb-1234567890-abcdefghij", "Slack token"),
+            ("Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.abcdefghijkl",
+             "bearer token"),
+            ("sk_live_" + "a" * 24, "Stripe key"),
         ):
             with self.subTest(what=what):
                 answer, found = text.scrub(body)
                 self.assertEqual(found, what)
                 self.assertNotIn(body, answer)
+
+    def test_the_bot_own_token_is_caught_before_a_channel_reads_it(self):
+        """The answer is posted by the bot, so its own credential is the one
+        an agent can read and a channel must never see."""
+        token = "Bot " + "M" * 24 + ".GaBcDe." + "a" * 27
+        answer, what = text.scrub(f"the token is {token}")
+        self.assertEqual(what, "Discord token")
+        self.assertNotIn("GaBcDe", answer)
+
+    def test_a_discord_webhook_is_caught(self):
+        url = "https://discord.com/api/webhooks/123456789012345678/abcdefghijklmnop"
+        answer, what = text.scrub(f"post with {url}")
+        self.assertEqual(what, "Discord webhook")
+        self.assertNotIn("abcdefghijklmnop", answer)
 
     def test_an_ordinary_answer_is_left_alone(self):
         for body in (

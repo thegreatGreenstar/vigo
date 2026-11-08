@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from . import httpc, log
+from .gateway import gateway_url_ok
 
 API = "https://discord.com/api/v10"
 
@@ -111,7 +112,13 @@ class Discord:
         reply = self._call("GET", "/gateway/bot")
         if not reply.ok or not isinstance(reply.body, dict):
             raise self._error(reply, "no gateway url", "GET /gateway/bot")
-        return reply.body["url"]
+        url = str(reply.body.get("url") or "")
+        if not gateway_url_ok(url):
+            # The identify frame after this address carries the token, so an
+            # address that is not Discord's is worse than no answer at all.
+            raise DiscordError(0, 0, "the gateway address is not Discord's",
+                               "GET /gateway/bot")
+        return url
 
     # -- slash commands ---------------------------------------------------
 
@@ -189,8 +196,11 @@ class Discord:
             raise self._error(reply, "cannot edit", f"message {message_id}")
         return reply.body
 
-    def messages(self, channel_id: str, limit: int = 50) -> list[dict]:
-        reply = self._call("GET", f"/channels/{channel_id}/messages?limit={int(limit)}")
+    def messages(self, channel_id: str, limit: int = 50, before: str = "") -> list[dict]:
+        query = f"?limit={int(limit)}"
+        if before:
+            query += f"&before={before}"
+        reply = self._call("GET", f"/channels/{channel_id}/messages{query}")
         if not reply.ok or not isinstance(reply.body, list):
             raise self._error(reply, "cannot read", f"channel {channel_id}")
         return reply.body

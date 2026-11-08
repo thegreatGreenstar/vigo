@@ -42,14 +42,17 @@ jobs:
     name: quick · ${{ matrix.os }}
     if: github.event_name == 'pull_request' && github.event.pull_request.draft
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
         os: [macos-latest, windows-latest]
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: ${{ env.QUICK_PYTHON }}
 
@@ -63,15 +66,18 @@ jobs:
     name: ${{ matrix.os }} · Python ${{ matrix.python }}
     if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
         os: [macos-latest, windows-latest]
         python: ["3.12", "3.13", "3.14"]
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: ${{ matrix.python }}
 
@@ -85,9 +91,11 @@ jobs:
     name: lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
 
@@ -98,10 +106,14 @@ jobs:
         run: ruff check --output-format=github .
 
   secrets:
-    name: no secrets in the tree
+    name: no secrets in the tree or history
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
 
       - name: The settings file stays outside the repo
         run: |
@@ -111,5 +123,15 @@ jobs:
           fi
           if git grep -nE 'Bot [A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{20,}'; then
             echo "::error::a Discord bot token is in the tree"
+            exit 1
+          fi
+
+      - name: The history holds no token either
+        run: |
+          # A public repository exposes every commit, not only the checked out
+          # tree.  A token that was committed once and removed still works.
+          if git log --all --format='%H %s%n%b' -p --no-color -- . \
+              | grep -nE 'Bot [A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{20,}'; then
+            echo "::error::a Discord bot token is in the history; rotate it and rewrite the history before publishing"
             exit 1
           fi

@@ -14,6 +14,11 @@ Two things follow from that shape and never change:
   reaction. A stranger who installs the app gets a refusal and nothing else; only `owner` can approve a tool.
 - **Nothing identifying goes to Discord.** No device names in a channel message, no hostnames, no paths, no error
   text, no user ids except in an allowlist answer that is always ephemeral. The log may hold them; Discord may not.
+- **An allow is permission to ask, not to act.** `/vigo allow` lets someone ask a question: their answer is
+  ephemeral and in a session of their own, their ask never becomes a goal, they choose no device, and they cannot use
+  `status`, `queue`, `devices`, `stop`, `upgrade`, `goal`, `allow`, `deny` or `allowed`. Only the owner approves a tool, and an
+  approved person's card has no `Always allow`. The allowlist is read again when a queued run starts, so a deny or an
+  expiry reaches a question that already waits.
 
 ## How to work
 
@@ -132,7 +137,13 @@ Torn between two sizes: pick the smaller, and say so.
    nothing.
 5. **Discord gives three seconds.** Acknowledge first, then probe or run. Any new command follows that order.
 6. **A tool runs only when the owner clicks.** Permission cards go to the owner's DM; a channel fallback says only
-   that approval is needed, never what the tool wanted to touch.
+   that approval is needed, never what the tool wanted to touch. A card for an approved person's question says so:
+   the owner approves for somebody else's work, and must see whose it is.
+7. **Only the bot's own message is the allowlist.** The list lives in Discord, so authorship is checked against the
+   bot's user id before its content is read. A message that opens with the marker from anybody else grants nothing.
+8. **An answer that reaches more than its asker is scrubbed.** A channel, a group DM and a task title get the shape
+   check and the personal-text check. A hidden answer and a one-to-one DM do not. A redirect is not followed and a
+   gateway that is not Discord's is refused, because each carries a credential.
 
 ## Where this design comes from, and when we last looked
 
