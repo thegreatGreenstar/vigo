@@ -150,7 +150,7 @@ class ReplyTest(unittest.TestCase):
         told = self.device.prompts[-1][1]
         self.assertIn("“010015100B514000.log”, 133 KB", told)
         self.assertIn("https://cdn.discordapp.com/attachments/1/2/log?ex=signed", told)
-        self.assertIn("curl -L -o /tmp/vigo-attached", told)
+        self.assertIn('curl -L -o "$(mktemp)"', told)
 
     def test_a_stranger_gets_no_answer_about_a_file(self):
         self.device.script = [("idle", "the first answer")]
@@ -183,6 +183,55 @@ class ReplyTest(unittest.TestCase):
                   if set(message["content"]) == {"y"}]
         self.assertGreater(len(posted), 1, "the answer takes more than one message")
         self.assertEqual("".join(posted), "y" * 4000, "the DM holds every word of it")
+
+    def test_a_group_dm_answer_is_scrubbed_like_a_channel(self):
+        """A group DM has several readers, so it is not the asker's alone."""
+        group = "group_1"
+        self.discord.channel_types[group] = 3
+        app = self.make()
+        app.state.remember_answer("old", group)
+        token = "M" * 25 + ".GaBcDe." + "a" * 27
+        self.device.script = [("idle", f"the token is {token}")]
+        app.handle_message({
+            "id": self.discord.next_id("msg"),
+            "channel_id": group,
+            "content": "and then?",
+            "author": {"id": OWNER, "bot": False},
+            "message_reference": {"message_id": "old"},
+        })
+        self.assertTrue(self.discord.wait_for(
+            lambda: any("redacted: Discord token" in message["content"]
+                        for message in self.discord.messages.get(group, [])), 10))
+        self.assertIn("everyone in this conversation sees the answer",
+                      self.device.prompts[-1][1])
+
+    def test_a_one_to_one_dm_answer_keeps_what_the_asker_asked_about(self):
+        self.discord.channel_types[DM] = 1
+        app = self.make()
+        app.state.remember_answer("old", DM)
+        token = "M" * 25 + ".GaBcDe." + "a" * 27
+        self.device.script = [("idle", f"the token is {token}")]
+        app.handle_message({
+            "id": self.discord.next_id("msg"),
+            "channel_id": DM,
+            "content": "and then?",
+            "author": {"id": OWNER, "bot": False},
+            "message_reference": {"message_id": "old"},
+        })
+        self.assertTrue(self.discord.wait_for(
+            lambda: any(token in message["content"]
+                        for message in self.discord.messages.get(DM, [])), 10))
+        self.assertIn("only the asker sees the answer", self.device.prompts[-1][1])
+
+    def test_a_reply_meets_the_guest_share_too(self):
+        """A reply is a question, so it is not a way around the cap."""
+        guest = "777777777777777777"
+        app = self.make(users=[guest], guests={"share": 0})
+        app.state.remember_answer("old", DM)
+        self.reply(app, "old", who=guest)
+        self.assertTrue(self.discord.wait_for(
+            lambda: any("paused" in said for said in self.said()), 5))
+        self.assertEqual(self.device.prompts, [])
 
     def test_a_plain_dm_is_ignored(self):
         app = self.make()

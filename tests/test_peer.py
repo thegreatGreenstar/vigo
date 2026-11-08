@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from vigo import __version__
+from vigo import __version__, httpc
 from vigo.peer import (
     PeerClient,
     PeerServer,
@@ -49,6 +49,12 @@ class PeerTest(unittest.TestCase):
     def test_an_unknown_route_is_refused(self):
         with self.assertRaises(OSError):
             PeerClient(self.url, "pw")._call("GET", "/vigo/secrets")
+
+    def test_a_header_that_is_not_ascii_is_refused_not_broken(self):
+        """A crafted header must answer 401, not raise inside the comparison."""
+        status, _, _ = httpc.call(f"{self.url}/vigo/info",
+                                  headers={"Authorization": "Básico"})
+        self.assertEqual(status, 401)
 
     def test_it_reports_the_build_it_was_given(self):
         server = PeerServer("127.0.0.1", 0, "fresh-device", "pw", build="abc1234").start()
@@ -143,7 +149,7 @@ class SupervisorTest(unittest.TestCase):
 
     PRINTED = """gui/501/dev.vigo.bot = {
 \tactive count = 1
-\tpath = /Users/greenstar/Library/LaunchAgents/dev.vigo.bot.plist
+\tpath = /Users/example/Library/LaunchAgents/dev.vigo.bot.plist
 \tstate = running
 
 \tprogram = /opt/homebrew/bin/python3.14
@@ -153,12 +159,12 @@ class SupervisorTest(unittest.TestCase):
 \t\tvigo
 \t}
 
-\tworking directory = /Users/greenstar/Projects/vigo
+\tworking directory = /Users/example/Projects/vigo
 }
 """
 
     def test_it_reads_the_jobs_working_directory(self):
-        self.assertEqual(_launchd_workdir(self.PRINTED), "/Users/greenstar/Projects/vigo")
+        self.assertEqual(_launchd_workdir(self.PRINTED), "/Users/example/Projects/vigo")
 
     def test_a_job_without_one_is_not_this_checkout(self):
         self.assertEqual(_launchd_workdir("state = running\n"), "")

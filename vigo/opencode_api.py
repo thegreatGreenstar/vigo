@@ -411,7 +411,7 @@ class EventStream:
         )
         data: list[str] = []
         try:
-            with urllib.request.urlopen(request, timeout=CONNECT) as answer:
+            with httpc.open_url(request, CONNECT) as answer:
                 self.answer = answer
                 self.ready.set()
                 for raw in answer:

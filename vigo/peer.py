@@ -14,6 +14,7 @@ reachable from the other machine to be worth anything.
 from __future__ import annotations
 
 import base64
+import hmac
 import json
 import os
 import subprocess
@@ -80,7 +81,16 @@ class _Handler(BaseHTTPRequestHandler):
         self.wfile.write(raw)
 
     def _allowed(self) -> bool:
-        return self.headers.get("Authorization") == _auth(self.server.password)
+        """Whether this request carries the password.
+
+        The values are compared in constant time: a plain `==` answers faster
+        when it fails at the first byte, which is a way to learn the password a
+        byte at a time.  Both sides are bytes, because a header that is not
+        ASCII would make `compare_digest` raise instead of refusing it.
+        """
+        given = self.headers.get("Authorization") or ""
+        return hmac.compare_digest(given.encode("latin-1", "replace"),
+                                   _auth(self.server.password).encode("ascii"))
 
     def do_GET(self) -> None:
         if not self._allowed():
