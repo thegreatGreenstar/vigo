@@ -1236,15 +1236,21 @@ class App:
         if not reply.ok:
             log.debug("interaction already answered")
 
-    def _say(self, token: str, content: str) -> bool:
+    def _say(self, token: str, content: str) -> dict | None:
+        """Put this text on the message Discord made for the interaction.
+
+        Discord returns that message, and its id is what keeps the question's
+        line current after the interaction's token expires: a question that
+        waited in the channel's queue can pass the token's fifteen minutes
+        before its run even starts.
+        """
         try:
-            self.api.edit_original(token, {
+            return self.api.edit_original(token, {
                 "content": content, "allowed_mentions": {"parse": []},
             })
-            return True
         except DiscordError as error:
             log.error(f"cannot say it: {error.message}")
-            return False
+            return None
 
     # -- the commands -----------------------------------------------------
 
@@ -1349,10 +1355,13 @@ class App:
             log.info(f"ask: queued in this channel ({ahead} ahead)")
         # The message is the question's own line: the run past `timeout` adds
         # its note to the end of it instead of posting a message beside it.
-        # When the edit does not land there is no line to grow, and the note
-        # goes out on its own.
-        if self._say(token, line):
+        # Discord returns that message, so its id keeps the line editable after
+        # the interaction's token expires; when the edit does not land there is
+        # no line to grow, and the note goes out on its own.
+        posted = self._say(token, line)
+        if posted is not None:
             worker.shown = line
+            worker.message_id = str(posted.get("id") or "")
         self.start_next(channel_id)
 
     def _objective(self, prompt: str) -> str:
@@ -1369,7 +1378,7 @@ class App:
         """Set, pause, resume or clear the goal this channel has.
 
         A new objective is work of its own: it opens a session under the
-        device's subagent agent, so the channel's conversation keeps answering
+        device's coding agent, so the channel's conversation keeps answering
         questions while the goal runs.  A channel that already holds a goal
         keeps that session, so a second objective steers the work it is doing
         instead of starting a second one, and `pause`, `resume` and `clear`
@@ -1447,13 +1456,13 @@ class App:
                 )
                 return
             if not control and not steer:
-                # Work of its own, under the subagent agent: the conversation
-                # stays a conversation.  `open_session` remembers it, so a
-                # follow-up and `/vigo status` reach the work.
+                # Work of its own, under the device's coding agent: the
+                # conversation stays a conversation.  `open_session` remembers
+                # it, so a follow-up and `/vigo status` reach the work.
                 session = asking.open_session(
                     self, client, device, channel_id, False,
                     f"{title} · {text.subject(objective, 40)}",
-                    agent=client.subagent_agent(), worker=True,
+                    agent=client.worker_agent(), worker=True,
                 )
             elif adopted:
                 self.state.remember_session(channel_id, device.name, session, title)
