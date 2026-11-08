@@ -78,6 +78,32 @@ covered by tests.
 | 3 | Take over a release action | Actions were named by tag, and a tag can move | every action is pinned to a commit, and a test fails if one is not |
 | 3 | Read a token from an earlier commit | Only the checked-out tree was scanned | CI scans the history too, and needs `fetch-depth: 0` |
 
+## Container boundary
+
+On Linux the daemon and the agent run in two rootless containers in one pod. The agent holds
+`~/Projects`, its own home, the agent settings, the `gh` token and the SSH agent socket. The daemon holds
+the Discord token, the settings, the state, the private checkout and the peer password. The agent has no
+Discord token, peer password, daemon settings or daemon state. The daemon has no `~/Projects`, agent home
+or `gh` token.
+
+A fake-secret attack lab tested both containers. The first wave found one shared writable path, the SSH
+agent directory, and fixed it by mounting that directory read-only in both containers. The same wave found
+no token, peer password, daemon state, host file write or container escape. The agent's CPU is capped, and
+the two containers have separate network namespaces on one user-defined bridge.
+
+The remaining container risks are named here rather than hidden. Both containers sit on one user-defined
+network, so the agent can reach the daemon's peer port over the bridge. The peer password is separate from
+the OpenCode password and is not in the agent, so that attempt cannot authenticate. The separate network
+namespaces keep the agent from binding the daemon's published port, which the second attack wave confirmed.
+With `VIGO_AGENT_GPU=1` the agent also gets `/dev/dri/renderD128`. That adds the `amdgpu` kernel driver and
+the GPU firmware as attack surface, not host files. It is the render node only, so there is no modesetting
+or EDID path. VRAM is zeroed on allocation, and render-node buffers belong to the file descriptor that made
+them, so the GPU does not hand another process's frames through the API; kernel and driver bugs and timing
+side channels remain. The GPU is off by default. Rootless podman exposes host storage paths in
+`/proc/self/mountinfo`, which is inherent to the runtime. The OpenCode static web page on the published port
+answers without Basic auth, while the API returns 401, so keep that port on the tailnet and not on a LAN or
+the public internet. Metal on macOS and host devices need the host OpenCode copy, as the README says.
+
 The limits above are the remaining risk. The largest is the one the design accepts: an approved person runs the
 agent as the owner, so an allow is trust in that person and not only in their questions.
 

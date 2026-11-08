@@ -104,6 +104,8 @@ addition.
 - **The token never enters the repository.** Settings live in
   `~/.config/vigo/vigo.json` (mode 0600); the repo ships only an example.
   CI fails if a `vigo.json` or a bot token shape reaches the tree.
+- **The peer API has its own password.** It is separate from the OpenCode password, kept in the daemon
+  only, so a compromised agent can use OpenCode but cannot call `/vigo/update` or restart the daemon.
 - **The OpenCode password is the real trust boundary.** Anyone with it can run
   anything on that device, so it should not be a password you use elsewhere,
   and the port should not face the internet. See [Security](#security).
@@ -201,7 +203,7 @@ Then fill it in:
     "perUserHourly": 250000, "perUserDaily": 1000000
   },
   "devices": [
-    { "name": "macbook", "url": "http://127.0.0.1:4096",
+    { "name": "macbook", "url": "http://vigo-opencode:4096",
       "directory": "/Users/you/Projects/ScarletNX" },
     { "name": "pc", "url": "http://192.168.1.20:4096",
       "directory": "C:/Users/you/Projects/ScarletNX" }
@@ -275,9 +277,10 @@ cd vigo
 ./install.sh
 ```
 
-It checks the Python, makes `~/.config/vigo/vigo.json` from the example (never overwriting one), installs
-`~/.local/libexec/opencode-serve.sh`, and, where systemd exists, both user units, pointed at that checkout and that
-interpreter. Then:
+It makes `~/.config/vigo/vigo.json` from the example (never overwriting one) and puts the service files in place. On
+macOS that is the Keychain launcher and two LaunchAgents. On Linux it is `vigo-container.service` plus
+`vigo-ssh-agent.service`: one rootless container running Vigo **and its own OpenCode**, with systemd unsealing the
+secrets. Then:
 
 1. In the settings, set `device` to this machine's name, keep the **same** `devices` list as the other machine, and
    keep this machine's password in its own hardware:
@@ -285,13 +288,20 @@ interpreter. Then:
    printf '%s' "$(openssl rand -hex 32)" | systemd-creds encrypt --user \
        --name=opencode-password - ~/.config/vigo/opencode.cred
    ```
-   with `"passwordCommand": "systemd-creds decrypt --user --name=opencode-password ~/.config/vigo/opencode.cred -"`,
-   so the file holds no secret. "The two devices cannot hold the same file" below says which secret sits where.
-2. Start OpenCode there too, reachable from the other machine:
+   On Linux the device's own `passwordCommand` is `cat /run/secrets/opencode-password`; the unit mounts the unsealed
+   file there. "The two devices cannot hold the same file" below says which secret sits where.
+2. On macOS, start OpenCode there too, reachable from the other machine:
    ```sh
-   OPENCODE_HOSTNAME=0.0.0.0 ./deploy/opencode-serve.sh
+   OPENCODE_HOSTNAME=0.0.0.0 ./deploy/opencode-serve-macos.sh
    ```
-   or `systemctl --user enable --now opencode-serve vigo`.
+   or load the LaunchAgents. On Linux, make Vigo's TPM identity, add its public keys to `VIGO-VI`, build the image,
+   and start the container:
+   ```sh
+   ./deploy/vigo-identity.sh
+   ./deploy/build-container.sh
+   systemctl --user enable --now vigo-ssh-agent vigo-container
+   ```
+   See "Running in a rootless container" below.
 3. Reach each other over the **Tailscale** address, never the LAN address and never a port forwarded from the
    router. See "Reaching the other device".
 
@@ -310,10 +320,10 @@ opencode serve --hostname "$(tailscale ip -4)" --port 4096
 then the settings name each machine by its tailnet address and nothing else:
 
 ```jsonc
-// on fresh-device
-{ "name": "rotten-device", "url": "http://100.64.1.20:4096", "directory": "C:/Users/…" }
-// on rotten-device
-{ "name": "fresh-device", "url": "http://100.64.0.10:4096", "directory": "/Users/…" }
+// on macbook
+{ "name": "pc", "url": "http://100.64.1.20:4096", "directory": "C:/Users/…" }
+// on pc
+{ "name": "macbook", "url": "http://100.64.0.10:4096", "directory": "/Users/…" }
 ```
 
 Add `"peerPort": 4098` and `"peerHost": "0.0.0.0"` on both, or set `"peer"` on each device entry to point at the
@@ -326,11 +336,11 @@ ports:
 ```sh
 ssh -N -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 \
     -L 4097:127.0.0.1:4096 -L 4099:127.0.0.1:4098 \
-    greenstar@rotten-device
+    user@peer-host
 ```
 
 ```jsonc
-{ "name": "rotten-device", "url": "http://127.0.0.1:4097",
+{ "name": "pc", "url": "http://127.0.0.1:4097",
   "directory": "C:/Users/…", "peer": "http://127.0.0.1:4099" }
 ```
 
@@ -349,90 +359,170 @@ password and nothing runs before your Keychain is unlocked.
 - **macOS**: two LaunchAgents, `dev.vigo.opencode` and `dev.vigo.bot`, both with `RunAtLoad` and `KeepAlive`. Check
   them with `launchctl print gui/$(id -u)/dev.vigo.bot | head -20`, read their output in
   `~/.local/state/vigo/*.err`, and stop one with `launchctl bootout gui/$(id -u)/dev.vigo.bot`.
-- **Linux**: two systemd user units. `systemctl --user enable --now opencode-serve vigo`; they start at login too
-  unless you run `loginctl enable-linger $USER`, which starts them before you log in and is only useful if the
-  password does not need your login keychain.
+- **Linux**: `vigo-ssh-agent.service` and `vigo-container.service`. `systemctl --user enable --now vigo-ssh-agent
+  vigo-container`; they start at login unless you run `loginctl enable-linger $USER`. Lingering is safe here because
+  systemd unseals the container's credentials without a login keychain, so a boot start needs no person.
 
-Both restart themselves after a crash, which matters at login: OpenCode binds the tailnet address, so it fails until
-Tailscale is up, and the supervisor simply tries again.
+Both restart themselves after a crash, which matters at login: the container binds the tailnet address, so it exits
+until Tailscale is up, and systemd simply tries again.
 
-### Running the daemon in a container
+### Running in a rootless pod
 
-`deploy/container/` holds a rootless podman setup for the daemon. It uses
-`python:3.14-slim` with git and an SSH client, mounts the checkout, the settings and the state at their real paths,
-and takes its three secrets from podman. `opencode serve` stays on the host, so the container holds only the daemon.
+`deploy/container/` runs two rootless containers in one pod: one network namespace, two file-system
+namespaces.
 
-The Secure Enclave push key and the Keychain cannot enter a Linux VM. The container has one authentication key with
-no passphrase, `~/.ssh/vigo_container_ed25519`, added to VIGO-VI. The key is read/write on that account. The
-container's `ssh_config` maps `github.com` and the checkout's `github-read` and `github-write` aliases to that key,
-so the clone needs no remote change.
+| Container | Holds | Never sees |
+| --- | --- | --- |
+| `vigo-opencode` | `~/Projects`, its own home and OpenCode state, the agent settings, the `gh` token, the TPM SSH agent | the Discord token, the daemon settings or state |
+| `vigo` | the Discord token, the settings, the state, the private checkout `~/.local/share/vigo/checkout` | `~/Projects`, the agent OpenCode data, the `gh` token |
+
+Both drop every capability, refuse new privileges, use a read-only root, a bounded `/tmp`, separate
+memory and pid limits, and publish their ports on one named address, never `0.0.0.0`.
+
+#### Linux: the pod
+
+Host-only setup, including packages, sealed credentials, keys, units and optional data/GPU mounts, is in
+[`deploy/container/SETUP.md`](deploy/container/SETUP.md).
+
+The kit is installed under `~/.local/libexec/vigo-container`, so `/vigo upgrade` changes Python without
+changing how the pod starts:
 
 ```sh
-podman build -t localhost/vigo deploy/container
-security find-generic-password -s vigo-token -w | podman secret create vigo-token -
-security find-generic-password -s vigo-opencode -w | podman secret create vigo-opencode -
+./deploy/container/install.sh
+./deploy/vigo-identity.sh          # Vigo's TPM auth + signing keys
+./deploy/build-container.sh        # daemon + agent images
+systemctl --user enable --now vigo-ssh-agent vigo-container
+```
+
+`vigo-container.service` uses systemd credentials; `vigo-ssh-agent.service` holds only `~/.ssh-vigo`.
+The agent reaches Compose/OpenCode on the pod's loopback; the daemon reaches it at `127.0.0.1:4096`.
+Ports 4096 and 4098 are published only on the tailnet address.
+
+The two images share a base but not their tools:
+
+- `localhost/vigo` is the daemon: Python, git and ssh only. It carries no OpenCode and no gh.
+- `localhost/vigo-agent` is CachyOS on x86-64 and Arch on arm64, with Clang/LLVM 23, GCC, CMake,
+  Ninja, Meson, NASM, ccache, sccache, mold, Rust, Go, Node/npm, Python venv, GDB, the X11 and
+  Wayland headers, SDL3, Vulkan with lavapipe and validation layers, SPIR-V tools, Qt 6, Boost,
+  FFmpeg, OpenSSL, libusb, RenderDoc and the usual emulator libraries.
+
+On this x86-64 host the agent is the same distribution and glibc as the host, so a binary built in
+`~/Projects/compiled_scarlet` runs inside it. A binary built against a newer glibc than the image's
+will not; build it in the agent or refresh the image.
+
+That is what ScarletNX and Eden need to configure and build. Anything still missing is a deliberate
+image change, not a host mount:
+
+```sh
+# a project-specific image on top of the agent's
+printf 'FROM localhost/vigo-agent:latest\nRUN apt-get update && apt-get install -y --no-install-recommends libfoo-dev\n' \
+    | podman build -t localhost/vigo-agent-eden -f - .
+# then set VIGO_AGENT_IMAGE=localhost/vigo-agent-eden in the unit's drop-in
+```
+
+Existing project data, such as an emulator's games and saves, is mounted only in the agent. Name the
+host paths as a colon-separated list:
+
+```sh
+# in the same drop-in
+Environment=VIGO_AGENT_DATA=/home/you/.local/share/eden:/home/you/.local/share/eden/keys
+```
+
+The agent's OpenCode settings are a read-only copy of the host's `opencode.json`, so MCP servers stay
+available. The ScarletNX AppImage and its data folder are mounted only in the agent, and
+`APPIMAGE_EXTRACT_AND_RUN=1` lets the AppImage run without `/dev/fuse`. Project data such as
+`~/.local/share/scarletnx` is mounted only in the agent when `VIGO_AGENT_SCARLETNX=1` is set. GPU,
+Wayland and key access are opt-in:
+
+```sh
+# in a vigo-container.service.d/agent.conf drop-in
+[Service]
+Environment=VIGO_AGENT_SCARLETNX=1  # ~/.local/share/scarletnx, for ScarletNX games
+Environment=VIGO_AGENT_GPU=1        # --device /dev/dri/renderD128, for real Vulkan
+Environment=VIGO_AGENT_WAYLAND=1    # the host wayland-0 socket
+Environment=VIGO_AGENT_KEYS=1       # ~/.switch, read-only, for encrypted dumps
+```
+
+Without those, headless runs use lavapipe and the validation layers. A missing key, GPU or display
+fails in the project, not in Vigo. Without the GPU, lavapipe's subgroup size is 8 where the console's is
+32, so a title whose shaders use vote or shuffle loses those draws: Luigi's Mansion 3 then draws the title
+logo on black instead of the hotel. The render node is enough; `card*` adds modesetting and EDID that a
+headless game does not use.
+
+Logs:
+
+```sh
+journalctl --user -u vigo-container -n 50 -o cat   # the daemon
+podman logs vigo-opencode                           # the agent
+journalctl --user -u vigo-ssh-agent -n 20 -o cat
+```
+
+The daemon runs a private checkout at `~/.local/share/vigo/checkout`, not `~/Projects/vigo`. The agent can edit the
+project copy under `~/Projects`, but it cannot change the code the daemon will run. `/vigo upgrade` pulls the private
+checkout and ends the daemon; systemd starts the pod again on the new code.
+
+A restart keeps `~/.local/share/vigo-agent` and `~/.local/state/vigo`.
+
+`systemctl --user enable` starts both units at login. They do not start at boot unless you run
+`loginctl enable-linger $USER`; then systemd unseals the credentials and the launcher retries until
+Tailscale is up.
+
+#### When the host OpenCode is the right runner
+
+The pod is not the host. These cases need the host OpenCode copy, or a native runner, and must not be
+fixed by mounting more of the host or by using host networking:
+
+| Case | Why the pod cannot do it |
+| --- | --- |
+| macOS Metal, MoltenVK or kosmickrisp rendering | the podman machine is a Linux VM and has no Metal |
+| Hardware Vulkan through a host GPU driver | the agent gets `/dev/dri/renderD128` only when `VIGO_AGENT_GPU=1`, and the host driver may still be the only one that matches |
+| A GUI on the host display, host audio, controllers or USB devices | those host devices and sockets are not in the pod |
+| An MCP server that reaches a service on the host loopback, such as a profiler | pasta does not put the host loopback in the pod |
+| A host kernel module, host-only driver or a binary built against a newer glibc | the pod has its own kernel and userspace, and the agent image has its own glibc |
+| Host data outside the mounts below | only the project tree, the agent home, the private checkout and explicit `VIGO_AGENT_DATA` paths are visible |
+| A credential held by the host Keychain, Secure Enclave or host TPM | the pod gets only the secrets the launcher mounts |
+
+The host copy is a separate OpenCode with its own data. Use it for those cases and leave the pod for
+builds, CPU-side tests, the Linux Vulkan path and work that fits the mounts above. The rule is chosen
+by capability. No hostname, address or user name is needed to decide it.
+
+#### macOS: the same pod
+
+The podman machine is a Linux VM, so the image is the same Arch build. The Keychain cannot enter it,
+so macOS uses podman secrets instead of systemd credentials:
+
+```sh
+podman secret create vigo-token - < /path/with/token
+podman secret create vigo-opencode - < /path/with/password
+podman secret create vigo-peer-password - < /path/with/peer-password
 podman secret create vigo-ssh-key ~/.ssh/vigo_container_ed25519
+# optional, for the agent's gh
+podman secret create vigo-gh-token - < /path/with/gh-token
 ```
 
-The Keychain cannot be called from inside the container, so the settings read the secrets from the environment, and
-the peer listens on every interface inside the container:
+The settings read the mounted files on both platforms, never `printenv`: `cat /run/secrets/vigo-token`,
+`cat /run/secrets/opencode-password` and `cat /run/secrets/peer-password`.
 
-```jsonc
-"tokenCommand": "printenv VIGO_TOKEN",
-"passwordCommand": "printenv VIGO_OPENCODE_PASSWORD",
-"peerHost": "0.0.0.0"
-```
+The agent gets the password, the key and the optional gh token; the daemon gets the token, the
+password and the key. OpenCode runs in the agent container, not on the host. The one key the agent
+uses for SSH and commit signing is `/run/secrets/vigo-ssh-key`; the image's `/etc/gitconfig` selects
+it. Set `VIGO_BIND_ADDRESS` (or `VIGO_PEER_BIND`) to the address the other device reaches through the
+podman machine; the default `127.0.0.1` publishes only to the Mac.
 
-Keep the host settings as `vigo.host.json` before the change. The host `vigo` command then needs the two values in its
-environment:
+`deploy/container/install.sh` installs the launchd job. The launcher starts the podman machine when
+`podman info` does not answer, then says what to run if it still does not. Booting the job out stops
+the pod and the machine it started.
 
-```sh
-export VIGO_TOKEN=$(security find-generic-password -s vigo-token -w)
-export VIGO_OPENCODE_PASSWORD=$(security find-generic-password -s vigo-opencode -w)
-```
+The podman machine is Linux and has no Metal. MoltenVK or kosmickrisp rendering tests therefore run
+through the host OpenCode copy on the Mac, not through the Linux agent; the agent covers builds,
+CPU-side tests and the Linux Vulkan path.
 
-On macOS the container is in the podman machine, so a device URL names the host address that the VM can reach. That
-is `host.containers.internal` for a service on the host's loopback, or the host's Tailscale address for one bound
-there. The published peer port must use that address too, because the other device asks it there:
-
-```sh
-VIGO_PEER_PORT=4098 VIGO_PEER_BIND=100.115.212.77 deploy/container/run.sh
-```
-
-`peerHost` is `0.0.0.0` because the published port arrives on the container's own interface, not on its loopback.
-
-To start it at login, install the unit for the platform: `deploy/container/vigo-container.service` for systemd,
-
-```sh
-install -D -m 644 deploy/container/vigo-container.service ~/.config/systemd/user/
-systemctl --user enable --now vigo-container
-```
-
-or `deploy/container/dev.vigo.container.plist.in` for launchd. Fill in the two paths and add `VIGO_PEER_PORT` and
-`VIGO_PEER_BIND` to its environment. Stop the host job first, and move its plist out of `LaunchAgents` so a login
-starts one daemon only:
-
-```sh
-launchctl bootout gui/$(id -u)/dev.vigo.bot
-mv ~/Library/LaunchAgents/dev.vigo.bot.plist ~/Library/LaunchAgents/dev.vigo.bot.plist.off
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.vigo.container.plist
-```
-
-The podman machine is a VM, and the Homebrew package does not start it at login. The launcher starts it when
-`podman info` does not answer, then exits with the command to run if it still does not, so the unit retries through a
-login instead of staying down. Booting the unit out stops both the container and the machine it started.
-
-Roll back with the reverse: boot out the container, move the host plist back, and restore `vigo.host.json`.
-
-The supervisor starts the script again when the bot ends, which is what `/vigo upgrade` does: the bot ends its own
-process there and the new code starts. A bare `run.sh` is a one-shot, for a test. A rebuild must keep the
-`github-read` and `github-write` hosts in `ssh_config`, or a pull inside the container fails.
-
-An upgrade is the one stop that keeps the work. A question whose prompt already reached a device is written down
-just before the restart, with the session and the marks that name its turn. The new process watches that turn, then
-posts the answer in the channel, because the interaction ended with the old process. A question that only waited in a
-line is not carried: it never ran, and the state file keeps no message text. A crash, a stop or a restart nobody asked
-for carries nothing either, so the bot never answers a channel with work from hours ago.
+An upgrade is the one stop that keeps the work. A question whose prompt already reached a device is
+written down just before the restart, with the session and the marks that name its turn. The new
+process watches that turn, then posts the answer in the channel, because the interaction ended with the
+old process. A question that only waited in a line is not carried: it never ran, and the state file
+keeps no message text. A crash, a stop or a restart nobody asked for carries nothing either, so the bot
+never answers a channel with work from hours ago.
 
 ## The Discord application, in words
 
@@ -807,6 +897,7 @@ one of them only:
 | `token` / `password` | the value, in the file |
 | `tokenFile` / `passwordFile` | a file holding it; mode 0600 or stricter, relative paths taken from the settings file's folder |
 | `tokenCommand` / `passwordCommand` | a command whose output is the secret; run once at start |
+| `peerPassword` / `peerPasswordFile` / `peerPasswordCommand` | the same three forms for the peer API; every device uses the same value, and it is never mounted in the agent |
 
 Each takes one form only: naming two of them stops the bot.
 
@@ -829,7 +920,7 @@ then the settings file holds no secret at all:
 ```jsonc
 "tokenCommand": "security find-generic-password -s vigo-token -w",
 "devices": [
-  { "name": "macbook", "url": "http://127.0.0.1:4096",
+  { "name": "macbook", "url": "http://vigo-opencode:4096",
     "directory": "/Users/you/Projects/ScarletNX",
     "passwordCommand": "security find-generic-password -s vigo-macbook -w" },
   { "name": "pc", "url": "http://192.168.1.20:4096",
@@ -848,8 +939,8 @@ you would need a key exchange OpenCode does not have, so the *other* device's
 password is necessarily here; use a different one there so it unlocks nothing
 else.
 
-On Linux the same idea is `systemd-creds` sealed to the TPM, and `deploy/`
-holds a working pair of units for it:
+On Linux the same idea is `systemd-creds` sealed to the TPM. The container unit unseals both values and mounts them
+read-only at `/run/secrets`:
 
 ```sh
 # this machine's opencode password, and the bot token, each sealed to it
@@ -858,22 +949,42 @@ printf '%s' "$(openssl rand -hex 32)" | systemd-creds encrypt --user \
 printf '%s' 'the bot token' | systemd-creds encrypt --user \
     --name=vigo-token - ~/.config/vigo/vigo-token.cred
 
-install -D -m 755 deploy/opencode-serve.sh ~/.local/libexec/opencode-serve.sh
-install -D -m 644 deploy/opencode-serve.service ~/.config/systemd/user/
-install -D -m 644 deploy/vigo.service ~/.config/systemd/user/
+./install.sh
+./deploy/vigo-identity.sh
+./deploy/build-container.sh
 systemctl --user daemon-reload
-systemctl --user enable --now opencode-serve vigo
+systemctl --user enable --now vigo-ssh-agent vigo-container
 ```
 
-The unit passes the token to the bot as `$CREDENTIALS_DIRECTORY/vigo-token`,
-so the settings file says:
+The settings name the mounted files, never a `systemd-creds` command:
 
 ```jsonc
-"tokenCommand": "cat \"$CREDENTIALS_DIRECTORY/vigo-token\""
+"tokenCommand": "cat /run/secrets/vigo-token",
+"peerPasswordCommand": "cat /run/secrets/peer-password",
+"devices": [
+  { "name": "pc", "url": "http://vigo-opencode:4096",
+    "directory": "/home/you/Projects",
+    "passwordCommand": "cat /run/secrets/opencode-password" }
+]
 ```
 
-A `.cred` file decrypts only on the machine (and user, with `--user`) that
-sealed it, copying it to the other device gains nothing, which is the point.
+The container never needs `/dev/tpm*` or `systemd-creds`: it receives the values through tmpfs files that exist only
+while the service runs.
+
+Vigo's `gh` token is optional and works the same way. Create a token on the `VIGO-VI` account with `repo` and
+`read:org`, then seal it into the per-user credential store the unit searches:
+
+```sh
+install -d -m 700 ~/.config/credstore.encrypted
+bash -c 'umask 077; read -rsp "VIGO-VI token: " tok; echo; printf "%s" "$tok" | systemd-creds encrypt --user --name=gh-token - "$HOME/.config/credstore.encrypted/gh-token"; unset tok'
+systemctl --user restart vigo-container
+```
+
+`LoadCredentialEncrypted=gh-token` has no path, so a missing credential is not an error: `gh` then runs
+unauthenticated. The entrypoint exports the value as `GH_TOKEN`; it never appears in a command line.
+
+A `.cred` file decrypts only on the machine (and user, with `--user`) that sealed it, copying it to the other device
+gains nothing, which is the point.
 
 ### The two devices cannot hold the same file
 
@@ -886,7 +997,7 @@ not offer:
 | On the Mac | On the PC |
 | --- | --- |
 | `macbook.passwordCommand` → Keychain | `macbook.password` → the Mac's password, in the file |
-| `pc.password` → the PC's password, in the file | `pc.passwordCommand` → `systemd-creds decrypt …` |
+| `pc.password` → the PC's password, in the file | `pc.passwordCommand` → `cat /run/secrets/opencode-password` |
 
 Keep the two passwords different: the copy that sits in plaintext should unlock
 the least it can.
@@ -905,6 +1016,9 @@ with the same caveat about the running process.
 | --- | --- |
 | `~/.config/vigo/vigo.json` | the settings, mode 0600 |
 | `~/.local/state/vigo/state.json` | channel → the session it has on each device, permission card tickets, the allowlist message's id, and the turn an upgrade's restart is about to cut off (ids and times only); folder 0700, file 0600 |
+| `~/.local/share/vigo-agent` | the agent's own home: OpenCode data and settings, Vigo's public keys and git config |
+| `~/.local/state/vigo` | the daemon's state, mounted only in the daemon |
+| `${XDG_RUNTIME_DIR}/vigo/ssh-agent.sock` | the socket that asks this machine's TPM to sign as Vigo; gone when the agent stops |
 | OpenCode sessions | the channel a session serves, and for an approved person's session the asker's id, in the session's metadata on the device |
 | Discord | the answers, and the allowlist message |
 

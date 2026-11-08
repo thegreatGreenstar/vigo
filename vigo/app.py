@@ -1789,12 +1789,17 @@ class App:
     def peer_password(self) -> str:
         """The password a peer sends to this device: this device's own.
 
-        A peer looks this machine up as `devices[this].password`, so the server
-        must check that same value — not the top-level fallback, which is empty
-        when every device keeps its own secret.
+        A peer sends the file's `peerPassword` when it has one, otherwise the
+        device password.  The server checks the same choice, so the OpenCode
+        password the agent holds is not enough to restart the daemon.
         """
+        if self.config.peer_password:
+            return self.config.peer_password
         own = self.config.device_named(self.config.device)
         return own.password if own else self.config.password
+
+    def _peer_secret(self, device: Device) -> str:
+        return self.config.peer_password or device.password
 
     @property
     def build(self) -> str:
@@ -1840,7 +1845,7 @@ class App:
                 continue
             device = self.config.device_named(name)
             try:
-                found[name] = PeerClient(url, device.password, timeout=1.5).info()
+                found[name] = PeerClient(url, self._peer_secret(device), timeout=1.5).info()
             except OSError:
                 continue  # that port is off or unreachable; say nothing
         return found
@@ -1897,7 +1902,7 @@ class App:
                 continue
             device = self.config.device_named(name)
             try:
-                info = PeerClient(url, device.password, timeout=2.0).info()
+                info = PeerClient(url, self._peer_secret(device), timeout=2.0).info()
             except OSError:
                 lines.append(f"`{name}`: not answering on its peer port")
                 continue
@@ -1907,7 +1912,7 @@ class App:
                 continue
             was = str(info.get("build") or "?")
             try:
-                told = PeerClient(url, device.password, timeout=180.0).update()
+                told = PeerClient(url, self._peer_secret(device), timeout=180.0).update()
             except OSError as error:
                 lines.append(f"`{name}`: could not update it ({error})")
                 continue
@@ -2137,7 +2142,7 @@ class App:
                 continue
             device = self.config.device_named(name)
             try:
-                info = PeerClient(url, device.password, timeout=1.5).info()
+                info = PeerClient(url, self._peer_secret(device), timeout=1.5).info()
             except OSError:
                 groups.append((name, None, "does not answer on its peer port"))
                 continue

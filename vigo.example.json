@@ -4,6 +4,7 @@
   "owner": "000000000000000000",
   "device": "macbook",
   "password": "the OPENCODE_PASSWORD every device shares",
+  "peerPassword": "a second secret, for the peer API only",
   "install": "both",
   "users": [],
   "model": {

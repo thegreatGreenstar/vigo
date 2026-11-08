@@ -1,0 +1,22 @@
+[Unit]
+Description=Vigo's TPM SSH agent
+Documentation=man:ssh-tpm-agent(1)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Only Vigo's own keys: greenstar's ~/.ssh keys are not in this directory, so
+# a container that can reach this socket cannot sign as greenstar.
+RuntimeDirectory=vigo
+RuntimeDirectoryMode=0700
+ExecStart=/usr/bin/ssh-tpm-agent --key-dir %h/.ssh-vigo -l %t/vigo/ssh-agent.sock
+Restart=on-failure
+RestartSec=3s
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+
+[Install]
+WantedBy=default.target
