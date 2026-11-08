@@ -257,6 +257,12 @@ Every change reaches `main` through a pull request, and the first push opens it 
 stage: one Python, the newest in the matrix, on macOS and Windows. That is where a path, a socket or a clock that
 differs by platform shows up, in two jobs instead of six.
 
+The repository belongs to its owner, greenstar. A request from him for work is also the sign to open the pull request
+of that work: push the branch and open its draft pull request when the work finishes, and do not ask again for that
+one. One request covers one pull request. The sign is not the approval of a force-push, of a second pull request, or
+of a ready mark while a known failure remains. A message that only asks a question is not this sign. This rule belongs
+to this repository, and no other: work in another repository follows the rules of that repository.
+
 Mark the pull request **ready for review** once that stage is green. Ready runs the full matrix, macOS and Windows on
 3.12, 3.13 and 3.14, and that is the matrix a merge waits for. Converting back to a draft runs the quick stage again.
 
