@@ -606,8 +606,68 @@ class AppTest(unittest.TestCase):
         self.assertIn("why does it crash?", told, "the person's words stay first")
         self.assertIn("“crash.log”, 4 KB", told)
         self.assertIn("https://cdn.discordapp.com/attachments/1/2/crash.log?ex=signed", told)
-        self.assertIn('curl -L -o "$(mktemp)"', told)
+        self.assertIn("curl -L -o /tmp/vigo-attached-att_1", told)
         self.assertIn("Never `cat` a file whole", told, "a log is grepped, not printed")
+
+    def test_an_image_attached_to_an_ask_is_shown_to_the_model(self):
+        """An image is not a log: it goes to the read tool, not to grep."""
+        self.device.script = [("idle", "the button is cut off")]
+        with TempDir() as directory:
+            app = self.make(directory)
+            self.use(app, commands.ASK,
+                     options=[{"name": "prompt", "type": 3, "value": "what is wrong?"},
+                              {"name": "file", "type": 11, "value": "att_2"}],
+                     resolved={"attachments": {"att_2": {
+                         "id": "att_2", "filename": "screen.png", "size": 2048,
+                         "content_type": "image/png",
+                         "url": "https://cdn.discordapp.com/attachments/1/2/screen.png?ex=signed",
+                     }}})
+            self.assertTrue(self.discord.wait_for(
+                lambda: any("cut off" in str(content) for content in self.said()), 10))
+        told = self.device.prompts[0][1]
+        self.assertIn("“screen.png”, 2 KB", told)
+        self.assertIn("curl -L -o /tmp/vigo-attached-att_2", told)
+        self.assertIn("read tool", told)
+        self.assertIn("PNG, JPEG, GIF or WebP", told)
+        self.assertNotIn("grep -n", told, "an image is not grepped")
+        self.assertNotIn("Never `cat`", told)
+
+    def test_the_name_decides_how_a_file_without_a_content_type_is_read(self):
+        """Discord does not always send a content type; the extension still says."""
+        told = _attached("look", {
+            "id": "att_3", "filename": "screenshot.webp",
+            "url": "https://cdn.discordapp.com/attachments/1/2/screenshot.webp",
+        })
+        self.assertIn("read tool", told)
+        self.assertNotIn("grep -n", told)
+
+    def test_a_pdf_and_an_archive_get_the_tool_their_format_needs(self):
+        pdf = _attached("read", {
+            "id": "att_4", "filename": "report.pdf", "url": "https://x/y.pdf",
+        })
+        self.assertIn("read tool", pdf)
+        self.assertIn("PDF", pdf)
+        archive = _attached("read", {
+            "id": "att_5", "filename": "build.zip", "content_type": "application/zip",
+            "url": "https://x/y.zip",
+        })
+        self.assertIn("`file`", archive)
+        self.assertIn("`unzip -l`", archive)
+        self.assertNotIn("read tool", archive)
+        self.assertNotIn("grep -n", archive)
+
+    def test_a_file_discord_did_not_send_is_named_instead_of_lost(self):
+        """The field can arrive without its attachment: say so, do not ask blind."""
+        self.device.script = [("idle", "no file was there")]
+        with TempDir() as directory:
+            app = self.make(directory)
+            self.use(app, commands.ASK,
+                     options=[{"name": "prompt", "type": 3, "value": "read this"},
+                              {"name": "file", "type": 11, "value": "att_lost"}])
+            self.assertTrue(self.discord.wait_for(
+                lambda: any("did not send that file" in str(content)
+                            for content in self.said()), 10))
+        self.assertEqual(self.device.prompts, [], "a lost file does not spend the plan")
 
     def test_a_file_with_no_name_is_still_offered(self):
         """Discord always names it; a device that loses the name is not a reason to drop it."""
