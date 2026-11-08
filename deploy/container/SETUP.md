@@ -157,9 +157,24 @@ servers. The Linux VM has no Metal.
 
 ```sh
 brew install podman tailscale gh
-podman machine init --cpus 8 --memory 12288 --disk-size 100
+podman machine init --cpus 8 --memory 12288 --disk-size 100 \
+    --volume "$HOME/Projects:$HOME/Projects" \
+    --volume "$HOME/.config/vigo:$HOME/.config/vigo" \
+    --volume "$HOME/.local/libexec/vigo-container:$HOME/.local/libexec/vigo-container" \
+    --volume "$HOME/.local/share/vigo:$HOME/.local/share/vigo" \
+    --volume "$HOME/.local/share/vigo-agent:$HOME/.local/share/vigo-agent" \
+    --volume "$HOME/.local/state/vigo:$HOME/.local/state/vigo"
 podman machine start
 ```
+
+A podman machine on macOS sees only the host directories named in its volumes. Passing `--volume`
+replaces the default `$HOME:$HOME`, which would put the whole home in the VM; the list above is what the
+pod and its launcher need, and nothing else. `~/.local/share/vigo` holds the daemon's private checkout,
+so it must be in the list.
+
+`podman machine set` cannot add a volume to a machine that already exists: recreate the machine with the
+list above, then rebuild the images and create the secrets again. The checkout, the agent home and the
+settings live on the host, so they survive that.
 
 `deploy/container/install.sh` starts the machine when `podman info` does not answer, then loads the
 launchd job.
