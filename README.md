@@ -933,14 +933,26 @@ fails when no device is up. That is the honest answer, not a queue.
 
 The bot's Discord status says what it is doing instead of staying green:
 
+- **Online** (green) while it answers a question or a quick command, and for
+  five minutes after it last answered anything.
+- **Idle** when nothing was answered in those five minutes, and a server can
+  take a question now.
+- **Do not disturb** (red) when every server that answers is at work on a turn
+  and nothing was answered recently, so a question would wait behind that work.
+  A turn at work is what the server is doing, not a session list that is full.
 - **Offline** (invisible) when no OpenCode server answers. Nothing can be
   asked, so the bot looks offline.
-- **Do not disturb** when every server that answers is at work on a turn,
-  including the turn the bot is thinking in. A question would wait behind that
-  work. This is what thinking looks like, not a session list that is full.
-- **Online** while it answers a quick command, while a question waits, and for
-  two minutes after its last answer.
-- **Idle** otherwise.
+
+Every device runs a daemon, and each one sets the status of the same bot
+account, so the last update to arrive is the one Discord keeps. Each daemon
+therefore shows the one status that the facts on any daemon support, in this
+order: green, then idle, then do not disturb, and offline only when not one of
+them can be asked. Two daemons that see the same servers then agree whatever
+order their updates arrive in, and a machine at work cannot turn the account
+red while another one is free. A daemon answers its own status on its peer
+port and reads the others' from theirs (see `peerPort`), so the merge needs no
+state in Discord, and a daemon that does not answer is left out instead of
+counted as offline.
 
 Only a change is sent, and the gateway sends the current status again after a
 reconnect.

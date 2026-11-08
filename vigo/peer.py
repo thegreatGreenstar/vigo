@@ -4,11 +4,15 @@ The daemons share no protocol and write nothing to Discord about themselves.
 Each one serves two answers on a port of its own, behind the same password as
 its OpenCode server:
 
-    GET  /vigo/info     {"device": "macbook", "version": "1.0.0"}
+    GET  /vigo/info     {"device": "macbook", "version": "1.0.0", "status": "idle"}
     POST /vigo/update   git pull in this checkout; restart when a supervisor runs it
 
 That port is off unless the settings name one (`peerPort`), because it must be
 reachable from the other machine to be worth anything.
+
+`status` is what this daemon shows of itself, before it merges what the others
+show: the merged value would carry the other daemon's answer back to it, and
+two daemons would then hold each other's status for good.
 """
 
 from __future__ import annotations
@@ -103,6 +107,7 @@ class _Handler(BaseHTTPRequestHandler):
                          "version": self.server.version or __version__,
                          "build": self.server.build,
                          "built": self.server.built,
+                         "status": self.server.status(),
                          "queue": self.server.queue()})
 
     def do_POST(self) -> None:
@@ -285,6 +290,7 @@ class PeerServer:
     def __init__(self, host: str, port: int, device: str, password: str,
                  checkout: Path | None = None, restart: bool = True,
                  version: str = "", build: str = "", built: int = 0,
+                 status: Callable[[], str] | None = None,
                  queue: Callable[[], list] | None = None,
                  suspend: Callable[[], None] | None = None) -> None:
         self.server = ThreadingHTTPServer((host, port), _Handler)
@@ -295,6 +301,10 @@ class PeerServer:
         self.server.version = version  # type: ignore[attr-defined]
         self.server.build = build or build_of(checkout)  # type: ignore[attr-defined]
         self.server.built = built or built_of(checkout)  # type: ignore[attr-defined]
+        # What this daemon shows, for the status the other one puts on the
+        # shared bot account.  A daemon that has not looked yet says nothing,
+        # and an empty status is left out of the merge.
+        self.server.status = status or (lambda: "")  # type: ignore[attr-defined]
         # What this daemon runs and waits on, for `/vigo queue` on the other
         # one.  A daemon that holds nothing yet answers with an empty list.
         self.server.queue = queue or (lambda: [])  # type: ignore[attr-defined]
