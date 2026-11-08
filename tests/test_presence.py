@@ -16,11 +16,11 @@ CHANNEL = "chan_1"
 
 
 class StatusTest(unittest.TestCase):
-    def test_no_server_that_answers_is_invisible(self):
+    def test_no_server_that_answers_is_do_not_disturb(self):
         self.assertEqual(
             status_for(working=True, up=0, busy=0, last=10.0, now=10.0),
-            "invisible",
-            "a light cannot be green when there is nothing to ask",
+            "dnd",
+            "nothing can be asked there, and a connected bot is not offline",
         )
 
     def test_work_is_online(self):
@@ -76,9 +76,10 @@ class MergeTest(unittest.TestCase):
     def test_every_daemon_at_work_is_do_not_disturb(self):
         self.assertEqual(merge("dnd", "dnd"), "dnd")
 
-    def test_no_daemon_that_answers_is_offline(self):
-        self.assertEqual(merge("invisible", "invisible"), "invisible")
-        self.assertEqual(merge(), "invisible")
+    def test_no_daemon_that_answers_is_do_not_disturb(self):
+        self.assertEqual(merge("invisible", "invisible"), "dnd",
+                         "a live connection is not offline")
+        self.assertEqual(merge(), "dnd")
 
     def test_a_status_this_code_does_not_know_promises_nothing(self):
         self.assertEqual(merge("away", "dnd"), "dnd")
@@ -221,8 +222,32 @@ class AppPresenceTest(unittest.TestCase):
             ])
             self.device.close()
             app._refresh_presence()
-            self.assertEqual(app.presence.own, "invisible")
+            self.assertEqual(app.presence.own, "dnd")
         self.assertEqual(app.gateway.statuses[-1], "online")
+
+    def test_a_machine_that_sees_no_server_is_never_offline(self):
+        """The daemon is connected, so its own view cannot make it invisible."""
+        self.device.close()
+        with TempDir() as directory:
+            app = self.make(directory)
+            app._refresh_presence()
+            app._refresh_presence()
+        self.assertNotIn("invisible", app.gateway.statuses)
+        self.assertEqual(app.gateway.statuses[-1], "dnd",
+                         "nothing can be asked there")
+
+    def test_an_old_daemon_that_says_invisible_is_do_not_disturb(self):
+        """A peer on the previous version cannot take the account offline."""
+        _peer, entry = self.with_peer("invisible")
+        with TempDir() as directory:
+            app = self.make(directory, devices=[
+                {"name": "macbook", "url": self.device.url, "directory": "/tmp/project"},
+                entry,
+            ])
+            self.device.close()
+            app._refresh_presence()
+        self.assertNotIn("invisible", app.gateway.statuses)
+        self.assertEqual(app.gateway.statuses[-1], "dnd")
 
     def test_a_server_that_is_free_keeps_it_idle(self):
         with TempDir() as directory:
@@ -258,14 +283,15 @@ class AppPresenceTest(unittest.TestCase):
             app._refresh_presence()
         self.assertEqual(app.gateway.statuses[-1], "online")
 
-    def test_no_server_that_answers_is_invisible(self):
+    def test_no_server_that_answers_is_never_offline(self):
         with TempDir() as directory:
             app = self.make(directory)
             app._refresh_presence()
             self.assertEqual(app.gateway.statuses[-1], "idle")
             self.device.close()
             app._refresh_presence()
-        self.assertEqual(app.gateway.statuses[-1], "invisible")
+        self.assertNotIn("invisible", app.gateway.statuses)
+        self.assertEqual(app.gateway.statuses[-1], "dnd")
 
 
 if __name__ == "__main__":

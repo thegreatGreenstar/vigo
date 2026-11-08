@@ -4,22 +4,28 @@ Discord takes a status over the gateway: online, idle, do not disturb, or
 invisible.  The bot shows what it is doing rather than a light that is always
 green:
 
-- `invisible`: no OpenCode server answers, so there is nothing to ask.
 - `online` (green): this daemon answers something, or answered anything within
   the last five minutes.
 - `idle`: no answer within those five minutes, and a server can take a
   question.
 - `dnd` (red): every server that answers is at work on a turn, and nothing was
   answered recently, so a question would wait behind that work.  A turn at
-  work is what the server is doing, not a session count at its limit.
+  work is what the server is doing, not a session count at its limit.  It is
+  also what a daemon shows when no server answers it at all: nothing can be
+  asked there, so a question would not run.
+
+The bot is never shown invisible.  That status makes the account look offline
+while its gateway connection is up, and a daemon that cannot reach its own
+OpenCode server does not know that another daemon cannot answer.  A bot with
+no gateway connection is offline already, because Discord draws that itself.
 
 Every device runs a daemon, and each one sets the status of the same bot
 account over its own gateway connection, so the last update to arrive is the
 one Discord keeps.  Each daemon therefore shows the one status that the facts
-on any daemon support, best first: online, then idle, then do not disturb,
-and invisible only when not one of them can be asked.  Two daemons that see
-the same servers then agree whatever order their updates arrive in, and one
-machine at work cannot turn the account red while another machine is free.
+on any daemon support, best first: online, then idle, then do not disturb.
+Two daemons that see the same servers then agree whatever order their updates
+arrive in, and one machine at work cannot turn the account red while another
+machine is free.
 
 Only a change is sent.  Discord limits presence updates, and the gateway keeps
 the value and sends it again after a reconnect.
@@ -36,8 +42,9 @@ BUSY_EVERY = 30.0   # seconds between reads of the servers' busy sessions
 BUSY_WORKING = TICK  # while this daemon thinks, the light must turn at once
 PEER_EVERY = 15.0   # seconds between reads of what the other daemons show
 
-# What each daemon shows when the daemons disagree: the best news wins, and
-# the account looks offline only when no daemon can be asked at all.
+# What each daemon shows when the daemons disagree: the best news wins.  The
+# account never looks offline, so do not disturb is the floor; `invisible` is
+# still read so that a daemon of an older version cannot make it offline.
 RANK = {"online": 3, "idle": 2, "dnd": 1, "invisible": 0}
 
 
@@ -54,9 +61,12 @@ def status_for(*, working: bool, up: int, busy: int, last: float | None,
     not red, because the account shows the work being done: a question waits
     behind it, but a light that turns red each time the bot thinks says the
     bot is unavailable while it runs.
+
+    A daemon whose servers are all down shows do not disturb, never invisible:
+    it is still connected to Discord, and another daemon may be able to answer.
     """
     if up == 0:
-        return "invisible"
+        return "dnd"
     if working or (last is not None and now - last <= ONLINE_FOR):
         return "online"
     if busy >= up:
@@ -71,9 +81,10 @@ def merge(*statuses: str) -> str:
     link that is down does not make the account look offline while this
     machine answers.  An unknown status counts as the lowest one, because a
     daemon that says nothing useful cannot promise that it can take a
-    question.
+    question.  The result never goes below do not disturb: the merged status
+    is sent over a live gateway connection, and that is not offline.
     """
-    best = "invisible"
+    best = "dnd"
     for status in statuses:
         if RANK.get(status, 0) > RANK.get(best, 0):
             best = status
