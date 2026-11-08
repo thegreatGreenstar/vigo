@@ -1,54 +1,32 @@
 #!/bin/sh
-# Build the image that runs Vigo and its own OpenCode.
+# Build both images Vigo's pod runs.
 #
 #   ./deploy/build-container.sh
-#   OPENCODE_BIN=/usr/bin/opencode GH_BIN=/usr/bin/gh ./deploy/build-container.sh
+#   VIGO_IMAGE=localhost/vigo:dev VIGO_AGENT_IMAGE=localhost/vigo-agent:dev ./deploy/build-container.sh
 #
-# Linux copies the host's opencode and gh into a throwaway build context, so the
-# image always matches the builds installed there.  macOS builds the daemon-only
-# image instead: its opencode is a Darwin binary and cannot run in the podman
-# machine, and OpenCode stays on the host there.
+# The daemon image is minimal Debian.  The agent image is CachyOS on x86-64
+# (this host's distribution, so builds from ~/Projects/compiled_scarlet run)
+# and Arch on arm64 (CachyOS publishes no arm64 image; the podman machine on
+# Apple silicon is arm64).  Both fetch and check their own pinned OpenCode and
+# gh.
 set -eu
 
 here=$(cd "$(dirname "$0")" && pwd)
+if [ -f "$here/Containerfile" ]; then
+    context=$here
+else
+    context=$here/container
+fi
 image=${VIGO_IMAGE:-localhost/vigo:latest}
-tmp=$(mktemp -d "${TMPDIR:-/tmp}/vigo-build.XXXXXX")
-cleanup() { rm -rf -- "$tmp"; }
-trap cleanup EXIT HUP INT TERM
+agent_image=${VIGO_AGENT_IMAGE:-localhost/vigo-agent:latest}
 
-case "$(uname -s)" in
-Darwin)
-    cp "$here/container/Containerfile.daemon" "$tmp/Containerfile"
-    cp "$here/container/ssh_config" "$here/container/known_hosts" "$tmp/"
-    podman build --tag "$image" "$tmp"
-    printf 'built %s (daemon only; OpenCode stays on the host)\n' "$image"
-    ;;
-*)
-    opencode=${OPENCODE_BIN:-$(command -v opencode)}
-    gh=${GH_BIN:-$(command -v gh)}
-    if [ ! -x "$opencode" ]; then
-        echo "build-container: no executable opencode at $opencode" >&2
-        exit 1
-    fi
-    if [ ! -x "$gh" ]; then
-        echo "build-container: no executable gh at $gh" >&2
-        exit 1
-    fi
-    version=$("$opencode" --version 2>/dev/null | awk '{print $2}' | sed 's/^v//')
-    [ -n "$version" ] || version=unknown
-
-    cp "$here/container/Containerfile" "$tmp/Containerfile"
-    cp "$here/container/vigo-entrypoint.py" "$tmp/vigo-entrypoint.py"
-    cp "$here/container/ssh_config" "$here/container/known_hosts" "$tmp/"
-    cp "$here/container/ssh_config.linux" "$tmp/"
-    cp "$opencode" "$tmp/opencode"
-    cp "$gh" "$tmp/gh"
-    chmod 0755 "$tmp/opencode" "$tmp/gh"
-
-    podman build \
-        --tag "$image" \
-        --build-arg "OPENCODE_VERSION=$version" \
-        "$tmp"
-    printf 'built %s with opencode %s\n' "$image" "$version"
-    ;;
+case "$(uname -m)" in
+x86_64|amd64) default_agent_base=docker.io/cachyos/cachyos:latest ;;
+*)            default_agent_base=docker.io/library/archlinux:base ;;
 esac
+agent_base=${VIGO_AGENT_BASE:-$default_agent_base}
+
+podman build --file "$context/Containerfile" --tag "$image" "$context"
+podman build --file "$context/Containerfile.agent" \
+    --build-arg "AGENT_BASE=$agent_base" --tag "$agent_image" "$context"
+printf 'built %s and %s (%s)\n' "$image" "$agent_image" "$agent_base"

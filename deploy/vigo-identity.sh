@@ -14,9 +14,8 @@
 set -eu
 
 here=$(cd "$(dirname "$0")" && pwd)
-root=${VIGO_CONTAINER_ROOT:-$HOME/.local/share/vigo}
 keys=${VIGO_SSH_KEYS:-$HOME/.ssh-vigo}
-home=$root/home
+home=${VIGO_AGENT_HOME:-$HOME/.local/share/vigo-agent}
 name=${VIGO_GIT_NAME:-Vigo}
 email=${VIGO_GIT_EMAIL:-77800979+VIGO-VI@users.noreply.github.com}
 
@@ -27,9 +26,9 @@ for tool in ssh-tpm-keygen ssh-keygen git; do
     }
 done
 
-install -d -m 0700 "$keys" "$home/.ssh" "$home/.config/opencode" \
+install -d -m 0700 "$keys" "$home" "$home/.ssh" "$home/.config/opencode" \
     "$home/.config/gh" "$home/.local/share/opencode" "$home/.local/state/opencode"
-install -d -m 0700 "$root" "$HOME/.config/credstore.encrypted"
+install -d -m 0700 "$HOME/.config/credstore.encrypted"
 
 make_key() {
     file=$1
@@ -43,8 +42,8 @@ make_key() {
     install -m 0644 "$keys/$file.pub" "$home/.ssh/$file.pub"
 }
 
-make_key id_ecdsa_vigo "vigo@pc"
-make_key id_ecdsa_vigo_signing "vigo@pc-signing"
+make_key id_ecdsa_vigo "vigo@agent"
+make_key id_ecdsa_vigo_signing "vigo@agent-signing"
 
 # The container only ever needs the public keys and the host's GitHub key.
 install -m 0644 "$keys/id_ecdsa_vigo.pub" "$home/.ssh/id_ecdsa_vigo.pub"
@@ -97,25 +96,38 @@ EOF
 chmod 0644 "$home/.ssh/config"
 
 if [ ! -f "$home/.config/opencode/opencode.json" ]; then
-    printf '{}\n' > "$home/.config/opencode/opencode.json"
+    if [ -f "$HOME/.config/opencode/opencode.json" ]; then
+        install -m 0644 "$HOME/.config/opencode/opencode.json" \
+            "$home/.config/opencode/opencode.json"
+    else
+        printf '{}\n' > "$home/.config/opencode/opencode.json"
+    fi
 fi
 if [ ! -f "$home/.config/opencode/AGENTS.md" ]; then
-    cat > "$home/.config/opencode/AGENTS.md" <<'EOF'
+    cat > "$home/.config/opencode/AGENTS.md" <<EOF
 # Vigo
 
 You are OpenCode working for Vigo, inside Vigo's rootless container.
 
 - Commit as Vigo and let git sign every commit with the TPM key. Do not change
-  `user.name`, `user.email`, or `commit.gpgsign`.
-- Only `/home/you/Projects` is writable outside this home. The rest of
-  the host is absent, the root filesystem is read-only, and `/run/secrets` is
-  not yours to read. Do not try to install packages or change the system.
+  \`user.name\`, \`user.email\`, or \`commit.gpgsign\`.
+- Only \`$HOME/Projects\` is writable outside this home. The rest of the host
+  is absent and the root filesystem is read-only. The Discord token is not
+  mounted here. \`/run/secrets\` holds this agent's OpenCode password and gh
+  token; use them for their tools and do not copy them anywhere.
 EOF
 fi
 
 if [ ! -s "$home/.ssh/known_hosts" ]; then
     echo "vigo-identity: warning: no github.com host key; ssh-keyscan was blocked" >&2
 fi
+
+# The daemon gets a public copy, not the agent's home.
+config=${VIGO_CONFIG_DIR:-$HOME/.config/vigo}
+install -d -m 0700 "$config/ssh"
+install -m 0644 "$home/.ssh/id_ecdsa_vigo.pub" "$home/.ssh/id_ecdsa_vigo_signing.pub" \
+    "$home/.ssh/config" "$home/.ssh/known_hosts" "$home/.ssh/allowed_signers" "$config/ssh/"
+install -m 0644 "$home/.gitconfig" "$config/gitconfig"
 
 echo
 echo "Add these to https://github.com/settings/keys as VIGO-VI:"
