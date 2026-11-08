@@ -54,11 +54,11 @@ class HttpError(Exception):
     """Nothing answered: a refused connection, a name that does not resolve, a timeout."""
 
 
-def _read_bound(answer: Any) -> bytes:
+def _read_bound(answer: Any, most_bytes: int = MOST_BYTES) -> bytes:
     """Read one answer, and refuse one past the bound instead of holding it."""
-    body = answer.read(MOST_BYTES + 1)
-    if len(body) > MOST_BYTES:
-        raise HttpError(f"the answer is larger than {MOST_BYTES} bytes")
+    body = answer.read(most_bytes + 1)
+    if len(body) > most_bytes:
+        raise HttpError(f"the answer is larger than {most_bytes} bytes")
     return body
 
 
@@ -92,19 +92,21 @@ def call(
     headers: dict[str, str] | None = None,
     body: bytes | None = None,
     timeout: float = 20.0,
+    most_bytes: int = MOST_BYTES,
 ) -> tuple[int, dict[str, str], bytes]:
     started = time.monotonic()
     request = urllib.request.Request(url, data=body, method=method, headers=headers or {})
     try:
         with open_url(request, timeout) as answer:
-            status, headers_out, raw = answer.status, dict(answer.headers), _read_bound(answer)
+            status, headers_out, raw = answer.status, dict(answer.headers), _read_bound(
+                answer, most_bytes)
         _note(method, url, status, started)
         return status, headers_out, raw
     except urllib.error.HTTPError as error:
         try:
             # An error's own words are read for the caller, but the caller
             # never needs more than the bound either.
-            payload = error.read(MOST_BYTES)
+            payload = error.read(most_bytes)
         except OSError:
             payload = b""
         finally:

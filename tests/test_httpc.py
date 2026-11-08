@@ -67,11 +67,11 @@ class CallTest(unittest.TestCase):
                          "the redirect target was never asked")
 
     def test_an_answer_past_the_bound_is_refused(self) -> None:
-        old = httpc.MOST_BYTES
-        httpc.MOST_BYTES = 8
-        self.addCleanup(setattr, httpc, "MOST_BYTES", old)
+        # The bound is a parameter, not a module global: the parallel runner
+        # shares the module, and a case that lowered it for every other call
+        # made a lease read fail as "the answer is larger than 8 bytes".
         with self.assertRaises(httpc.HttpError) as caught:
-            httpc.call(f"{self.url}/ok")
+            httpc.call(f"{self.url}/ok", most_bytes=8)
         self.assertIn("larger than", str(caught.exception))
 
     def test_a_where_line_holds_no_user_or_password(self) -> None:

@@ -65,7 +65,9 @@ class Codespace(unittest.TestCase):
 
     def run_script(self, *arguments: str, **environment: str) -> subprocess.CompletedProcess:
         environ = dict(os.environ)
-        environ["PATH"] = f"{self.stub}:{environ['PATH']}"
+        # The parallel runner shares os.environ with tests that clear it, so a
+        # missing PATH here is a race in the runner and not a refusal to run.
+        environ["PATH"] = f"{self.stub}:{environ.get('PATH', '')}"
         environ["GH_LOG"] = str(self.log)
         environ["GH_COPY_DIR"] = str(self.stub / "copy")
         environ.update(environment)

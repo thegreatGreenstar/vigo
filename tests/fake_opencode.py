@@ -290,6 +290,10 @@ class FakeOpenCode:
             elif action == "fail":
                 # The device's turn failed: the reason is what the person
                 # needs, and the event carries it the way the device writes it.
+                # The turn is over before the event, as it is for a success, so
+                # the next question does not find a session still stamped busy.
+                self.add_message(session, "idle", outcome="failed")
+                self.finished_turn(session)
                 self.emit("session.execution.failed", {
                     "sessionID": session,
                     "message": step[1] if len(step) > 1 else "the turn failed",
@@ -317,12 +321,14 @@ class FakeOpenCode:
                 # which is what a run reads when the event that said so was
                 # missed: a restart in between leaves nothing else.
                 self.add_message(session, "idle")
+                if not self.stay_busy:
+                    # The turn is over before its events go out.  A run that
+                    # reads the end and starts the queued question must not
+                    # find the session still stamped busy, or a short timeout
+                    # refuses that question on the way out.
+                    self.finished_turn(session)
                 self.emit("session.execution.succeeded", {"sessionID": session})
                 self.emit("session.idle", {"sessionID": session})
-                if not self.stay_busy:
-                    # With `stay_busy` the turn ends but the device still looks
-                    # busy: the other daemon's turn began under it.
-                    self.finished_turn(session)
                 with self.lock:
                     if session in self.sessions:
                         self.sessions[session]["cost"] = 0.002
