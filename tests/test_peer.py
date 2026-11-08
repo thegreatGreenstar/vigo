@@ -74,7 +74,7 @@ class PeerTest(unittest.TestCase):
         """The other daemon merges this with its own; one that has not looked
         yet says nothing, and an empty status is left out of the merge."""
         self.assertEqual(PeerClient(self.url, "pw").info()["status"], "")
-        server = PeerServer("127.0.0.1", 0, "fresh-device", "pw",
+        server = PeerServer("127.0.0.1", 0, "macbook", "pw",
                             status=lambda: "online").start()
         self.addCleanup(server.stop)
         info = PeerClient(f"http://127.0.0.1:{server.server.server_address[1]}", "pw").info()
