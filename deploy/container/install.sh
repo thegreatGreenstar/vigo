@@ -78,6 +78,30 @@ Darwin)
     agents=$HOME/Library/LaunchAgents
     install -d -m 755 "$agents"
 
+    # `launchctl bootout` returns before the label is gone, and a bootstrap
+    # that lands in that window fails with "already bootstrapped".  Wait for
+    # the label to go, retry the load, and answer whether the service is there.
+    # The old code ignored both errors and said "loaded" anyway, which once
+    # left the daemon unloaded with the containers still running.
+    reload() {  # reload <label> <plist>
+        label=$1
+        path=$2
+        launchctl bootout "gui/$(id -u)/$label" 2>/dev/null || true
+        tries=0
+        while launchctl print "gui/$(id -u)/$label" >/dev/null 2>&1; do
+            tries=$((tries + 1))
+            if [ "$tries" -ge 10 ]; then break; fi
+            sleep 0.1
+        done
+        tries=0
+        while ! launchctl bootstrap "gui/$(id -u)" "$path" 2>/dev/null; do
+            tries=$((tries + 1))
+            if [ "$tries" -ge 10 ]; then break; fi
+            sleep 0.1
+        done
+        launchctl print "gui/$(id -u)/$label" >/dev/null 2>&1
+    }
+
     # The host runner: the one door to a program only the Mac can run.  It
     # listens on loopback, so the agent reaches it through the podman machine's
     # host gateway, and it needs the token the agent holds as a podman secret.
@@ -98,9 +122,12 @@ Darwin)
     sed -e "s|__PYTHON__|$python|g" -e "s|__HOME__|$HOME|g" \
         "$here/../dev.vigo.host-runner.plist.in" > "$runner"
     chmod 644 "$runner"
-    launchctl bootout "gui/$(id -u)/dev.vigo.host-runner" 2>/dev/null || true
-    launchctl bootstrap "gui/$(id -u)" "$runner" 2>/dev/null || true
-    say "host runner: dev.vigo.host-runner loaded"
+    if reload dev.vigo.host-runner "$runner"; then
+        say "host runner: dev.vigo.host-runner loaded"
+    else
+        say "host runner: dev.vigo.host-runner did not load" >&2
+        exit 1
+    fi
     if podman secret inspect host-runner-token >/dev/null 2>&1; then
         say "host runner: the podman secret host-runner-token is there"
     else
@@ -160,9 +187,12 @@ PY
             "$plist" >/dev/null
     fi
     chmod 644 "$plist"
-    launchctl bootout "gui/$(id -u)/dev.vigo.container" 2>/dev/null || true
-    launchctl bootstrap "gui/$(id -u)" "$plist" 2>/dev/null || true
-    say "agent: dev.vigo.container loaded"
+    if reload dev.vigo.container "$plist"; then
+        say "agent: dev.vigo.container loaded"
+    else
+        say "agent: dev.vigo.container did not load" >&2
+        exit 1
+    fi
     ;;
 Linux)
     units=$HOME/.config/systemd/user
