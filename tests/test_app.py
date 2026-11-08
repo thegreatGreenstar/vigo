@@ -2216,8 +2216,7 @@ class AppTest(unittest.TestCase):
         upgrade used to try only the PC, say it was not answering, and leave
         this checkout behind.  The local pull must still be scheduled.
         """
-        with tempfile.TemporaryDirectory() as work:
-            root = Path(work)
+        with TempDir() as root:
             origin = root / "origin.git"
             self._git("init", "--bare", "-q", str(origin), cwd=root)
             seed = root / "seed"
