@@ -333,7 +333,7 @@ class AppTest(unittest.TestCase):
 
     def _peer(self, built: int) -> str:
         """A peer daemon that answers with the commit time a test names."""
-        server = PeerServer("127.0.0.1", 0, "pc", "pw", built=built).start()
+        server = PeerServer("127.0.0.1", 0, "workstation", "pw", built=built).start()
         self.addCleanup(server.stop)
         return f"http://127.0.0.1:{server.server.server_address[1]}"
 
@@ -342,7 +342,7 @@ class AppTest(unittest.TestCase):
             directory,
             devices=[
                 {"name": "macbook", "url": self.device.url, "directory": "/tmp/project"},
-                {"name": "pc", "url": "http://127.0.0.1:1",
+                {"name": "workstation", "url": "http://127.0.0.1:1",
                  "directory": "/tmp/other", "peer": peer_url},
             ],
         )
@@ -1018,7 +1018,7 @@ class AppTest(unittest.TestCase):
         self.assertNotIn("the one that ran", written, "that left the queue already")
 
     def test_queue_asks_the_other_daemon_and_names_a_silent_one(self):
-        other = PeerServer("127.0.0.1", 0, "pc", "pw", queue=lambda: [{
+        other = PeerServer("127.0.0.1", 0, "workstation", "pw", queue=lambda: [{
             "channel": "other_chan", "title": "Discord DM",
             "running": 12.0, "waiting": ["their task"],
         }])
@@ -1032,7 +1032,7 @@ class AppTest(unittest.TestCase):
                 password="pw",
                 devices=[
                     {"name": "macbook", "url": "http://127.0.0.1:1", "directory": "/a"},
-                    {"name": "pc", "url": "http://127.0.0.1:2", "directory": "/b",
+                    {"name": "workstation", "url": "http://127.0.0.1:2", "directory": "/b",
                      "peer": peer_url},
                     {"name": "silent-device", "url": "http://127.0.0.1:3", "directory": "/c",
                      "peer": "http://127.0.0.1:1"},
@@ -1048,7 +1048,7 @@ class AppTest(unittest.TestCase):
         self.assertIn("does not answer on its peer port", written)
 
     def test_the_public_queue_names_no_channel_task_or_device(self):
-        other = PeerServer("127.0.0.1", 0, "pc", "pw", queue=lambda: [{
+        other = PeerServer("127.0.0.1", 0, "workstation", "pw", queue=lambda: [{
             "channel": "other_chan", "title": "Discord DM: Alice",
             "running": 12.0, "waiting": ["their task", "open /Users/alice/secret.txt"],
         }])
@@ -1062,7 +1062,7 @@ class AppTest(unittest.TestCase):
                 password="pw",
                 devices=[
                     {"name": "macbook", "url": "http://127.0.0.1:1", "directory": "/a"},
-                    {"name": "pc", "url": "http://127.0.0.1:2", "directory": "/b",
+                    {"name": "workstation", "url": "http://127.0.0.1:2", "directory": "/b",
                      "peer": peer_url},
                     {"name": "silent-device", "url": "http://127.0.0.1:3", "directory": "/c",
                      "peer": "http://127.0.0.1:1"},
@@ -1084,7 +1084,7 @@ class AppTest(unittest.TestCase):
                          "each task that names somebody keeps its place and loses its text")
         self.assertNotIn("/Users/alice", written)
         self.assertNotIn("Discord", written, "no channel is named")
-        for name in ("macbook", "pc", "silent-device"):
+        for name in ("macbook", "workstation", "silent-device"):
             self.assertNotIn(name, written, f"{name} is not named")
         self.assertIn("running 12s · 2 waiting", written)
         self.assertIn("⚠️ another daemon does not answer on its peer port", written)
@@ -1742,7 +1742,7 @@ class AppTest(unittest.TestCase):
             self._git("push", "-q", "origin", "HEAD:main", cwd=seed)
 
             # the other daemon, on its own checkout, old build, no restart
-            other = PeerServer("127.0.0.1", 0, "pc", "pw",
+            other = PeerServer("127.0.0.1", 0, "workstation", "pw",
                                checkout=peer_checkout, restart=False,
                                version="0.9.0").start()
             self.addCleanup(other.stop)
@@ -1755,7 +1755,7 @@ class AppTest(unittest.TestCase):
                     devices=[
                         {"name": "macbook", "url": "http://127.0.0.1:1",
                          "directory": "/a"},
-                        {"name": "pc", "url": "http://127.0.0.1:2",
+                        {"name": "workstation", "url": "http://127.0.0.1:2",
                          "directory": "/b", "peer": peer_url},
                     ],
                 )
@@ -1763,10 +1763,10 @@ class AppTest(unittest.TestCase):
                 app = App(settings, api=api, state=State(directory / "state.json"))
                 self.app = app
                 self.use(app, commands.UPGRADE, options=[
-                    {"name": "device", "type": 3, "value": "pc"},
+                    {"name": "device", "type": 3, "value": "workstation"},
                 ])
                 self.assertTrue(self.discord.wait_for(
-                    lambda: any("pc" in str(content)
+                    lambda: any("workstation" in str(content)
                                 for content in self.said()), 30))
                 said = self.said()[-1]
             self.assertIn("pulled", said)
@@ -1775,7 +1775,7 @@ class AppTest(unittest.TestCase):
             dm = self.discord.messages.get(self.discord.dm_channels[settings.owner], [])
         self.assertTrue(dm, "the owner is told, not only the channel")
         told = dm[0]["content"]
-        self.assertIn("pc", told, "the alias it moved")
+        self.assertIn("workstation", told, "the alias it moved")
         self.assertIn(f"{was} → {build_of(peer_checkout)}", told,
                       "what it went from and to")
 

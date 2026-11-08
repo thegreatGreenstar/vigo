@@ -2,7 +2,7 @@
 <!--
   Keep the SSH tunnel to the other device up, on macOS.
 
-  Install (replace user@pc with your user and host):
+  Install (replace user@peer-host with your user and host):
 
     install -m 644 deploy/dev.vigo.tunnel.plist ~/Library/LaunchAgents/
     launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.vigo.tunnel.plist
@@ -28,7 +28,7 @@
         <string>-o</string><string>ServerAliveCountMax=3</string>
         <string>-L</string><string>4097:127.0.0.1:4096</string>
         <string>-L</string><string>4099:127.0.0.1:4098</string>
-        <string>user@pc</string>
+        <string>user@peer-host</string>
     </array>
 
     <key>RunAtLoad</key>

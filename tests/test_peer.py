@@ -299,7 +299,7 @@ class PeerPasswordTest(unittest.TestCase):
             token="t", app_id="1", owner="2", device="macbook", password="",
             devices={
                 "macbook": Device("macbook", "http://127.0.0.1:1", "/a", "mine"),
-                "pc": Device("pc", "http://127.0.0.1:2", "/b", "theirs"),
+                "workstation": Device("workstation", "http://127.0.0.1:2", "/b", "theirs"),
             },
         )
         app = App(settings, api=None, state=None)
