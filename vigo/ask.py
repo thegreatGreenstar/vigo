@@ -142,6 +142,19 @@ def _recent(stamp: object, seconds: float) -> bool:
     return abs(time.time() - when.timestamp()) <= seconds
 
 
+def _grown(line: str, note: str, limit: int = 2000) -> str:
+    """The line with the note at its end, and the note whole.
+
+    A line near Discord's limit gives way to the note it gains, with an
+    ellipsis where the line was cut, so the note is never the half that is
+    lost.
+    """
+    room = limit - len(note) - 2
+    if len(line) > room:
+        line = line[:max(room - 1, 0)].rstrip() + "…"
+    return f"{line}\n\n{note}"
+
+
 class Host(Protocol):
     """What a run needs from the app: its settings, what it remembers, its Discord."""
 
@@ -314,30 +327,46 @@ class Ask:
             log.debug(f"ask: cannot edit the message ({error})")
             return False
 
-    def _append(self, content: str) -> bool:
-        """Add a line to the end of the line this question already shows.
+    def _set_line(self, content: str) -> bool:
+        """Put this text on the line the question already shows, if it has one.
 
         A question has one line in the channel: the queued line, or the got-it
-        line.  A note about the same question belongs at the end of it, not in
-        a second message beside it.  False when there is no line to edit, or
-        Discord will not take the edit: the caller says it another way then.
+        line.  A note or an error about the same question belongs on that line,
+        not in a second message beside it.  The channel's own id carries it,
+        and the id still works when Discord no longer takes the interaction's
+        token, which is the case for a question that waited in the queue past
+        the token's fifteen minutes.  The token is the way when Discord
+        returned no id.  False when there is no line, or Discord takes neither
+        way.
         """
         if not self.shown:
             return False
-        text = f"{self.shown}\n\n{content}"[:2000]
+        said = content[:2000]
+        if self.message_id:
+            try:
+                self.app.api.edit(self.channel_id, self.message_id, {
+                    "content": said,
+                    "allowed_mentions": {"parse": []},
+                })
+                self.shown = said
+                return True
+            except Exception as error:
+                log.info(f"ask: cannot edit the question's line ({error})")
         if not self.reply_in_channel:
-            return self._edit(text)
-        if not self.message_id:
+            if self._edit(said):
+                self.shown = said
+                return True
+        return False
+
+    def _append(self, content: str) -> bool:
+        """Add a line to the end of the line this question already shows.
+
+        The note stays whole even when the line is near Discord's limit: a note
+        cut in half says nothing about why the run continues.
+        """
+        if not self.shown:
             return False
-        try:
-            self.app.api.edit(self.channel_id, self.message_id, {
-                "content": text,
-                "allowed_mentions": {"parse": []},
-            })
-            return True
-        except Exception as error:
-            log.info(f"ask: cannot edit the question's line ({error})")
-            return False
+        return self._set_line(_grown(self.shown, content))
 
     def _final(self, body: str, outcome: str, cost: float, tokens: dict,
                steps: int = 0, context: int = 0) -> None:
@@ -540,12 +569,15 @@ class Ask:
         return False
 
     def _tell(self, content: str) -> None:
-        """An error from the run, visible even when the deferred message is gone."""
-        if self.reply_in_channel:
-            self._late_answer(content)
+        """An error from the run, on the question's line when it still has one."""
+        if self.shown:
+            if self._set_line(content):
+                return
+        elif not self.reply_in_channel and self._edit(content):
+            # No line to grow, but the deferred message of a live interaction
+            # is still this run's to edit: that is where the person is looking.
             return
-        if not self._edit(content):
-            self._late_answer(content)
+        self._late_answer(content)
 
     # -- the session ------------------------------------------------------
 
