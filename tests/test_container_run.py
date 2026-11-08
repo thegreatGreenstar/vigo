@@ -153,8 +153,20 @@ class InstallTest(unittest.TestCase):
         self.home = Path(temporary.name)
         self.bin = self.home / "bin"
         self.bin.mkdir()
+        self.state = self.home / "state"
+        self.state.mkdir()
         self._stub("uname", "echo Darwin\n")
-        self._stub("launchctl", "exit 0\n")
+        self._stub(
+            "launchctl",
+            'case "$1" in\n'
+            'print) [ -f "$STATE/${2##*/}" ] && exit 0 || exit 1 ;;\n'
+            'bootout) rm -f "$STATE/${2##*/}" ;;\n'
+            'bootstrap) label=${3##*/}; label=${label%.plist};\n'
+            '           [ -f "$STATE/$label" ] && exit 5;\n'
+            '           touch "$STATE/$label" ;;\n'
+            'esac\n'
+            'exit 0\n',
+        )
         self._stub("podman", "exit 0\n")
         self._stub("openssl", "echo deadbeef\n")
         checkout = self.home / ".local/share/vigo/checkout"
@@ -177,6 +189,7 @@ class InstallTest(unittest.TestCase):
         environ = {
             "HOME": str(self.home),
             "PATH": f"{self.bin}:/usr/bin:/bin",
+            "STATE": str(self.state),
             "VIGO_SOURCE": str(self.home / "source"),
             "VIGO_INSTALL_DIRTY": "1",
         }
@@ -215,3 +228,24 @@ class InstallTest(unittest.TestCase):
 
         self.assertEqual(0, done.returncode, done.stderr)
         self.assertEqual("", self._bind(), "the launcher defaults to loopback")
+
+    def test_a_job_that_will_not_load_is_not_reported_loaded(self) -> None:
+        """The old install said "loaded" whatever launchctl answered.
+
+        A bootstrap that failed left the daemon unloaded with its containers
+        still running, so the message must follow the check.
+        """
+        self._stub(
+            "launchctl",
+            'case "$1" in\n'
+            'print) exit 1 ;;\n'
+            'bootstrap) exit 5 ;;\n'
+            'esac\n'
+            'exit 0\n',
+        )
+
+        done = self._run()
+
+        self.assertNotEqual(0, done.returncode)
+        self.assertIn("did not load", done.stderr)
+        self.assertNotIn("loaded", done.stdout)
