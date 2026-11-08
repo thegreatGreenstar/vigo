@@ -79,7 +79,10 @@ def spec(install: str = "both", devices: list[str] | None = None) -> list[dict]:
                         {
                             "type": 11,
                             "name": "file",
-                            "description": "A log or other file to read, with the question.",
+                            "description": (
+                                "Any file to read with the question: a log, dump, image, "
+                                "PDF, archive or source file."
+                            ),
                             "required": False,
                         },
                         _device_option(devices, "empty picks where you last worked."),
@@ -242,6 +245,7 @@ def flatten(data: dict) -> tuple[str, dict]:
         if option.get("type") == 11:
             found = files.get(str(value)) or {}
             value = {
+                "id": str(found.get("id") or ""),
                 "filename": found.get("filename"),
                 "url": found.get("url"),
                 "size": found.get("size"),

@@ -153,30 +153,104 @@ def _first_file(items: object) -> dict | None:
     return None
 
 
+# The read tool of OpenCode passes these images and PDFs to the model.  Other
+# image formats are converted first, and a file that is neither is read with
+# the tool its own format needs.  Discord sends a content type for some files
+# and not others, so the name is the second sign.
+IMAGE_TYPES = ("image/png", "image/jpeg", "image/gif", "image/webp")
+IMAGE_NAMES = (
+    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tif", ".tiff", ".heic", ".heif", ".avif",
+)
+PDF_TYPES = ("application/pdf",)
+PDF_NAMES = (".pdf",)
+TEXT_TYPES = (
+    "application/json", "application/xml", "application/javascript", "application/x-javascript",
+    "application/x-yaml", "application/yaml", "application/toml", "application/x-sh",
+    "application/sql", "application/graphql", "application/x-ndjson",
+)
+TEXT_NAMES = (
+    ".log", ".txt", ".md", ".rst", ".csv", ".tsv", ".json", ".jsonl", ".ndjson", ".xml",
+    ".html", ".htm", ".css", ".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx", ".py", ".rb",
+    ".go", ".rs", ".c", ".h", ".cc", ".cpp", ".hpp", ".cs", ".java", ".kt", ".swift", ".m",
+    ".mm", ".sh", ".bash", ".zsh", ".fish", ".ps1", ".bat", ".cmd", ".ini", ".cfg", ".conf",
+    ".toml", ".yaml", ".yml", ".env", ".diff", ".patch", ".tex", ".lua", ".pl", ".php",
+    ".sql", ".gradle", ".cmake", ".properties", ".s", ".asm", ".disasm", ".trace", ".svg",
+)
+
+
+def _file_kind(attached: dict) -> str:
+    """How a file is read: as an image, a PDF, text, or with its own tool.
+
+    A content type is authoritative when Discord sends one, and the extension
+    answers when it does not.  A format this misses is still offered: it only
+    takes the general path that names a tool instead of assuming a log.
+    """
+    ctype = str(attached.get("content_type") or "").split(";", 1)[0].strip().lower()
+    name = str(attached.get("filename") or "").rsplit("/", 1)[-1].lower()
+    suffix = name[name.rfind("."):] if "." in name else ""
+    if ctype == "image/svg+xml" or suffix == ".svg":
+        return "text"  # a picture made of text: read it, do not convert it
+    if ctype in IMAGE_TYPES or ctype.startswith("image/") or suffix in IMAGE_NAMES:
+        return "image"
+    if ctype in PDF_TYPES or suffix in PDF_NAMES:
+        return "pdf"
+    if ctype.startswith("text/") or ctype in TEXT_TYPES or suffix in TEXT_NAMES:
+        return "text"
+    return "other"
+
+
 def _attached(prompt: str, attached: object) -> str:
     """The question with the file the person uploaded, and how to reach it.
 
     A file is never in the question: Discord gives a link, signed and short
-    lived, and the agent fetches it on the device it works on.  A log that a
-    person drops is often megabytes, so the instruction says how a log is read
-    instead of inviting a `cat`.  The link expires and stays out of the answer.
+    lived, and the agent fetches it on the device it works on.  The question
+    says how that format is read: a log or a source file is grepped, an image
+    or a PDF goes to the read tool, and anything else is identified first.  A
+    log that a person drops is often megabytes, so it never invites a `cat`.
+    The link expires and stays out of the answer.
     """
     if not isinstance(attached, dict):
         return prompt
     url = str(attached.get("url") or "")
     if not url:
         return prompt
-    name = text.shorten(str(attached.get("filename") or "a file"), 60)
+    name = text.shorten(str(attached.get("filename") or "a file").replace("\n", " "), 60)
     size = attached.get("size")
+    ident = "".join(
+        char for char in str(attached.get("id") or "") if char.isalnum() or char in "-_"
+    ) or "file"
+    path = f"/tmp/vigo-attached-{ident}"
     said = f"The question has a file: “{name}”"
     if isinstance(size, int) and size >= 1024:
         said += f", {size // 1024} KB"
-    said += (
-        f". Fetch it with `curl -L -o \"$(mktemp)\" \"{url}\"`, then read it the way a "
-        "log is read: `wc -l` first, then `grep -n` for the error, the address or the "
-        "service, and `head` and `tail` around the hit. Never `cat` a file whole. The link "
-        "expires, and it is not part of the answer."
-    )
+    said += f'. Fetch it with `curl -L -o {path} "{url}"`, then '
+    kind = _file_kind(attached)
+    if kind == "image":
+        said += (
+            "open that path with your read tool: it shows a PNG, JPEG, GIF or WebP "
+            "image to the model. Convert any other image format to PNG first, then "
+            "answer from what the image shows. If the model cannot take an image, say "
+            "so instead of guessing."
+        )
+    elif kind == "pdf":
+        said += (
+            "open that path with your read tool: it passes a PDF to the model. "
+            "Answer from what the document says. If the model cannot take a PDF, say "
+            "so instead of guessing."
+        )
+    elif kind == "text":
+        said += (
+            "read it in pieces: `wc -l` first, then `grep -n` for the error, the "
+            "address, the service or the name you need, and `head` and `tail` around "
+            "the hit. Never `cat` a file whole."
+        )
+    else:
+        said += (
+            "run `file` on it, then use the tool its format needs: list an archive "
+            "with `tar -tf` or `unzip -l` before extracting a member, and read a "
+            "binary with `strings` or `xxd | head`. Do not paste it whole."
+        )
+    said += " The link expires, and it is not part of the answer."
     return f"{prompt}\n\n{said}" if prompt.strip() else said
 
 
@@ -1639,6 +1713,18 @@ class App:
         if not prompt:
             self._say(token, "The question is empty.")
             return
+        attached = options.get("file")
+        if isinstance(attached, dict) and not attached.get("url"):
+            # Discord sometimes sends the field without the file it names.  An
+            # ask that quietly loses its file looks like the agent failed to
+            # read it, so say what happened and give the person another way.
+            log.info("ask: the file option arrived without an attachment")
+            self._say(
+                token,
+                "Discord did not send that file. Attach it again, or send it as a "
+                "reply to an answer here.",
+            )
+            return
         owner = who == self.config.owner
         # A fresh session is the owner's to ask for: an approved person's
         # questions continue in their own conversation, not a new one per ask.
@@ -1723,7 +1809,7 @@ class App:
             channel_id=channel_id,
             user_id=who,
             device_name=pick.name,
-            prompt=_attached(prompt, options.get("file")),
+            prompt=_attached(prompt, attached),
             new=start_new,
             title=title,
             hidden=hidden,

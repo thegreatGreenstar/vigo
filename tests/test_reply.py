@@ -150,7 +150,7 @@ class ReplyTest(unittest.TestCase):
         told = self.device.prompts[-1][1]
         self.assertIn("“010015100B514000.log”, 133 KB", told)
         self.assertIn("https://cdn.discordapp.com/attachments/1/2/log?ex=signed", told)
-        self.assertIn('curl -L -o "$(mktemp)"', told)
+        self.assertIn("curl -L -o /tmp/vigo-attached-att_1", told)
 
     def test_a_stranger_gets_no_answer_about_a_file(self):
         self.device.script = [("idle", "the first answer")]
