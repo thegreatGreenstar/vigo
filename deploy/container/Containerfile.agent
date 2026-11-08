@@ -1,9 +1,10 @@
 # The agent image: OpenCode, gh, and the general development toolchain.
 #
 # The base is chosen by deploy/build-container.sh: CachyOS on x86-64, because
-# this host is CachyOS and its builds must run here; Arch on arm64, because
-# CachyOS publishes no arm64 image and the podman machine on Apple silicon is
-# arm64.  The package names are the same.
+# this host is CachyOS and its builds must run here; Arch Linux ARM on arm64,
+# because CachyOS publishes no arm64 image, the official `archlinux` image is
+# x86-64 only, and the podman machine on Apple silicon is arm64.  The package
+# names are the same.
 ARG AGENT_BASE=docker.io/cachyos/cachyos:latest
 FROM ${AGENT_BASE}
 
@@ -20,6 +21,17 @@ LABEL org.opencontainers.image.title="vigo-agent" \
 
 RUN pacman-key --init \
  && pacman-key --populate archlinux cachyos 2>/dev/null || pacman-key --populate archlinux
+
+# pacman 7.1 runs its transactions in a sandbox built on Landlock.  A kernel
+# that does not offer it (the podman machine on macOS refuses the ruleset with
+# EPERM) makes the sync fail before a package is fetched.  The build turns the
+# two switches off when that happens, and leaves them off in the image: a later
+# `pacman -S` inside the agent runs on the same kernel.  Package signatures are
+# still checked in both cases.
+RUN if ! pacman -Sy --noconfirm; then \
+        sed -i 's/^#DisableSandbox/DisableSandbox/' /etc/pacman.conf; \
+        pacman -Sy --noconfirm; \
+    fi
 
 RUN pacman -Syu --noconfirm --needed \
         alsa-lib \

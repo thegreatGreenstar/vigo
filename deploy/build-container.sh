@@ -6,9 +6,10 @@
 #
 # The daemon image is minimal Debian.  The agent image is CachyOS on x86-64
 # (this host's distribution, so builds from ~/Projects/compiled_scarlet run)
-# and Arch on arm64 (CachyOS publishes no arm64 image; the podman machine on
-# Apple silicon is arm64).  Both fetch and check their own pinned OpenCode and
-# gh.
+# and Arch Linux ARM on arm64 (CachyOS publishes no arm64 image, and the
+# official `archlinux` image is x86-64 only, so it cannot start on the podman
+# machine of an Apple silicon Mac).  Both fetch and check their own pinned
+# OpenCode and gh.
 set -eu
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -22,7 +23,8 @@ agent_image=${VIGO_AGENT_IMAGE:-localhost/vigo-agent:latest}
 
 case "$(uname -m)" in
 x86_64|amd64) default_agent_base=docker.io/cachyos/cachyos:latest ;;
-*)            default_agent_base=docker.io/library/archlinux:base ;;
+# The Arch Linux ARM image: the official Arch image has no arm64 manifest.
+*)            default_agent_base=docker.io/menci/archlinuxarm:base ;;
 esac
 agent_base=${VIGO_AGENT_BASE:-$default_agent_base}
 

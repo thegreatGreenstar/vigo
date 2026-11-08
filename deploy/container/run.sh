@@ -245,11 +245,9 @@ if [ "$os" = Darwin ]; then
         --secret "$peer_secret,target=peer-password,mode=0400" \
         --secret "$key_secret,target=vigo-ssh-key,mode=0400" \
         -e VIGO_CONFIG=/config/vigo.json \
-        -e GIT_SSH_COMMAND="ssh -F /etc/vigo/ssh_config" \
-        --mount "type=bind,src=$config/vigo.json,dst=/config/vigo.json,ro"
-    if [ -f "$config/peer.password" ]; then
-        set -- "$@" --mount "type=bind,src=$config/peer.password,dst=/config/peer.password,ro"
-    fi
+        -e GIT_SSH_COMMAND="ssh -F /etc/vigo/ssh_config"
+    # The settings and the peer password are mounted above, for both platforms.
+    # Mounting them again here is a duplicate destination, which podman refuses.
 else
     set -- "$@" \
         --mount "type=bind,src=$cred/vigo-token,dst=/run/secrets/vigo-token,ro" \
