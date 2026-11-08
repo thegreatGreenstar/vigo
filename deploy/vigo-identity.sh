@@ -89,10 +89,10 @@ cat > "$home/.ssh/config" <<'EOF'
 Host github.com
 	User git
 	IdentityAgent /run/vigo/ssh-agent.sock
-	IdentityFile ~/.ssh/id_ecdsa_vigo.pub
+	IdentityFile /home/vigo/.ssh/id_ecdsa_vigo.pub
 	IdentitiesOnly yes
 	StrictHostKeyChecking yes
-	UserKnownHostsFile ~/.ssh/known_hosts
+	UserKnownHostsFile /home/vigo/.ssh/known_hosts
 EOF
 chmod 0644 "$home/.ssh/config"
 
