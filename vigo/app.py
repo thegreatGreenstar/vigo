@@ -17,7 +17,7 @@ from .gateway import Gateway
 from . import __version__
 from .notify import send_dm, send_owner
 from .opencode_api import OpenCode, OpenCodeError, agents_on, busy_since
-from .peer import PeerClient, PeerServer, build_of, head_of, update_self
+from .peer import PeerClient, PeerServer, build_of, built_of, head_of, update_self
 from .router import DeviceState, Pick, Router
 from .state import State
 
@@ -32,6 +32,7 @@ WAITING_MAX = 10   # questions a channel may hold behind the one that runs
 FINISHED_MAX = 10  # the last questions that ran, which `/vigo status` can name
 AGENTS_MAX = 10    # agents at work on the plan at once, across every device
 GOAL_WORDS = ("pause", "resume", "clear")  # `/vigo goal` control, not objectives
+PEER_BUILT = 5.0   # seconds a peer's commit time is trusted before it is read again
 
 
 def describe_prompt(prompt: str) -> str:
@@ -210,6 +211,9 @@ class App:
                  checkout: Path | None = None) -> None:
         self.checkout = checkout
         self._build: str | None = None
+        self._built: int | None = None
+        self._peer_built_at: float | None = None
+        self._peer_built_newer = False
         self.config = config
         self.api = api or Discord(config.token, config.app_id)
         self.router = Router(config)
@@ -1289,9 +1293,13 @@ class App:
 
         # Acknowledge before touching a device: Discord gives three seconds, and
         # a probe does not fit in them.  Two daemons both try to acknowledge and
-        # Discord takes the first; the other is told it was already answered and
-        # stops.  Whichever wins can drive every device, so it does not matter
-        # which one it is.
+        # Discord takes the first.  For a question, the one whose checkout is
+        # older stays out of the way here, before that, so the newer code
+        # answers: it queues where the older one refuses, and it does not put a
+        # second prompt into a session the other is already working.
+        if sub in (commands.ASK, commands.QUICK, commands.GOAL) and self._peer_ahead():
+            log.info(f"{sub}: left to the newer daemon")
+            return
         if not self._defer(interaction_id, token, ephemeral=self._ephemeral(sub, options, owner)):
             return
 
@@ -1806,6 +1814,61 @@ class App:
         if self._build is None:
             self._build = build_of(self.checkout)
         return self._build
+
+    @property
+    def built(self) -> int:
+        """When the commit this daemon runs was made, in seconds; 0 when not git.
+
+        Read once, like `build`, because the process keeps the code it
+        imported.  Two checkouts cannot be ordered by their hashes, so this is
+        what says which of them is the newer code.
+        """
+        if self._built is None:
+            self._built = built_of(self.checkout)
+        return self._built
+
+    def _peer_ahead(self) -> bool:
+        """Whether a peer runs a newer commit, which then takes every question.
+
+        Both daemons receive every interaction and Discord accepts the first
+        acknowledgement, so nothing in the protocol decides which of them
+        answers.  Left alone, the older one can win, and it may refuse where
+        the newer one queues, or send a prompt into a session the newer one's
+        run is working on.  A daemon that sees a newer commit on a peer leaves
+        the question to it, before the acknowledgement, so the work and the
+        tokens happen once.
+
+        The answer is kept for a few seconds: the read happens before the
+        acknowledgement, and Discord allows three seconds for that.
+        """
+        now = time.monotonic()
+        if self._peer_built_at is not None and now - self._peer_built_at < PEER_BUILT:
+            return self._peer_built_newer
+        newer = False
+        mine = self.built
+        if mine:
+            for name in self.config.devices:
+                if name == self.config.device:
+                    continue
+                url = self._peer_url(name)
+                if not url:
+                    continue
+                device = self.config.device_named(name)
+                try:
+                    info = PeerClient(url, device.password, timeout=1.0).info()
+                except OSError:
+                    continue  # a peer that does not answer cannot take the use
+                try:
+                    theirs = int(info.get("built") or 0)
+                except (TypeError, ValueError):
+                    theirs = 0
+                if theirs > mine:
+                    log.debug(f"peer: {name} runs a newer commit; it takes this use")
+                    newer = True
+                    break
+        self._peer_built_at = now
+        self._peer_built_newer = newer
+        return newer
 
     def _same_build(self, info: dict) -> bool:
         """Whether a peer runs what this one runs.
@@ -2435,6 +2498,7 @@ class App:
                 PeerServer(self.config.peer_host, self.config.peer_port,
                            self.config.device, self.peer_password(),
                            checkout=self.checkout, build=self.build,
+                           built=self.built,
                            queue=self.queue_snapshot,
                            suspend=self._suspend_runs).start()
             except OSError as error:  # the tailnet is not up, or the port is taken
