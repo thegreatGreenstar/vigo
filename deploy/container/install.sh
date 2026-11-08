@@ -77,6 +77,73 @@ case "$(uname -s)" in
 Darwin)
     agents=$HOME/Library/LaunchAgents
     install -d -m 755 "$agents"
+
+    # The host runner: the one door to a program only the Mac can run.  It
+    # listens on loopback, so the agent reaches it through the podman machine's
+    # host gateway, and it needs the token the agent holds as a podman secret.
+    install -d -m 755 "$HOME/.local/libexec"
+    install -m 755 "$here/../host-runner.py" "$HOME/.local/libexec/host-runner.py"
+    if [ ! -f "$config/host-runner.json" ]; then
+        install -m 600 "$here/../host-runner.example.json" "$config/host-runner.json"
+        say "host runner: made $config/host-runner.json from the example"
+    fi
+    if [ ! -f "$config/host-runner.token" ]; then
+        (umask 077; openssl rand -hex 32 > "$config/host-runner.token")
+        say "host runner: made $config/host-runner.token"
+    fi
+    python=$(command -v python3.14 2>/dev/null || command -v python3.12 2>/dev/null \
+        || command -v python3 2>/dev/null || true)
+    [ -n "$python" ] || python=/usr/bin/python3
+    runner=$agents/dev.vigo.host-runner.plist
+    sed -e "s|__PYTHON__|$python|g" -e "s|__HOME__|$HOME|g" \
+        "$here/../dev.vigo.host-runner.plist.in" > "$runner"
+    chmod 644 "$runner"
+    launchctl bootout "gui/$(id -u)/dev.vigo.host-runner" 2>/dev/null || true
+    launchctl bootstrap "gui/$(id -u)" "$runner" 2>/dev/null || true
+    say "host runner: dev.vigo.host-runner loaded"
+    if podman secret inspect host-runner-token >/dev/null 2>&1; then
+        say "host runner: the podman secret host-runner-token is there"
+    else
+        podman secret create host-runner-token - < "$config/host-runner.token" >/dev/null \
+            && say "host runner: made the podman secret host-runner-token"
+    fi
+    # The agent's MCP entry, once.  A config that does not have it is no error.
+    "$python" - "$agent_home/.config/opencode/opencode.json" <<'PY'
+import json, sys
+path = sys.argv[1]
+try:
+    with open(path, encoding="utf-8") as handle:
+        data = json.load(handle)
+except (OSError, ValueError):
+    raise SystemExit(0)
+if not isinstance(data, dict):
+    raise SystemExit(0)
+mcp = data.get("mcp")
+if not isinstance(mcp, dict):
+    mcp = data["mcp"] = {}
+servers = mcp.get("servers")
+holder = servers if isinstance(servers, dict) else mcp
+# A project may ship an MCP of its own (ScarletNX's opencode.json names one
+# `scarletnx`, and it is a macOS binary).  Ours has a distinct name, so the
+# project's entry cannot override it.  An older entry of ours is removed.
+old = holder.get("scarletnx")
+if isinstance(old, dict) and "host.containers.internal" in str(old.get("url", "")):
+    holder.pop("scarletnx", None)
+entry = {
+    "type": "remote",
+    "url": "http://host.containers.internal:4099/mcp?program=scarletnx",
+    "enabled": True,
+    "oauth": False,
+    "headers": {"Authorization": "Bearer {env:VIGO_HOST_RUNNER_TOKEN}"},
+}
+if holder.get("scarletnx-host") != entry:
+    holder["scarletnx-host"] = entry
+    with open(path, "w", encoding="utf-8") as handle:
+        json.dump(data, handle, indent=2)
+        handle.write("\n")
+    print("host runner: the agent config carries the scarletnx-host MCP")
+PY
+
     plist=$agents/dev.vigo.container.plist
     sed -e "s|__KIT__|$kit|g" -e "s|__HOME__|$HOME|g" \
         "$here/dev.vigo.container.plist.in" > "$plist"

@@ -100,6 +100,16 @@ class Pod(unittest.TestCase):
         self.assertNotIn("gh-token", self.daemon)
         self.assertNotIn("GH_TOKEN", self.daemon)
 
+    def test_the_host_runner_token_reaches_the_agent_only(self) -> None:
+        # The runner is the one door from the agent to a program only the Mac
+        # can run; the daemon has no reason to hold its token.
+        self.assertIn("target=host-runner-token", self.agent)
+        self.assertIn("dst=/run/secrets/host-runner-token", self.agent)
+        self.assertIn("VIGO_HOST_RUNNER_URL", self.agent)
+        self.assertIn("VIGO_HOST_RUNNER_TOKEN_FILE", self.agent)
+        self.assertNotIn("host-runner-token", self.daemon)
+        self.assertNotIn("VIGO_HOST_RUNNER", self.daemon)
+
     def test_both_containers_drop_what_they_do_not_need(self) -> None:
         for block in (self.agent, self.daemon):
             for flag in (
@@ -183,6 +193,26 @@ class Services(unittest.TestCase):
         plist = read("dev.vigo.container.plist.in")
         self.assertIn("<string>__KIT__/run.sh</string>", plist)
         self.assertNotIn("Projects/vigo", plist)
+
+    def test_the_installer_installs_the_host_runner(self) -> None:
+        installer = read("install.sh")
+        for line in (
+            "host-runner.py",
+            "dev.vigo.host-runner.plist.in",
+            "host-runner.example.json",
+            "host-runner-token",
+            "mcp?program=scarletnx",
+        ):
+            self.assertIn(line, installer, f"the installer does not mention {line}")
+
+    def test_the_host_runner_example_is_a_program_table(self) -> None:
+        import json
+        example = json.loads((ROOT / "deploy" / "host-runner.example.json").read_text(encoding="utf-8"))
+        program = example["programs"]["scarletnx"]
+        self.assertEqual(program["binary"], "/Applications/ScarletNX.app/Contents/MacOS/scarletnx")
+        self.assertEqual(program["dataRoot"], "~/Library/Application Support/scarletnx")
+        self.assertIn("read_log", program["mcp"]["tools"])
+        self.assertNotIn("edenprobe_run", program["mcp"]["tools"])
 
     def test_the_ssh_clients_use_the_right_key(self) -> None:
         mac = read("ssh_config")

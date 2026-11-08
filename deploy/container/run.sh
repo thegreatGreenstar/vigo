@@ -29,6 +29,9 @@ agent_image=${VIGO_AGENT_IMAGE:-localhost/vigo-agent:latest}
 network=${VIGO_NETWORK:-vigo-net}
 opencode_port=${VIGO_OPENCODE_PORT:-4096}
 peer_port=${VIGO_PEER_PORT:-4098}
+# The host runner listens on the Mac's loopback; the agent reaches it through
+# the podman machine's host gateway.
+runner_port=${VIGO_HOST_RUNNER_PORT:-4099}
 os=$(uname -s)
 
 say() { printf '%s\n' "$*"; }
@@ -88,6 +91,7 @@ if [ "$os" = Darwin ]; then
     key_secret=${VIGO_KEY_SECRET:-vigo-ssh-key}
     gh_secret=${VIGO_GH_SECRET:-vigo-gh-token}
     peer_secret=${VIGO_PEER_SECRET:-vigo-peer-password}
+    runner_secret=${VIGO_HOST_RUNNER_SECRET:-host-runner-token}
     for name in "$token_secret" "$password_secret" "$key_secret" "$peer_secret"; do
         podman secret inspect "$name" >/dev/null 2>&1 || die "podman secret $name is missing"
     done
@@ -131,6 +135,8 @@ set -- \
     --memory="${VIGO_AGENT_MEMORY:-10g}" --memory-swap="${VIGO_AGENT_MEMORY:-10g}" \
     --ulimit core=0 --ulimit nofile=4096:8192 \
     -e HOME=/home/vigo -e VIGO_ROLE=agent -e OPENCODE_PORT="$opencode_port" \
+    -e VIGO_HOST_RUNNER_URL="http://host.containers.internal:$runner_port" \
+    -e VIGO_HOST_RUNNER_TOKEN_FILE=/run/secrets/host-runner-token \
     --mount "type=bind,src=$agent_home,dst=/home/vigo" \
     --mount "type=bind,src=$agent_home/.config/opencode,dst=/home/vigo/.config/opencode,ro" \
     --workdir "$projects"
@@ -177,6 +183,11 @@ if [ "$os" = Darwin ]; then
     if podman secret inspect "$gh_secret" >/dev/null 2>&1; then
         set -- "$@" --secret "$gh_secret,target=gh-token,mode=0400"
     fi
+    # The host runner's token, when the host service is set up: the agent can
+    # then use the program's MCP and run it, and the daemon cannot.
+    if podman secret inspect "$runner_secret" >/dev/null 2>&1; then
+        set -- "$@" --secret "$runner_secret,target=host-runner-token,mode=0400"
+    fi
 else
     set -- "$@" \
         --mount "type=bind,src=$projects,dst=$projects" \
@@ -188,6 +199,9 @@ else
     fi
     if [ -r "$cred/gh-token" ]; then
         set -- "$@" --mount "type=bind,src=$cred/gh-token,dst=/run/secrets/gh-token,ro"
+    fi
+    if [ -r "$cred/host-runner-token" ]; then
+        set -- "$@" --mount "type=bind,src=$cred/host-runner-token,dst=/run/secrets/host-runner-token,ro"
     fi
     # ScarletNX's data (games, recompiled modules, shader cache) is host data
     # the agent needs, and it stays in the agent.
