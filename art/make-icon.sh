@@ -1,6 +1,8 @@
 #!/bin/sh
-# Make the app icon from Aogo's: DeepSeek blue, "41" on the wing (V4.1), "VI" on
-# the hat.  Needs python3 and swift (macOS Command Line Tools), nothing else.
+# Make the app icon from Wimsy (drawn by Liz; the variant Aogo uses,
+# https://github.com/Aogo-AO55). Vigo is GPL-3.0-or-later; see LICENSE and
+# THIRD-PARTY.md.  DeepSeek blue, "41" on the wing (V4.1), "VI" on the hat.
+# Needs python3 and swift (macOS Command Line Tools), nothing else.
 #
 #   ./art/make-icon.sh
 #
@@ -10,7 +12,7 @@ cd "$(dirname "$0")/.."
 python3 art/recolor.py art/aogo-source.png art/base-clean.png --drop-badge
 sips -z 512 512 art/base-clean.png --out art/base-512.png >/dev/null
 
-# The version, where Aogo had 55 for Opus 5.5.
+# The version, where the source had 55 for Opus 5.5.
 swift art/badge.swift art/base-512.png art/step.png "41" 196 99 0.306 0.439 0.902 26 -2
 
 # The name, on the tag: clear just the letters, never the tag's own shape.
