@@ -113,7 +113,77 @@ class AllowListTest(unittest.TestCase):
             self.assertIn("newer vigo", str(caught.exception))
             self.assertFalse(mac.may_ask("42"), "it refuses rather than guessing")
 
-    def test_two_allows_replace_one(self):
+    def test_a_list_shaped_message_from_somebody_else_grants_nothing(self):
+        """The list is a message, so only the bot's own message may be read.
+
+        A channel where somebody else can post would otherwise let them write
+        an allow for themselves and have the daemon believe it.
+        """
+        with TempDir() as directory:
+            mac, pc = self.lists(directory)
+            mac.allow("42", "Alex", None)
+            forged = {"v": 1, "allowed": [{"id": "999", "name": "Nobody",
+                                           "since": 1, "until": None}]}
+            self.discord.add_message(CHANNEL, f"{MARKER}\n{json.dumps(forged)}",
+                                     author="999", bot=False)
+            self.assertFalse(pc.may_ask("999"), "the other device's state is empty")
+            self.assertTrue(pc.may_ask("42"), "the bot's own message is still the list")
+            self.assertNotIn("Nobody", pc.describe())
+
+    def test_a_forged_message_alone_leaves_nobody_allowed(self):
+        with TempDir() as directory:
+            mac, _pc = self.lists(directory)
+            forged = {"v": 1, "allowed": [{"id": "999", "name": "Nobody",
+                                           "since": 1, "until": None}]}
+            self.discord.add_message(CHANNEL, f"{MARKER}\n{json.dumps(forged)}",
+                                     author="999", bot=False)
+            self.assertFalse(mac.may_ask("999"))
+            self.assertIn("nobody", mac.describe())
+
+    def test_a_forged_message_is_not_overwritten(self):
+        """The bot posts a new list rather than editing somebody else's message."""
+        with TempDir() as directory:
+            mac, _pc = self.lists(directory)
+            forged = {"v": 1, "allowed": [{"id": "999", "name": "Nobody",
+                                           "since": 1, "until": None}]}
+            message = self.discord.add_message(
+                CHANNEL, f"{MARKER}\n{json.dumps(forged)}", author="999", bot=False)
+            mac.allow("42", "Alex", None)
+            self.assertEqual(message["content"], f"{MARKER}\n{json.dumps(forged)}",
+                             "the stranger's message is left alone")
+            self.assertTrue(mac.may_ask("42"))
+
+    def test_a_flood_does_not_hide_the_list(self):
+        """A busy state channel must not turn the list into a new, empty one."""
+        with TempDir() as directory:
+            mac, pc = self.lists(directory)
+            mac.allow("42", "Alex", None)
+            for _ in range(120):
+                self.discord.add_message(CHANNEL, "a stranger's line", author="999")
+            self.assertTrue(pc.may_ask("42"), "the list is found past the newest page")
+            self.assertEqual(pc.describe().count("Alex"), 1)
+
+    def test_a_list_that_cannot_be_found_is_not_replaced(self):
+        """If the bot wrote here but no list is in reach, nothing is overwritten."""
+        with TempDir() as directory:
+            mac, _pc = self.lists(directory)
+            self.discord.add_message(CHANNEL, "not the list", bot=True)
+            with self.assertRaises(AllowError):
+                mac.allow("42", "Alex", None)
+
+    def test_one_decision_reads_the_list_once(self):
+        """Every command and every DM reads this list: one GET, not two."""
+        with TempDir() as directory:
+            mac, _pc = self.lists(directory)
+            mac.allow("42", "Alex", None)
+            with self.discord.lock:
+                self.discord.gets.clear()
+            self.assertTrue(mac.may_ask("42"))
+            with self.discord.lock:
+                reads = [path for path in self.discord.gets if "/messages/" in path]
+            self.assertEqual(len(reads), 1, reads)
+
+
         with TempDir() as directory:
             mac, _pc = self.lists(directory)
             mac.allow("42", "Alex", 60)
@@ -122,6 +192,35 @@ class AllowListTest(unittest.TestCase):
             entries = mac.entries()
             self.assertEqual(len(entries), 1)
             self.assertIsNone(entries[0].until)
+
+    def test_without_a_state_channel_the_list_lives_in_the_bot_dm(self):
+        with TempDir() as directory:
+            settings = load_settings(directory)
+            api = Discord("token", settings.app_id, base=self.discord.url)
+            listing = AllowList(settings, api, State(directory / "state.json"))
+            listing.allow("42", "Alex", None)
+            channel = self.discord.dm_channels[listing.owner]
+            stored = self.discord.messages.get(channel, [])
+        self.assertTrue(any(message["content"].startswith(MARKER) for message in stored),
+                        "the list is a message the bot owns in its DM with the owner")
+        self.assertEqual(settings.state_channel, "", "the file names none")
+
+    def test_the_stored_message_holds_the_list_and_no_free_text(self):
+        """The state message is one marker and one JSON object, so a reader
+        cannot mistake a chat line for an entry."""
+        with TempDir() as directory:
+            mac, _pc = self.lists(directory)
+            mac.allow("42", "Alex", 60)
+            stored = self.discord.messages[CHANNEL]
+        content = next(message["content"] for message in stored
+                       if message["content"].startswith(MARKER))
+        head, raw = content.split("\n", 1)
+        self.assertEqual(head, MARKER)
+        data = json.loads(raw)
+        self.assertEqual(sorted(data), ["allowed", "v"])
+        self.assertEqual(data["v"], 1)
+        self.assertEqual(sorted(data["allowed"][0]), ["id", "name", "since", "until"])
+
 
 
 if __name__ == "__main__":

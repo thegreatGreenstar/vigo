@@ -4,9 +4,11 @@ from __future__ import annotations
 
 ASK = "ask"
 QUICK = "quick"
+GOAL = "goal"
 UPGRADE = "upgrade"
 STOP = "stop"
 STATUS = "status"
+QUEUE = "queue"
 DEVICES = "devices"
 ALLOW = "allow"
 DENY = "deny"
@@ -26,7 +28,25 @@ INSTALLS = {
 }
 
 
-def spec(install: str = "both") -> list[dict]:
+def _device_option(devices: list[str] | None, tail: str) -> dict:
+    """The device option, naming the devices this daemon knows.
+
+    Discord allows 100 characters for an option description, so a long list is
+    counted instead of named.  The names come from the settings, never from
+    this file: a device that is down is still known, and one that was removed
+    is gone at once.
+    """
+    names = [name for name in (devices or []) if name]
+    if not names:
+        text = f"A device from the settings; {tail}"
+    elif len(", ".join(names)) + len(tail) + 2 <= 100:
+        text = f"{', '.join(names)}; {tail}"
+    else:
+        text = f"One of the {len(names)} devices in the settings; {tail}"
+    return {"type": 3, "name": "device", "description": text, "required": False}
+
+
+def spec(install: str = "both", devices: list[str] | None = None) -> list[dict]:
     integration_types, contexts = INSTALLS.get(install, INSTALLS["both"])
     hidden = {
         "type": 5,
@@ -54,11 +74,12 @@ def spec(install: str = "both") -> list[dict]:
                             "required": True,
                         },
                         {
-                            "type": 3,
-                            "name": "device",
-                            "description": "macbook or pc; empty picks where you last worked.",
+                            "type": 11,
+                            "name": "file",
+                            "description": "A log or other file to read, with the question.",
                             "required": False,
                         },
+                        _device_option(devices, "empty picks where you last worked."),
                         {
                             "type": 5,
                             "name": "hidden",
@@ -75,6 +96,25 @@ def spec(install: str = "both") -> list[dict]:
                 },
                 {
                     "type": 1,
+                    "name": GOAL,
+                    "description": "Give the device a goal to keep working toward, in a session of its own.",
+                    "options": [
+                        {
+                            "type": 3,
+                            "name": "objective",
+                            "description": (
+                                "What to achieve; pause, resume or clear control the "
+                                "one it already has."
+                            ),
+                            "required": True,
+                        },
+                        _device_option(
+                            devices, "empty stays on this channel's device."),
+                        dict(hidden),
+                    ],
+                },
+                {
+                    "type": 1,
                     "name": QUICK,
                     "description": "One answer, no session and no tools: it forgets the question.",
                     "options": [
@@ -84,12 +124,7 @@ def spec(install: str = "both") -> list[dict]:
                             "description": "What to ask.",
                             "required": True,
                         },
-                        {
-                            "type": 3,
-                            "name": "device",
-                            "description": "macbook or pc; empty picks where you last worked.",
-                            "required": False,
-                        },
+                        _device_option(devices, "empty picks where you last worked."),
                         dict(hidden),
                     ],
                 },
@@ -109,13 +144,26 @@ def spec(install: str = "both") -> list[dict]:
                 {
                     "type": 1,
                     "name": STOP,
-                    "description": "Stop what is running in this channel.",
+                    "description": "Stop what is running in this channel, and drop what waits.",
                     "options": [dict(hidden)],
                 },
                 {
                     "type": 1,
                     "name": STATUS,
-                    "description": "What this channel's session is doing. Only you ever see this.",
+                    "description": "What this channel is doing and what waits in it. Only you ever see this.",
+                },
+                {
+                    "type": 1,
+                    "name": QUEUE,
+                    "description": "What runs and what waits, in every channel and on every daemon.",
+                    "options": [
+                        {
+                            "type": 5,
+                            "name": "public",
+                            "description": "The channel sees it too, with every task that names a person, a path or a machine redacted.",
+                            "required": False,
+                        },
+                    ],
                 },
                 {
                     "type": 1,
@@ -172,25 +220,41 @@ def relevant(commands: list[dict]) -> list[dict]:
 
 
 def flatten(data: dict) -> tuple[str, dict]:
-    """The subcommand's name and its options, as Discord sends them."""
+    """The subcommand's name and its options, as Discord sends them.
+
+    A file arrives as the id of an attachment, and its name, size and link are
+    in the payload's `resolved` part.  The id alone names nothing anyone can
+    read, so the attachment is resolved here and the option carries what a
+    reader of the question needs.
+    """
     options = data.get("options") or []
     if not options:
         return "", {}
     chosen = options[0]
     name = chosen.get("name", "")
+    files = (data.get("resolved") or {}).get("attachments") or {}
     values: dict = {}
     for option in chosen.get("options") or []:
-        values[option.get("name", "")] = option.get("value")
+        value = option.get("value")
+        if option.get("type") == 11:
+            found = files.get(str(value)) or {}
+            value = {
+                "filename": found.get("filename"),
+                "url": found.get("url"),
+                "size": found.get("size"),
+                "content_type": found.get("content_type"),
+            }
+        values[option.get("name", "")] = value
     return name, values
 
 
-def user_id(value) -> str:
+def user_id(value: object) -> str:
     if isinstance(value, dict):
         return str(value.get("id") or "")
     return ""
 
 
-def user_name(value) -> str:
+def user_name(value: object) -> str:
     if isinstance(value, dict):
         return str(value.get("global_name") or value.get("username") or value.get("id") or "they")
     return "they"

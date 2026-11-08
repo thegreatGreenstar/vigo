@@ -68,7 +68,7 @@ set -- podman run \
     --replace \
     --name vigo \
     --hostname vigo \
-    --userns=keep-id:uid=1000,gid=1000 \
+    --userns=keep-id:uid=0,gid=0 \
     --read-only \
     --tmpfs /tmp:rw,nosuid,nodev,size=512m \
     --tmpfs /run:rw,nosuid,nodev,size=64m \

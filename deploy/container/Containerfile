@@ -1,17 +1,28 @@
 # Vigo and its own OpenCode, in one rootless container.
 #
 # The build context is made by deploy/build-container.sh: it copies the host's
-# opencode binary next to this file, so the image runs the same build the host
+# opencode and gh next to this file, so the image runs the same builds the host
 # does.  Nothing secret goes in here.
 #
-# Debian slim is used for a current glibc and a small base; the opencode binary
-# is linked against glibc only.  Vigo itself needs Python 3.12+ and no packages.
-FROM docker.io/library/python:3.13-slim-bookworm
+# There is no USER line on purpose, matching deploy/container/run.sh: a rootless
+# runtime maps container root onto the human who started it, so the mounted
+# checkout, settings and state are that person's files.  The Linux launcher
+# keeps that mapping with --userns=keep-id:uid=0,gid=0 and drops every
+# capability, so root inside the namespace has no privilege over the host.
+FROM docker.io/library/python:3.14-slim
 
 ARG OPENCODE_VERSION=unknown
 LABEL org.opencontainers.image.title="vigo" \
       org.opencontainers.image.description="Vigo and its own OpenCode, rootless" \
       org.opencontainers.image.version="${OPENCODE_VERSION}"
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        git \
+        openssh-client \
+        ripgrep \
+ && rm -rf /var/lib/apt/lists/*
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -25,33 +36,13 @@ ENV PYTHONUNBUFFERED=1 \
     VIGO_CONFIG=/config/vigo.json \
     VIGO_CONTAINER=1
 
-RUN apt-get update \
- && apt-get install -y --no-install-recommends \
-        ca-certificates \
-        git \
-        openssh-client \
-        passwd \
-        ripgrep \
- && rm -rf /var/lib/apt/lists/* \
- && groupadd --gid 1000 vigo \
- && useradd --uid 1000 --gid 1000 --create-home --home-dir /home/vigo \
-        --shell /bin/sh vigo \
- && install -d -o vigo -g vigo -m 0700 \
-        /home/vigo/.config \
-        /home/vigo/.local/share \
-        /home/vigo/.local/state \
-        /home/vigo/.ssh
-
 COPY --chmod=0755 opencode /usr/local/bin/opencode
 COPY --chmod=0755 gh /usr/local/bin/gh
 COPY --chmod=0755 vigo-entrypoint.py /usr/local/libexec/vigo-entrypoint.py
+COPY ssh_config known_hosts /etc/vigo/
 
 # The checkout and home are bind mounts; these are only the mount points.
-RUN install -d -o vigo -g vigo -m 0755 /vigo \
- && install -d -o vigo -g vigo -m 0755 /run/vigo \
- && install -d -o vigo -g vigo -m 0755 /run/secrets \
- && install -d -o vigo -g vigo -m 0755 /config
+RUN install -d -m 0755 /vigo /run/vigo /run/secrets /config /home/vigo
 
-USER 1000:1000
 WORKDIR /vigo
 ENTRYPOINT ["/usr/local/bin/python3", "/usr/local/libexec/vigo-entrypoint.py"]

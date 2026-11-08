@@ -49,8 +49,7 @@ Darwin)
     say "launchers: ~/.local/libexec/opencode-serve-macos.sh"
     ;;
 *)
-    install -m 755 "$here/deploy/vigo-container.sh" "$HOME/.local/libexec/vigo-container.sh"
-    say "launchers: ~/.local/libexec/vigo-container.sh"
+    say "launchers: $here/deploy/vigo-container.sh"
     ;;
 esac
 
@@ -82,7 +81,7 @@ Linux)
     if [ -z "$missing" ] && [ -d "$HOME/.config" ]; then
         units="$HOME/.config/systemd/user"
         install -d -m 755 "$units"
-        install -m 644 "$here/deploy/vigo.service" "$units/vigo.service"
+        install -m 644 "$here/deploy/container/vigo-container.service" "$units/vigo-container.service"
         install -m 644 "$here/deploy/vigo-ssh-agent.service" "$units/vigo-ssh-agent.service"
         install -d -m 700 "$HOME/.local/share/vigo/home"
         systemctl --user daemon-reload 2>/dev/null || true
@@ -90,7 +89,7 @@ Linux)
         say "          before the first start:"
         say "            ./deploy/vigo-identity.sh   # make Vigo's TPM keys, add them to GitHub"
         say "            ./deploy/build-container.sh # build the image with this host's opencode and gh"
-        say "            systemctl --user enable --now vigo-ssh-agent vigo"
+        say "            systemctl --user enable --now vigo-ssh-agent vigo-container"
     else
         [ -n "$missing" ] && say "services: Linux needs:$missing"
         say "          install those, or run the bot by hand (see the README)"
@@ -101,7 +100,15 @@ Linux)
     ;;
 esac
 
-# 5. what the settings still need
+# 5. main takes pull requests only: refuse a push straight to it
+if [ -d "$here/.git" ] || git -C "$here" rev-parse --git-dir >/dev/null 2>&1; then
+    git -C "$here" config core.hooksPath .githooks
+    say "hooks: pushes to main are refused here (.githooks/pre-push)"
+else
+    say "hooks: not a git checkout, so main is not guarded on this copy"
+fi
+
+# 6. what the settings still need
 say ""
 say "Now, in $config/vigo.json:"
 say "  device    this machine's name, exactly as it appears in devices"
@@ -113,7 +120,7 @@ Darwin)
     say "Then check it with: $python -m vigo --check"
     ;;
 *)
-    say "Then check it with: systemctl --user start vigo"
+    say "Then check it with: systemctl --user start vigo-container"
     say "                    podman exec vigo python3 -m vigo --check"
     ;;
 esac

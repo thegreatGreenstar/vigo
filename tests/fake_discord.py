@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime
 import json
 import threading
 import time
@@ -23,13 +24,22 @@ class FakeDiscord:
         self.global_commands: list[dict] = []
         self.global_command_puts = 0
         self.dm_channels: dict[str, str] = {}
+        self.channel_types: dict[str, int] = {}  # 1 is a DM, 3 a group DM
+        self.gets: list[str] = []  # every GET path, for a test that counts reads
         self.counter = 0
+        self.bot_id = "1"  # the author of every message this bot posts here
         self.gateway = ""
         self.forbidden: set[str] = set()  # channel ids that answer 403
+        self.no_dm: set[str] = set()  # user ids whose DM cannot be opened
         self.uneditable: set[str] = set()  # interaction tokens whose message is gone
         self.guild_commands_puts = 0
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), self._handler())
-        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        # A short poll: `shutdown()` waits for the loop to notice, and half a
+        # second per server is half a second per test.
+        self.thread = threading.Thread(
+            target=self.server.serve_forever,
+            kwargs={"poll_interval": 0.02}, daemon=True,
+        )
         self.thread.start()
 
     @property
@@ -61,12 +71,14 @@ class FakeDiscord:
             time.sleep(0.02)
         return False
 
-    def add_message(self, channel: str, content: str, author: str = "1") -> dict:
+    def add_message(self, channel: str, content: str, author: str = "1",
+                    bot: bool = False) -> dict:
         message = {
             "id": self.next_id("msg"),
             "channel_id": channel,
             "content": content,
-            "author": {"id": author},
+            "author": {"id": author, "bot": bot},
+            "timestamp": datetime.datetime.now(datetime.UTC).isoformat(),
         }
         with self.lock:
             self.messages.setdefault(channel, []).insert(0, message)
@@ -105,8 +117,13 @@ class FakeDiscord:
                 parts = urlsplit(self.path)
                 path = parts.path
                 query = parse_qs(parts.query)
+                with fake.lock:
+                    fake.gets.append(path)
                 if path.endswith("/gateway/bot"):
                     self._send(200, {"url": fake.gateway, "shards": 1})
+                    return
+                if path.endswith("/users/@me"):
+                    self._send(200, {"id": fake.bot_id, "username": "vigo", "bot": True})
                     return
                 if "/guilds/" in path and path.endswith("/commands"):
                     guild = path.split("/guilds/")[1].split("/")[0]
@@ -121,7 +138,13 @@ class FakeDiscord:
                         self._send(403, {"code": 50001, "message": "Missing Access"})
                         return
                     limit = int(query.get("limit", ["50"])[0])
-                    self._send(200, fake.messages.get(channel, [])[:limit])
+                    rows = fake.messages.get(channel, [])
+                    before = query.get("before", [""])[0]
+                    if before:
+                        at = next((index for index, message in enumerate(rows)
+                                   if message["id"] == before), len(rows))
+                        rows = rows[at + 1:]
+                    self._send(200, rows[:limit])
                     return
                 if "/channels/" in path and "/messages/" in path:
                     channel = path.split("/channels/")[1].split("/")[0]
@@ -133,7 +156,9 @@ class FakeDiscord:
                     self._send(404, {"code": 10008, "message": "Unknown Message"})
                     return
                 if "/channels/" in path:
-                    self._send(200, {"id": path.rsplit("/", 1)[1], "name": "general"})
+                    channel = path.rsplit("/", 1)[1]
+                    self._send(200, {"id": channel, "name": "general",
+                                     "type": fake.channel_types.get(channel, 1)})
                     return
                 self._send(404, {"code": 0, "message": "no route"})
 
@@ -182,6 +207,7 @@ class FakeDiscord:
                         # "is thinking" state marks.
                         if kind in (4, 5):
                             fake.originals[token] = {
+                                "id": f"orig_{token}",
                                 "content": str(data.get("content") or ""),
                                 "loading": kind == 5,
                                 "ephemeral": bool(data.get("flags")),
@@ -191,12 +217,18 @@ class FakeDiscord:
                     return
                 if "/users/@me/channels" in path:
                     user = str(body.get("recipient_id"))
+                    if user in fake.no_dm:
+                        self._send(403, {"code": 50007, "message": "Cannot send messages to this user"})
+                        return
                     with fake.lock:
                         channel = fake.dm_channels.setdefault(user, f"dm_{user}")
                     self._send(200, {"id": channel, "type": 1})
                     return
                 if "/webhooks/" in path:
                     token = path.split("/webhooks/")[1].split("/")[1]
+                    if token in fake.uneditable:
+                        self._send(404, {"code": 10015, "message": "Unknown Webhook"})
+                        return
                     original = fake.originals.get(token)
                     if original is not None and original["loading"]:
                         # Discord's documented compatibility rule: the first
@@ -208,7 +240,8 @@ class FakeDiscord:
                             fake.edits.append({"token": token,
                                                "content": original["content"],
                                                "components": body.get("components")})
-                        self._send(200, {"id": "original", "content": original["content"]})
+                        self._send(200, {"id": original["id"],
+                                         "content": original["content"]})
                         return
                     with fake.lock:
                         fake.followups.append({"token": token,
@@ -221,9 +254,12 @@ class FakeDiscord:
                     if channel in fake.forbidden:
                         self._send(403, {"code": 50001, "message": "Missing Access"})
                         return
-                    message = fake.add_message(channel, str(body.get("content") or ""))
+                    message = fake.add_message(channel, str(body.get("content") or ""),
+                                               bot=True)
                     if body.get("components"):
                         message["components"] = body["components"]
+                    if body.get("allowed_mentions") is not None:
+                        message["allowed_mentions"] = body["allowed_mentions"]
                     self._send(200, message)
                     return
                 self._send(404, {"code": 0, "message": "no route"})
@@ -253,14 +289,14 @@ class FakeDiscord:
                         return
                     with fake.lock:
                         original = fake.originals.setdefault(token, {
-                            "content": "", "loading": True, "ephemeral": False,
-                            "deleted": False,
+                            "id": f"orig_{token}", "content": "", "loading": True,
+                            "ephemeral": False, "deleted": False,
                         })
                         original["content"] = str(body.get("content") or "")
                         original["loading"] = False
                         fake.edits.append({"token": token, "content": original["content"],
                                            "components": body.get("components")})
-                    self._send(200, {"id": "original", "content": original["content"]})
+                    self._send(200, {"id": original["id"], "content": original["content"]})
                     return
                 if "/channels/" in path and "/messages/" in path:
                     channel = path.split("/channels/")[1].split("/")[0]
@@ -273,6 +309,21 @@ class FakeDiscord:
                             if message["id"] == message_id:
                                 message["content"] = body.get("content", message["content"])
                                 self._send(200, message)
+                                return
+                        # An interaction's message is the question's line, and
+                        # its channel id edits it after the token is gone.  An
+                        # ephemeral one is not in the channel at all, so its id
+                        # answers no route, as Discord does.
+                        for token, original in fake.originals.items():
+                            if original.get("id") == message_id \
+                                    and not original.get("ephemeral"):
+                                original["content"] = str(body.get("content") or "")
+                                original["loading"] = False
+                                fake.edits.append({"token": token,
+                                                   "content": original["content"],
+                                                   "components": body.get("components")})
+                                self._send(200, {"id": message_id,
+                                                 "content": original["content"]})
                                 return
                     self._send(404, {"code": 10008, "message": "Unknown Message"})
                     return

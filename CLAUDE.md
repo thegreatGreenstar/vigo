@@ -14,6 +14,11 @@ Two things follow from that shape and never change:
   reaction. A stranger who installs the app gets a refusal and nothing else; only `owner` can approve a tool.
 - **Nothing identifying goes to Discord.** No device names in a channel message, no hostnames, no paths, no error
   text, no user ids except in an allowlist answer that is always ephemeral. The log may hold them; Discord may not.
+- **An allow is permission to ask, not to act.** `/vigo allow` lets someone ask a question: their answer is
+  ephemeral and in a session of their own, their ask never becomes a goal, they choose no device, and they cannot use
+  `status`, `queue`, `devices`, `stop`, `upgrade`, `goal`, `allow`, `deny` or `allowed`. Only the owner approves a tool, and an
+  approved person's card has no `Always allow`. The allowlist is read again when a queued run starts, so a deny or an
+  expiry reaches a question that already waits.
 
 ## How to work
 
@@ -21,15 +26,66 @@ Do the whole thing, with tests and docs, so it is finished rather than nearly fi
 when the fix is within reach, and never say "tests later". If a change is too large to finish, say what is left and
 what blocks it.
 
+Ask the user only about real decisions. When the next step is obvious, do it. The confusion protocol below is for the
+two-designs case, not for routine work.
+
 You can outsource the typing, not the understanding. Before calling anything done, say why the code is correct and
 exactly where it would break. Green tests are not understanding.
 
 Errors show. Never trade an error for a silent fallback, a default, or a quieter path: a config key that is wrong
 stops the bot and names the key, a device that does not answer is said to be down, a refused command says so.
 
+## A request to improve the bot
+
+A one-line request from greenstar — "do X to improve yourself", "the bot should not do Y", "finish the thing from
+earlier" — is the whole brief. Do not come back for what to do next, and do not ask which part comes first. Run this
+procedure to the end:
+
+1. **Say what happens now, with its place.** Read the module that owns the behaviour and name the file, the function
+   and the line that decides it. A claim about current behaviour without a line is a guess.
+2. **Write the failing test first.** It goes in `tests/`, uses the fakes, and fails for the reason the request names.
+   Show the failure before the fix, and keep it after.
+3. **Fix the mechanism, not the symptom.** The smallest change that makes the test pass, in the module that owns it.
+   No delay, retry, or title-shaped special case. If the change touches permissions, the daemon/device contract, or a
+   new subcommand, it is large: the full suite and a fresh read of the whole diff before reporting.
+4. **Ship the docs in the same commit.** The README prose and its troubleshooting table, and `CLAUDE.md` when a rule
+   moves. A behaviour nobody can find in the docs is half done.
+5. **Run the gate.** `tests/ci-local.sh` runs the suite, ruff, the secrets check and the Linux 3.12 to 3.14 matrix in
+   `podman`; `tests/ci-codespace.sh --machine standardLinux32gb` answers the Linux half on a clean machine instead
+   (`gh codespace create` asks for a machine on a terminal, and a run in the background has none). Say which half the
+   answer covers and which it does not.
+6. **One commit, then a draft pull request.** Subject `[area] an imperative sentence`, body says why and how it was
+   verified. Push the branch, open the pull request with `--draft`, watch the quick stage, mark it ready when green.
+   The merge into `main` stays greenstar's.
+7. **Report in the maintainer shape.** The verdict in the first sentence, then the facts that change what the reader
+   does next, each with its number (pull request, commit, file and line, count of tests), then what waits for a
+   person. Sign it once, `From Vigo (an agent)`.
+
+A message can carry several requests. Take them in the order given and give each its own branch and pull request,
+unless they change the same module: then one branch is right and the body says which items it holds. When one closes,
+say which is done and keep going on the rest.
+
+Hand a separable part to a subagent — a section of the suite, a read of an outside source, a log — three at most, and
+say in the report what each did. The typing is theirs; the understanding and the final read are yours.
+
+## Running commands
+
+- Long runs go in the background. You are told when one finishes. Do not sleep, poll, or read its output file while it
+  runs.
+- Never use `pkill`, `killall` or a `kill $(pgrep -f PATTERN)` loop. The pattern matches the shell that runs it. List
+  with `pgrep -a NAME`, then `kill PID` in a separate command. The same applies to an `until` wait: it matches its own
+  shell and never ends. Wait for a file the job writes, or use `pgrep -x NAME`.
+- Put temporary files in the session temp folder, never in the repo root. Do not print a whole log or a large command
+  output. Use `grep`, `head`, or `tail` to read the part that matters.
+- Never edit a file while a long run reads it. `tests/ci-codespace.sh` tars the tree and copies it to the Codespace, so
+  a rewrite in the middle of the copy gives a torn file there and a failure that is not the branch's. Freeze the tree
+  for the run, and make the edit after it finishes.
+- Do not use `sudo` or install system packages. The project uses the standard library only, and the machine is the
+  user's.
+
 ## Task sizing
 
-Start with one line: `Size: small|medium|large — why`, then `Tests: which ones`.
+Start with one line: `Size: small|medium|large`, with the reason, then `Tests: which ones`.
 
 - **small**: a typo, a string, a config value, a rename with no behaviour change. Compile and the touched tests.
 - **medium**: a behaviour change in one module. Its tests, plus the test that fails without the fix.
@@ -44,9 +100,28 @@ Torn between two sizes: pick the smaller, and say so.
 - The suite never touches the network: `tests/fake_discord.py`, `tests/fake_gateway.py` and `tests/fake_opencode.py`
   stand in for Discord and OpenCode. A test that needs the internet or a bot token is not a test; it is a manual run,
   and it is labelled as one.
-- Run it with `python3 -m unittest discover -s tests -t .` from the repo root. CI runs the same on Linux, macOS and
-  Windows for 3.12–3.14; a fix for a CI-only failure says what stays unverified.
+- **The product code is typed.** Every parameter and return in `vigo/` carries an annotation, and
+  `tests/test_typing.py` fails on a missing one and on an annotation that does not resolve — which matters because
+  `from __future__ import annotations` makes them strings until something reads them. A full checker (mypy or
+  pyright) is a follow-up: it needs one more CI dependency, and this test already stops the rot.
+- Run it with `python3 -m unittest discover -s tests -t .` from the repo root; `python3 -m tests.parallel` runs the
+  same suite on threads (stdlib only, ~1.6 s here). CI is two-stage: a draft pull request runs one Python (3.14) on
+  macOS and Windows, the cross-platform question, and marking it ready runs both on 3.12 to 3.14 for the version
+  question. Linux is not a job. `tests/ci-codespace.sh` runs it in a Codespace: 3.12, 3.13 and 3.14, ruff and the
+  secrets check, on a clean Linux machine, and it deletes the codespace afterwards. Nobody runs that for you, so a
+  Linux fault reaches `main` when you skip it. Codespaces is Linux only, which is why macOS and Windows stay in the
+  workflow. A fix for a CI-only failure says what stays unverified.
+- A test does not sleep. `tests/fake_opencode.py` takes `("until", event)` in a script, so the test decides when a
+  turn ends; a sleep makes the suite slower and flakier for no extra coverage.
+- Before pushing, run `tests/ci-local.sh`: the suite, ruff and the secrets check on this machine, and the Linux
+  3.12 to 3.14 matrix in `podman`. `tests/ci-codespace.sh` answers the Linux half on a clean Linux machine instead,
+  with no VM on this one, and `tests/in-containers.sh` is what the podman path runs. Windows and macOS stay in the
+  workflow: `podman` on a Mac is a Linux VM, and Windows has already differed from Linux once (a socket read that
+  `shutdown` does not wake there).
 - Anything a reader will copy and run (a command, a port, a link) is run before it ships.
+- `main` takes pull requests only. `.githooks/pre-push` refuses a push straight to it, and `install.sh` sets
+  `core.hooksPath` so every clone runs it; GitHub's own protection is a paid feature on a private repo. Do not
+  merge with a red CI, and do not reach for `--no-verify`.
 
 ## Non-negotiables for this repo
 
@@ -55,29 +130,37 @@ Torn between two sizes: pick the smaller, and say so.
 2. **No secret in the tree.** The token and the OpenCode password live in the Keychain or a TPM-sealed file; the
    settings file may name `tokenCommand` / `passwordCommand`, never the value. `.github/workflows/tests.yml` fails
    the build if a token shape or a `vigo.json` appears.
-3. **No PII to Discord.** Before adding any string that goes into an embed, a message or a progress line, ask what it
-   identifies. Device names, hostnames, paths, error internals and other users' names are out. `devices`, `allow`,
-   `deny` and `allowed` are always ephemeral and have no option that could show them.
+3. **No PII to Discord.** Before adding any string that goes into an embed or a message, ask what it identifies.
+   Device names, hostnames, paths, error internals and other users' names are out. `devices`, `allow`, `deny` and
+   `allowed` are always ephemeral and have no option that could show them.
 4. **The owner is an id, compared with `==`.** Not a role, not a permission bit, not a name. A Discord install grants
    nothing.
 5. **Discord gives three seconds.** Acknowledge first, then probe or run. Any new command follows that order.
 6. **A tool runs only when the owner clicks.** Permission cards go to the owner's DM; a channel fallback says only
-   that approval is needed, never what the tool wanted to touch.
-7. **On Linux, the bot and its own OpenCode run in one rootless container.** The host's OpenCode is a separate copy
-   with separate data. The container gets the checkout, `~/Projects` and its own home; nothing else, no capabilities,
-   no host network, and a read-only root filesystem. Do not widen that to fix a bug without saying what it exposes.
+   that approval is needed, never what the tool wanted to touch. A card for an approved person's question says so:
+   the owner approves for somebody else's work, and must see whose it is.
+7. **Only the bot's own message is the allowlist.** The list lives in Discord, so authorship is checked against the
+   bot's user id before its content is read. A message that opens with the marker from anybody else grants nothing.
+8. **An answer that reaches more than its asker is scrubbed.** A channel, a group DM and a task title get the shape
+   check and the personal-text check. A hidden answer and a one-to-one DM do not. A redirect is not followed and a
+   gateway that is not Discord's is refused, because each carries a credential.
+9. **On Linux the container is the boundary.** Vigo and its own OpenCode run in one rootless podman container with a
+   read-only root, no capabilities, no-new-privileges, pasta networking and ports only on the tailnet address. The
+   private TPM keys stay on the host; the container gets an agent socket. Do not widen the mounts or use host
+   networking to fix a bug without saying what that exposes.
 
 ## Where this design comes from, and when we last looked
 
-Four outside sources shaped this repo. Their changes are not tracked automatically, so a session that touches the
+Six outside sources shaped this repo. Their changes are not tracked automatically, so a session that touches the
 areas below reads them again first, and updates this table when it does.
-
 | Source | What we take from it | Last checked | At |
 | --- | --- | --- | --- |
-| [DraChimeraVee/discord-bots](https://github.com/DraChimeraVee/discord-bots) (AogoWimsy, XujiWimsy) | the shape of the whole thing: owner approves, drafts and permission cards, a stranger is refused, an allowlist of ids, nothing stored about what was said, stderr without contents | 2026-11-04 | `475b229619` |
-| [OpenCode v2 API](https://opencode.ai/v2/openapi.json) and docs | every endpoint used: `/api/info`, sessions, prompt, message, permission reply, `experimental/generate/text`, `/api/event` SSE, `serve --hostname/--port`, `OPENCODE_PASSWORD` | 2026-11-04 | `opencode v2.2.5` |
+| [DraChimeraVee/discord-bots](https://github.com/DraChimeraVee/discord-bots) (AogoWimsy, XujiWimsy) | the shape of the whole thing: owner approves, drafts and permission cards, a stranger is refused, an allowlist of ids, nothing stored about what was said, stderr without contents, and what an answer may carry out of a machine | 2026-11-05 | `34ce9c69a9f0` |
+| [OpenCode v2 API](https://opencode.ai/v2/openapi.json) and docs | every endpoint used: `/api/info`, sessions, prompt, message, permission reply, `session.command` (`goal`), the `opencode.goal` RPC, the form list and reply the question tool uses, `experimental/generate/text`, `/api/event` SSE, `serve --hostname/--port`, `OPENCODE_PASSWORD` | 2026-11-05 | `opencode v2.2.5` |
 | [DeepSeek dsh-superagent-prototype](https://github.com/deepseek-ai/dsh-superagent-prototype) | the authorization stance: the host decides from its own state, and message text is input to a decision, never a grant | 2026-11-04 | `8c32a9dc5d` |
 | [Accord/CLAUDE.md](https://accord.dravee.dev/Accord/CLAUDE.md) | the structure of this contract: task sizing, tests ship with the change, completion status, self-rating, confusion protocol, safety | 2026-11-05 | commit `a18354b1` |
+| [OpenCode agents and tools](https://opencode.ai/docs/agents/), [tools](https://opencode.ai/docs/tools/), [config](https://opencode.ai/docs/config/) | how a subagent runs: `mode: subagent` is used only in a child session through the `subagent` tool, the default nesting depth is one so a subagent cannot start another, `general` cannot launch subagents, only primary (or `all`) agents can run a session, and `background: true` returns before the child finishes | 2026-11-07 | `opencode v2 docs` |
+| [scarletnx/ScarletNX](https://github.com/scarletnx/ScarletNX), Aogo's replies on its pull requests and issues | how GitHub work is reported: the verdict in the first sentence, the facts that matter with their numbers, what waits for a maintainer, the artifacts named before the prose (`vigo/github.py`, `RULES` in `vigo/ask.py`). The mark is `From Vigo (an agent)`, once: a pull request and an issue end with it, a comment starts with it, and it never names the model that ran the turn (`#1277` signed one as the model's name). The replies measured 2026-11-05: 19 comments, median 47 words and one line, four bullets at most, so the rule carries that size | 2026-11-05 | `#1218`, `#1246`, `#1143`, `#1277` |
 
 Re-read one when a task touches it:
 
@@ -103,25 +186,73 @@ edit anything here.
 | `vigo/config.py` | the settings, checked strictly, one error named at a time |
 | `vigo/discord_api.py` | REST v10: commands, interactions, messages, DMs |
 | `vigo/gateway.py` | the WebSocket client: handshake, frames, heartbeat, resume |
-| `vigo/opencode_api.py` | sessions, prompts, permissions, the SSE event stream |
+| `vigo/opencode_api.py` | sessions, prompts, permissions, the SSE event stream, and the agent a task runs under |
 | `vigo/router.py` | which device answers, and what may be said about it |
 | `vigo/allowlist.py` | who may ask, in a Discord message so both daemons agree |
-| `vigo/app.py` | interactions, commands, permission cards, the election of one answerer |
-| `vigo/ask.py` | one question: session, live progress, the answer |
+| `vigo/app.py` | interactions, commands, permission cards, the election of one answerer, and a DM reply that is a question |
+| `vigo/ask.py` | one question: session, the got-it line, the answer, the agent's own questions |
+| `vigo/goal.py` | when an ask is work to be done, and when it is a question |
+| `vigo/notify.py` | a DM to the owner: the update the daemon pulled, or `vigo dm` |
+| `vigo/lease.py` | one channel's run at a time across daemons, kept in the session's metadata |
+| `vigo/state.py` | what this device remembers between runs: sessions, tickets, answers, and the turn an upgrade's restart cut off |
+| `vigo/presence.py` | the status Discord shows (online, idle, do not disturb, invisible) from what the daemon and the servers do |
 
-`deploy/` holds the container build and entrypoint, the systemd units, the launcher that unseals the credentials, the
-Vigo identity script, and the macOS Keychain launcher. `art/` holds the icon pipeline.
+A direct message that replies to a message vigo posted is an ask in that DM's session. Only the daemon that posted
+the referenced message acts on the reply, which is how the two daemons agree on one answerer. It runs through the same
+queue and lease as any other ask, is acknowledged once, and its answer is posted as a message, not an edit. The bot
+asks for `DIRECT_MESSAGES` only: no privileged intent, and no guild message is read. A plain DM and a reply to
+somebody else's message are ignored, and a stranger is refused.
+
+`deploy/` holds the service units and the launchers that unseal the password (Keychain on macOS, systemd-creds on
+Linux). `deploy/container/` holds the rootless container: the image, both launchers, the SSH client configuration and
+the service files. `art/` holds the icon pipeline.
+
+On Linux the container runs Vigo **and its own OpenCode**. `deploy/vigo-container.sh` uses systemd credentials, the
+`vigo-ssh-agent` TPM socket, pasta networking, a read-only root, no capabilities and no-new-privileges; it publishes
+4096 and 4098 only on the tailnet address and mounts only the checkout, `~/Projects`, its own home and the settings.
+The image is built from this host's `opencode` and `gh` by `deploy/build-container.sh`.
+
+On macOS the container runs the daemon only; OpenCode stays on the host. `dev.vigo.container` runs
+`deploy/container/run.sh`. The token and the OpenCode password come from `printenv`, which the podman secrets set. The
+container's one key is `~/.ssh/vigo_container_ed25519`. The container's `ssh_config` maps `github.com` and the
+checkout's `github-read` and `github-write` aliases to that key. A rebuild must keep them, or `/vigo upgrade` fails
+inside the container. The launcher starts the podman machine when it does not answer, because the Homebrew package
+does not start that VM at login. On that machine the host job's plist is `dev.vigo.bot.plist.off`.
 
 ## Commits
 
-Greenstar signs every commit by hand, with a YubiKey and Touch ID, so a commit is a cost he pays each time. Batch the
-work: **one commit per request, or fewer** — never one per change, and never while changes are still landing. Run the
-full suite once, stage everything, and give him the single message he should sign. If he cancels a signature, the work
-stays staged: leave it staged, do not retry, and do not commit again until he says so.
+Batch the work: **one commit per request, or fewer**. Never one per change, and never while changes are still landing.
+Run the full suite once, then stage everything and commit.
 
-That cost is **macbook's** only. Its key is Greenstar's own, so every commit there waits for his hand (YubiKey,
-Touch ID). On **pc** a commit is signed by that machine's TPM key with no hand involved, so it adds no such
-user cost. Batch on both anyway: the history is shared, and the Mac reads what the PC wrote.
+Vigo signs every commit as `VIGO-VI`. On Linux the signing key is a TPM key held by `vigo-ssh-agent`; on macOS it is
+the container's SSH key. The signature carries Vigo's identity and costs no YubiKey and no Touch ID, because it is
+that machine's key and not greenstar's. Do not sign as greenstar for the agent, and do not turn signing off to make a
+commit look like the owner's.
+
+## Pull requests
+
+Every change reaches `main` through a pull request, and the first push opens it **as a draft**. A draft runs the quick
+stage: one Python, the newest in the matrix, on macOS and Windows. That is where a path, a socket or a clock that
+differs by platform shows up, in two jobs instead of six.
+
+Mark the pull request **ready for review** once that stage is green. Ready runs the full matrix, macOS and Windows on
+3.12, 3.13 and 3.14, and that is the matrix a merge waits for. Converting back to a draft runs the quick stage again.
+
+Linux is the third platform and no job covers it: run `tests/ci-codespace.sh --machine standardLinux32gb` before the push, and put its answer in
+the body. Say what it could not answer when it could not run.
+
+```sh
+tests/ci-codespace.sh --machine standardLinux32gb   # Linux 3.12 to 3.14, ruff, secrets
+gh pr create --draft --base main --title "…" --body-file …
+gh pr checks <number> --watch          # the quick stage
+gh pr ready <number>                   # the full matrix
+gh pr merge <number> --merge           # the owner runs this, never the agent
+```
+
+Do not open a pull request ready, and do not merge with a red matrix. The agent never merges into `main`, whatever
+the colour of the matrix; the owner does, every time. Inside an internal fork, the agent may merge branches it created
+in the same session onto each other. The reason the stages exist is to answer the platform question in two jobs
+before paying for six.
 
 ## Finishing
 
@@ -129,15 +260,16 @@ user cost. Batch on both anyway: the history is shared, and the Mac reads what t
   **NEEDS_CONTEXT**. "Partially done" is not a status.
 - Self-rating before reporting: a score out of 10 from a fresh read, each missing point named, and an honest "am I
   proud of it". If not, fix it and rate again.
-- Say what must be restarted for the change to take effect, with the command. Here that is the container
-  (`systemctl --user restart vigo`), the agent (`systemctl --user restart vigo-ssh-agent`) when its keys change, and the
-  settings reload on the next container start.
-- Greenstar commits and pushes himself: on macbook with his YubiKey and the Secure Enclave key, on
-  pc with that machine's TPM key. Prepare the tree and hand him the command; never `git push` for him.
+- Say what must be restarted for the change to take effect, with the command. A supervisor owns the daemon, so
+  restart the job, not the process: `launchctl kickstart -k gui/$(id -u)/dev.vigo.bot` on macOS,
+  `systemctl --user restart vigo` on Linux. A `kill` works too, because both units are kept alive; starting a second
+  `python3.14 -m vigo` by hand would run two daemons. The settings reload on the next start.
+- The agent commits and pushes the branch, and opens the pull request as a draft. The merge into `main` is
+  greenstar's, every time: do not run `gh pr merge`, whatever the colour of the matrix.
 
 ## Confusion protocol
 
-High-stakes ambiguity — two plausible designs, a request against an established pattern, a destructive operation of
+High-stakes ambiguity: two plausible designs, a request against an established pattern, a destructive operation of
 unclear scope, missing context that would change the approach: stop, name it in one sentence, offer two or three real
 options with their trade-offs, and ask. Not for routine work.
 
@@ -150,6 +282,12 @@ options with their trade-offs, and ask. Not for routine work.
 - The bot's token and password are live credentials: if one appears anywhere it should not, say so at once and say
   which rotation is needed. Redacting a log is not rotation.
 - Nothing that touches greenstar's machines runs from a channel message. Only a click.
+
+## Text for users
+
+README, commit messages, and the messages the bot posts to Discord are plain prose. They have no emoji, no em dash
+between clauses, no semicolon between sentences, and no spaced hyphen as a dash. They have no rule-of-three
+flourishes. This rule does not apply to code comments.
 
 ## How greenstar wants to be talked to
 
