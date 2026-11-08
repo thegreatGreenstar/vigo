@@ -341,6 +341,12 @@ class Gateway:
         sent_at = 0.0
         deadline = time.monotonic() + self.timeout_for_hello()
         identified = False
+        # Which handshake this connection sent, and whether Discord took it.
+        # "identify" is OP 2 and "resume" is OP 6; READY and RESUMED both mean
+        # it was accepted.  A 4003 on an identify nobody accepted is fatal,
+        # while a 4003 on a resume means only that the session is gone.
+        sent: str | None = None
+        accepted = False
 
         while not self.stopped:
             if not identified and time.monotonic() > deadline:
@@ -364,6 +370,11 @@ class Gateway:
                 continue
             if opcode == OP_CLOSE:
                 code = struct.unpack("!H", payload[:2])[0] if len(payload) >= 2 else 0
+                if code == 4003 and sent == "identify" and not accepted:
+                    # Discord refused the token at identify.  Retrying sends
+                    # the same token to the same refusal, so the process must
+                    # end and its supervisor decide what happens next.
+                    raise FatalGatewayError("closed with 4003: the identify was refused")
                 if code in SESSION_GONE:
                     # The session is dead, not just this socket.  Keeping the
                     # id would resume it again on every retry: Discord answers
@@ -391,8 +402,10 @@ class Gateway:
                 self._beat()
                 if self.session_id:
                     self._resume(interval)
+                    sent = "resume"
                 else:
                     self._identify()
+                    sent = "identify"
                 # Discord starts every connection without a status, so the one
                 # this daemon holds is sent with the identify or the resume.
                 self._send_presence()
@@ -411,12 +424,17 @@ class Gateway:
                 self.session_id = None
                 self.seq = None
                 self.ws.send_json({"op": 2, "d": self._identify_data()})
+                sent = "identify"
+                accepted = False
                 time.sleep(1.0)
             elif op == 0:
                 event = message.get("t") or ""
                 if event == "READY":
                     self.session_id = (data or {}).get("session_id")
+                    accepted = True
                     self.on_state("ready")
+                elif event == "RESUMED":
+                    accepted = True
                 self.on_event(event, data or {})
 
         return True
