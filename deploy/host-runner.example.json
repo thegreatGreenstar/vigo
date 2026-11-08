@@ -1,0 +1,37 @@
+{
+  "bind": "127.0.0.1",
+  "port": 4099,
+  "tokenFile": "~/.config/vigo/host-runner.token",
+  "programs": {
+    "scarletnx": {
+      "binary": "/Applications/ScarletNX.app/Contents/MacOS/scarletnx",
+      "cwd": "~/Library/Application Support/scarletnx",
+      "dataRoot": "~/Library/Application Support/scarletnx",
+      "logFile": "state/last-run.log",
+      "mcp": {
+        "command": [
+          "/Applications/ScarletNX.app/Contents/MacOS/scarletnx",
+          "--mcp",
+          "--repo",
+          "~/Projects/Emulation/ScarletNX",
+          "--data",
+          "~/Library/Application Support/scarletnx"
+        ],
+        "tools": [
+          "scan_log",
+          "read_log",
+          "find_game",
+          "state_info",
+          "symbolize",
+          "disassemble",
+          "gdb_attach",
+          "gdb_command",
+          "gdb_threads",
+          "gdb_guest",
+          "gdb_memory",
+          "gdb_detach"
+        ]
+      }
+    }
+  }
+}

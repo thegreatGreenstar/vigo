@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Keep the host runner answering for Vigo's agent, on macOS.
+
+  deploy/container/install.sh fills in __PYTHON__ and __HOME__ and loads it.
+  The runner listens on loopback only; the agent reaches it through the podman
+  machine's host gateway, and every request carries the bearer token from
+  ~/.config/vigo/host-runner.token.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>dev.vigo.host-runner</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>__PYTHON__</string>
+        <string>__HOME__/.local/libexec/host-runner.py</string>
+        <string>--config</string>
+        <string>__HOME__/.config/vigo/host-runner.json</string>
+    </array>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardErrorPath</key>
+    <string>__HOME__/.local/state/vigo/host-runner.err</string>
+    <key>StandardOutPath</key>
+    <string>__HOME__/.local/state/vigo/host-runner.out</string>
+</dict>
+</plist>

@@ -116,6 +116,52 @@ Additional project data is a colon-separated list, and is validated against the 
 Environment=VIGO_AGENT_DATA=/home/you/.local/share/eden
 ```
 
+### The host runner
+
+A program that only the Mac can run (ScarletNX renders on Metal) is out of the Linux agent's reach.
+The host runner is the one door to it: it runs the program with argv, reads its logs, and proxies the
+program's own MCP server.
+
+```sh
+./deploy/container/install.sh          # installs and loads it, and gives the agent the MCP entry
+podman secret inspect host-runner-token
+```
+
+`~/.config/vigo/host-runner.json` is the table of programs, made from
+`deploy/host-runner.example.json` when it is missing; a second program (Eden) is another entry. The
+token is `~/.config/vigo/host-runner.token` on the host and the podman secret `host-runner-token` in
+the agent. The daemon does not hold it.
+
+The runner binds `127.0.0.1` only, so it is not on the tailnet. The agent reaches it through the
+podman machine's host gateway at `http://host.containers.internal:4099`, and its OpenCode config
+carries the remote MCP entry under the name `scarletnx-host`: ScarletNX's own project config already
+names an MCP `scarletnx` (a macOS binary), and the distinct name keeps the two from overriding each
+other inside that project.
+
+What it accepts, and what it does not:
+
+- an argument may name a path only under the program's `dataRoot`. A program that loads a native
+  module from the path it is given would otherwise let the agent run its own code as the Mac's user.
+  ScarletNX is the example: `--game` dlopens `recompiled/<id>/<id>_code.so`.
+- the program's MCP tools are limited to the names `mcp.tools` lists. A tool that writes stays out
+  unless you name it; ScarletNX's `edenprobe_*` creates a case in a checkout, so the example lists
+  only the reading tools and the GDB ones.
+
+Checks:
+
+```sh
+token=$(cat ~/.config/vigo/host-runner.token)
+curl -s -H "Authorization: Bearer $token" http://127.0.0.1:4099/health
+curl -s -H "Authorization: Bearer $token" -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' \
+    "http://127.0.0.1:4099/mcp?program=scarletnx"
+launchctl print gui/$(id -u)/dev.vigo.host-runner | head -5
+```
+
+`POST /run` takes `{"program": "...", "args": [...], "timeout": 60}`; `/log` reads
+`?program=...&path=...&tail=200` under the data root. On the MCP the runner adds `<name>_run`, and
+`<name>_log` only when the program has no MCP of its own (ScarletNX's `read_log` and `scan_log` are
+already there).
+
 A project that needs system packages the agent image lacks gets its own image:
 
 ```sh

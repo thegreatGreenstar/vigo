@@ -58,16 +58,22 @@ class EnvironmentTest(unittest.TestCase):
 
     def test_the_opencode_password_and_gh_defaults(self):
         with mock.patch.dict(os.environ, {}, clear=True):
-            env = self.entry.environment("the-password", "")
+            env = self.entry.environment("the-password", "", "")
         self.assertEqual(env["OPENCODE_PASSWORD"], "the-password")
         self.assertNotIn("GH_TOKEN", env)
+        self.assertNotIn("VIGO_HOST_RUNNER_TOKEN", env)
         self.assertEqual(env["GH_PROMPT_DISABLED"], "1")
         self.assertEqual(env["GH_CONFIG_DIR"], "/home/vigo/.config/gh")
 
     def test_a_gh_token_is_exported_when_there_is_one(self):
         with mock.patch.dict(os.environ, {}, clear=True):
-            env = self.entry.environment("the-password", "the-token")
+            env = self.entry.environment("the-password", "the-token", "")
         self.assertEqual(env["GH_TOKEN"], "the-token")
+
+    def test_the_host_runner_token_is_exported_when_there_is_one(self):
+        with mock.patch.dict(os.environ, {}, clear=True):
+            env = self.entry.environment("the-password", "", "the-runner-token")
+        self.assertEqual(env["VIGO_HOST_RUNNER_TOKEN"], "the-runner-token")
 
 
 class RoleTest(unittest.TestCase):

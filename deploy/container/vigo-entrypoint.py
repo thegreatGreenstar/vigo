@@ -16,6 +16,8 @@ import sys
 
 PASSWORD_FILE = os.environ.get("VIGO_OPENCODE_PASSWORD_FILE", "/run/secrets/opencode-password")
 GH_TOKEN_FILE = os.environ.get("VIGO_GH_TOKEN_FILE", "/run/secrets/gh-token")
+RUNNER_TOKEN_FILE = os.environ.get(
+    "VIGO_HOST_RUNNER_TOKEN_FILE", "/run/secrets/host-runner-token")
 PORT = os.environ.get("OPENCODE_PORT", "4096")
 HOSTNAME = os.environ.get("OPENCODE_HOSTNAME", "0.0.0.0")
 
@@ -42,11 +44,13 @@ def read_secret(path: str, env: str, *, required: bool) -> str:
     return value
 
 
-def environment(password: str, gh_token: str) -> dict[str, str]:
+def environment(password: str, gh_token: str, runner_token: str) -> dict[str, str]:
     """The environment the agent gets: secrets in memory, not in argv."""
     env = dict(os.environ, OPENCODE_PASSWORD=password)
     if gh_token:
         env["GH_TOKEN"] = gh_token
+    if runner_token:
+        env["VIGO_HOST_RUNNER_TOKEN"] = runner_token
     env.setdefault("GH_CONFIG_DIR", "/home/vigo/.config/gh")
     env.setdefault("GH_NO_UPDATE_NOTIFIER", "1")
     env.setdefault("GH_PROMPT_DISABLED", "1")
@@ -67,7 +71,10 @@ def main() -> int:
     gh_token = read_secret(GH_TOKEN_FILE, "GH_TOKEN", required=False)
     if gh_token:
         log("GitHub CLI token is set")
-    env = environment(password, gh_token)
+    runner_token = read_secret(RUNNER_TOKEN_FILE, "VIGO_HOST_RUNNER_TOKEN", required=False)
+    if runner_token:
+        log("the host runner token is set")
+    env = environment(password, gh_token, runner_token)
     log(f"starting OpenCode on {HOSTNAME}:{PORT}")
     os.execvpe("opencode", ["opencode", "serve", "--hostname", HOSTNAME, "--port", PORT], env)
 
