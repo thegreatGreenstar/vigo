@@ -235,6 +235,21 @@ def _secret(raw: dict, key: str, where: str, base: Path | None = None) -> str:
     return value
 
 
+def _web_url(value: str, what: str) -> str:
+    """An http(s) address, with no user or password inside it.
+
+    A URL such as `http://user:secret@host` puts a credential in the settings,
+    in the log line that names the host, and in every error that quotes the
+    address.  The password has its own key, and one place is enough.
+    """
+    if not re.match(r"\Ahttps?://[^\s/]+", value):
+        raise ConfigError(f"{what} is not http:// or https://")
+    netloc = value.split("://", 1)[1].split("/", 1)[0]
+    if "@" in netloc:
+        raise ConfigError(f"{what} carries a user or a password; use the password key")
+    return value
+
+
 def _device(entry: object, index: int, fallback_password: str, base: Path | None) -> Device:
     where = f"devices[{index}]"
     if not isinstance(entry, dict):
@@ -245,9 +260,7 @@ def _device(entry: object, index: int, fallback_password: str, base: Path | None
     name = _str(entry, "name", where)
     if not NAME.match(name):
         raise ConfigError(f"{where}: name {name!r} takes letters, digits, '.', '_' and '-'")
-    url = _str(entry, "url", where).rstrip("/")
-    if not re.match(r"\Ahttps?://[^\s/]+", url):
-        raise ConfigError(f"{where}: url {url!r} is not http:// or https://")
+    url = _web_url(_str(entry, "url", where).rstrip("/"), f"{where}: url")
     directory = _str(entry, "directory", where)
     if not (directory.startswith("/") or re.match(r"\A[A-Za-z]:[\\/]", directory)):
         raise ConfigError(f"{where}: directory {directory!r} is not an absolute path")
@@ -256,9 +269,7 @@ def _device(entry: object, index: int, fallback_password: str, base: Path | None
         raise ConfigError(f"{where}: no password, and the file sets none")
     peer = ""
     if "peer" in entry:
-        peer = _str(entry, "peer", where).rstrip("/")
-        if not re.match(r"\Ahttps?://[^\s/]+", peer):
-            raise ConfigError(f"{where}: peer {peer!r} is not http:// or https://")
+        peer = _web_url(_str(entry, "peer", where).rstrip("/"), f"{where}: peer")
     return Device(name=name, url=url, directory=directory, password=password, peer=peer)
 
 

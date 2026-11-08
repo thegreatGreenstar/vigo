@@ -139,13 +139,14 @@ class State:
     # -- permission cards -------------------------------------------------
 
     def new_ticket(self, ticket: str, device: str, session: str, request: str,
-                   channel: str) -> None:
+                   channel: str, owner: bool = True) -> None:
         with self.lock:
             self.data["tickets"][ticket] = {
                 "device": device,
                 "session": session,
                 "request": request,
                 "channel": channel,
+                "owner": owner,
                 "at": int(time.time()),
             }
             self._write()
@@ -174,7 +175,7 @@ class State:
     # -- questions the agent asks ----------------------------------------
 
     def new_form(self, ticket: str, device: str, session: str, form: str,
-                 fields: list[dict], channel: str) -> None:
+                 fields: list[dict], channel: str, guest: bool = False) -> None:
         with self.lock:
             self.data["forms"][ticket] = {
                 "device": device,
@@ -184,6 +185,7 @@ class State:
                 "answers": {},
                 "messages": [],
                 "channel": channel,
+                "guest": guest,
                 "at": int(time.time()),
             }
             self._write()
