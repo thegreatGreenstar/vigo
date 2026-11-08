@@ -1,7 +1,9 @@
+import os
 import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from vigo import __version__
 from vigo.peer import PeerClient, PeerServer, build_of, update_self
@@ -67,6 +69,19 @@ class UpdateTest(unittest.TestCase):
             self.assertTrue(told["ok"])
             self.assertEqual((here / "file.txt").read_text(encoding="utf-8"), "two\n")
             self.assertFalse(told["restarted"])
+
+    @mock.patch.dict(os.environ, {"VIGO_CONTAINER": "1"})
+    @mock.patch("vigo.peer._restart_soon")
+    @mock.patch("vigo.peer._run", return_value=(0, ""))
+    def test_inside_a_container_it_asks_the_supervisor_to_restart(
+            self, run, restart_soon):
+        told = update_self(checkout=Path("/nonexistent"), restart=True)
+        self.assertTrue(told["ok"])
+        self.assertTrue(told["restarted"])
+        restart_soon.assert_called_once_with()
+        # git pull is the only command it runs; there is no systemd inside.
+        self.assertEqual(len(run.call_args_list), 1)
+        self.assertEqual(run.call_args_list[0].args[0][:2], ["git", "pull"])
 
 
 class BuildTest(unittest.TestCase):

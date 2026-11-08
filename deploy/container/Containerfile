@@ -1,0 +1,57 @@
+# Vigo and its own OpenCode, in one rootless container.
+#
+# The build context is made by deploy/build-container.sh: it copies the host's
+# opencode binary next to this file, so the image runs the same build the host
+# does.  Nothing secret goes in here.
+#
+# Debian slim is used for a current glibc and a small base; the opencode binary
+# is linked against glibc only.  Vigo itself needs Python 3.12+ and no packages.
+FROM docker.io/library/python:3.13-slim-bookworm
+
+ARG OPENCODE_VERSION=unknown
+LABEL org.opencontainers.image.title="vigo" \
+      org.opencontainers.image.description="Vigo and its own OpenCode, rootless" \
+      org.opencontainers.image.version="${OPENCODE_VERSION}"
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    LANG=C.UTF-8 \
+    HOME=/home/vigo \
+    XDG_CONFIG_HOME=/home/vigo/.config \
+    XDG_DATA_HOME=/home/vigo/.local/share \
+    XDG_STATE_HOME=/home/vigo/.local/state \
+    XDG_CACHE_HOME=/tmp/cache \
+    SSH_AUTH_SOCK=/run/vigo/ssh-agent.sock \
+    VIGO_CONFIG=/config/vigo.json \
+    VIGO_CONTAINER=1
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        git \
+        openssh-client \
+        passwd \
+        ripgrep \
+ && rm -rf /var/lib/apt/lists/* \
+ && groupadd --gid 1000 vigo \
+ && useradd --uid 1000 --gid 1000 --create-home --home-dir /home/vigo \
+        --shell /bin/sh vigo \
+ && install -d -o vigo -g vigo -m 0700 \
+        /home/vigo/.config \
+        /home/vigo/.local/share \
+        /home/vigo/.local/state \
+        /home/vigo/.ssh
+
+COPY --chmod=0755 opencode /usr/local/bin/opencode
+COPY --chmod=0755 gh /usr/local/bin/gh
+COPY --chmod=0755 vigo-entrypoint.py /usr/local/libexec/vigo-entrypoint.py
+
+# The checkout and home are bind mounts; these are only the mount points.
+RUN install -d -o vigo -g vigo -m 0755 /vigo \
+ && install -d -o vigo -g vigo -m 0755 /run/vigo \
+ && install -d -o vigo -g vigo -m 0755 /run/secrets \
+ && install -d -o vigo -g vigo -m 0755 /config
+
+USER 1000:1000
+WORKDIR /vigo
+ENTRYPOINT ["/usr/local/bin/python3", "/usr/local/libexec/vigo-entrypoint.py"]

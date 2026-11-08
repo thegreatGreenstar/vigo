@@ -63,6 +63,9 @@ Torn between two sizes: pick the smaller, and say so.
 5. **Discord gives three seconds.** Acknowledge first, then probe or run. Any new command follows that order.
 6. **A tool runs only when the owner clicks.** Permission cards go to the owner's DM; a channel fallback says only
    that approval is needed, never what the tool wanted to touch.
+7. **On Linux, the bot and its own OpenCode run in one rootless container.** The host's OpenCode is a separate copy
+   with separate data. The container gets the checkout, `~/Projects` and its own home; nothing else, no capabilities,
+   no host network, and a read-only root filesystem. Do not widen that to fix a bug without saying what it exposes.
 
 ## Where this design comes from, and when we last looked
 
@@ -106,8 +109,8 @@ edit anything here.
 | `vigo/app.py` | interactions, commands, permission cards, the election of one answerer |
 | `vigo/ask.py` | one question: session, live progress, the answer |
 
-`deploy/` holds the service units and the launchers that unseal the password (Keychain on macOS, systemd-creds on
-Linux). `art/` holds the icon pipeline.
+`deploy/` holds the container build and entrypoint, the systemd units, the launcher that unseals the credentials, the
+Vigo identity script, and the macOS Keychain launcher. `art/` holds the icon pipeline.
 
 ## Commits
 
@@ -126,8 +129,9 @@ user cost. Batch on both anyway: the history is shared, and the Mac reads what t
   **NEEDS_CONTEXT**. "Partially done" is not a status.
 - Self-rating before reporting: a score out of 10 from a fresh read, each missing point named, and an honest "am I
   proud of it". If not, fix it and rate again.
-- Say what must be restarted for the change to take effect, with the command. Here that is the bot
-  (`pkill -f "m vigo"` then `python3.14 -m vigo`), and the settings reload on the next start.
+- Say what must be restarted for the change to take effect, with the command. Here that is the container
+  (`systemctl --user restart vigo`), the agent (`systemctl --user restart vigo-ssh-agent`) when its keys change, and the
+  settings reload on the next container start.
 - Greenstar commits and pushes himself: on macbook with his YubiKey and the Secure Enclave key, on
   pc with that machine's TPM key. Prepare the tree and hand him the command; never `git push` for him.
 
