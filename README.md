@@ -1062,7 +1062,9 @@ tests/in-codespace.sh                           # Linux 3.12-3.14, inside a code
 
 `tests/ci-local.sh` runs the CI steps here: the suite on each host Python 3.12 to 3.14 that is installed, ruff
 0.17.4 in a container, the secrets check, and the Linux matrix in podman. It names what it cannot answer, which is
-Windows and any Python that is not installed. It takes about a minute and a half on this Mac.
+Windows and any Python that is not installed. It takes about a minute and a half on this Mac. It refuses to start on a
+laptop that is not on AC power with its battery at 80% or more, and a desktop always runs it: the podman VM heats a
+laptop, and CI is free now that the repository is public.
 
 `tests/ci-codespace.sh` is the Linux half of CI, on a Linux machine rather than this one. A run with no terminal
 there passes `--machine`, because `gh codespace create` would ask for one: this repository's plan offers

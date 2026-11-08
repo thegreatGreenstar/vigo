@@ -9,6 +9,10 @@
 # `tests/ci-codespace.sh`.  macOS is the host interpreters that are installed
 # here.  Windows is CI only: it needs a Windows VM, and it is where CI found
 # something no other platform did.
+#
+# The podman VM heats a laptop, and GitHub Actions is free now that the
+# repository is public.  This script refuses to start on a laptop that is not on
+# AC power with the battery at 80% or more.  A desktop always runs it.
 set -eu
 
 here=$(cd "$(dirname "$0")/.." && pwd)
@@ -18,6 +22,22 @@ containers=1
 status=0
 
 say() { printf '%s\n' "$*"; }
+
+# The check comes before the first suite: a run that may not finish should not
+# start.  Exit 1 is the machine saying no; any other failure is the reading
+# itself, and it must not pass for a refusal.
+if power=$(python3 tests/power_gate.py 2>&1); then
+    say "power: $power"
+else
+    code=$?
+    say "power: $power"
+    if [ "$code" -eq 1 ]; then
+        say ""
+        say "skipped: run this on AC power with the battery at 80% or more, or on a desktop."
+        exit 0
+    fi
+    exit "$code"
+fi
 
 suite() {  # suite <python> <label>
     log=$(mktemp)
