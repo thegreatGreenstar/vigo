@@ -2,8 +2,8 @@
 """Start one container of Vigo's pod.
 
 `VIGO_ROLE=agent` starts OpenCode; `VIGO_ROLE=daemon` starts Vigo.  The two
-containers share a network namespace but not a file system, so the Discord
-token is mounted only in the daemon and the projects only in the agent.
+containers share a bridge but not a network namespace or a file system, so the
+Discord token is mounted only in the daemon and the projects only in the agent.
 
 Secrets arrive either as files under /run/secrets (Linux, systemd) or in the
 environment (macOS, podman secrets).  They are never put on a command line.
