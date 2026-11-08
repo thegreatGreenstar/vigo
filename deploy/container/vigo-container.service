@@ -1,15 +1,15 @@
 [Unit]
-Description=Vigo in a rootless podman container
+Description=Vigo and its OpenCode in a rootless podman pod
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
 # The script builds the image when it is missing, checks the three podman
-# secrets, and then runs the container.  Restart= restarts it after a crash and
-# after /vigo upgrade, which ends the bot and lets this unit start the new code.
-WorkingDirectory=%h/Projects/vigo
-ExecStart=%h/Projects/vigo/deploy/container/run.sh
+# secrets, and then runs the pod.  Restart= restarts it after a crash and after
+# /vigo upgrade, which ends the bot and lets this unit start the new code.
+WorkingDirectory=%h/.local/libexec/vigo-container
+ExecStart=%h/.local/libexec/vigo-container/run.sh
 Restart=always
 RestartSec=5s
 

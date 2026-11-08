@@ -203,12 +203,16 @@ somebody else's message are ignored, and a stranger is refused.
 Linux). `deploy/container/` holds the rootless container: the image, the launcher, the SSH client configuration and
 the service files. `art/` holds the icon pipeline.
 
-The daemon runs in that container on a machine that installs it. `dev.vigo.container` runs
-`deploy/container/run.sh`. The token and the OpenCode password come from `printenv`, which the podman secrets set. The
-container's one key is `~/.ssh/vigo_container_ed25519`. The container's `ssh_config` maps `github.com` and the
+The daemon runs in that container on a machine that installs it. Since 2026-11-07 it is a pod with two containers:
+`vigo-opencode` runs the agent's OpenCode with the projects tree as its only host data, and `vigo` runs the daemon
+with the checkout, the settings and the state. `dev.vigo.container` runs the installed kit at
+`~/.local/libexec/vigo-container`, and the host's `dev.vigo.opencode` and `dev.vigo.bot` units are off. The token,
+the OpenCode password and Vigo's SSH key are podman secrets; the agent container gets the password and the key, never
+the Discord token. The key is `~/.ssh/vigo_container_ed25519`. The container's `ssh_config` maps `github.com` and the
 checkout's `github-read` and `github-write` aliases to that key. A rebuild must keep them, or `/vigo upgrade` fails
 inside the container. The launcher starts the podman machine when it does not answer, because the Homebrew package
-does not start that VM at login. On that machine the host job's plist is `dev.vigo.bot.plist.off`.
+does not start that VM at login. Re-run `deploy/container/install.sh` after a change under `deploy/container`, then
+rebuild the image.
 
 ## Commits
 

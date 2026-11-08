@@ -13,7 +13,9 @@ the code trusts, what publishing it changes, and what is a limit by design rathe
   names. The file is mode 0600 or the bot refuses to start, and no secret is written to the tree.
 - **OpenCode on each device.** The password is the real boundary. Whoever has it can run anything there. Vigo does
   not loosen OpenCode's permissions: a project whose `opencode.json` allows everything runs everything without a
-  card.
+  card. In the container setup the agent runs in its own rootless container with no capabilities, no new privileges
+  and a read-only root, and the only host data it sees is the projects tree it was given. A tool call cannot read
+  `~/.ssh`, the Keychain or the rest of the home directory, and it never holds the Discord token.
 - **The owner's click.** A tool that OpenCode asks about goes to the owner's DM, and only the owner's user id can
   answer it. The card says when the question came from an approved person rather than the owner.
 - **The daemon's own state.** Who may ask is read from the bot's own allowlist message, written only by the bot, in
@@ -22,8 +24,10 @@ the code trusts, what publishing it changes, and what is a limit by design rathe
 ## What an allow means
 
 An approved person asks a question that runs under the owner's account, in a session of its own. That is a **read
-grant to everything the agent can read on that device**, not only to the project. The share cap in `guests` limits
-what the plan spends, not what the agent may see. Allow only people you would trust with the machine. The owner
+grant to everything the agent can read on that device**, not only to the project. In the container setup that is the
+projects tree and the agent's own state, so another project's secrets are still readable even though the rest of the
+machine is not. The share cap in `guests` limits what the plan spends, not what the agent may see. Allow only people
+you would trust with those projects. The owner
 still approves every tool that OpenCode asks about, but a read tool that the project allows asks nothing.
 
 An approved person's question is answered privately: an ephemeral message in the channel, or a DM when the
@@ -33,6 +37,13 @@ they may hold one question at a time. A tool they cause the agent to ask for get
 
 ## Known limits
 
+- **The podman machine mounts the home directory.** Containers see only the paths named in `run.sh`, but the VM
+  around them has all of `/Users` on a virtiofs mount by default. A container escape reaches the home directory
+  through that mount. Narrowing it means recreating the machine, which discards its images and containers, so the kit
+  treats the container as the boundary it controls and says this one is outside it.
+- **The agent's OpenCode credential lives in its container state.** It is a separate sign-in from the desktop app, so
+  revoking one does not revoke the other. It sits in `~/.local/share/vigo-agent` on the host, readable by the user
+  and by the daemon's container, which already holds the Discord token.
 - **The OpenCode password crosses plain HTTP.** Bind `opencode serve` to loopback or a VPN, never the internet, and
   use one password for this and nothing else. The password is a shell.
 - **The peer port runs code.** `POST /vigo/update` pulls the checkout and restarts the daemon. A password holder

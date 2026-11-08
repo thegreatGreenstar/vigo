@@ -346,8 +346,9 @@ anything that is not on the tailnet or holding the SSH key.
 `./install.sh` puts both services in place, and they come up when you log in, not at boot, so nothing waits on a
 password and nothing runs before your Keychain is unlocked.
 
-- **macOS**: two LaunchAgents, `dev.vigo.opencode` and `dev.vigo.bot`, both with `RunAtLoad` and `KeepAlive`. Check
-  them with `launchctl print gui/$(id -u)/dev.vigo.bot | head -20`, read their output in
+- **macOS**: two LaunchAgents, `dev.vigo.opencode` and `dev.vigo.bot`, both with `RunAtLoad` and `KeepAlive`. The
+  container setup below replaces both with one `dev.vigo.container` unit. Check them with
+  `launchctl print gui/$(id -u)/dev.vigo.bot | head -20`, read their output in
   `~/.local/state/vigo/*.err`, and stop one with `launchctl bootout gui/$(id -u)/dev.vigo.bot`.
 - **Linux**: two systemd user units. `systemctl --user enable --now opencode-serve vigo`; they start at login too
   unless you run `loginctl enable-linger $USER`, which starts them before you log in and is only useful if the
@@ -356,26 +357,45 @@ password and nothing runs before your Keychain is unlocked.
 Both restart themselves after a crash, which matters at login: OpenCode binds the tailnet address, so it fails until
 Tailscale is up, and the supervisor simply tries again.
 
-### Running the daemon in a container
+### Running the daemon and its agent in a container
 
-`deploy/container/` holds a rootless podman setup for the daemon. It uses
-`python:3.14-slim` with git and an SSH client, mounts the checkout, the settings and the state at their real paths,
-and takes its three secrets from podman. `opencode serve` stays on the host, so the container holds only the daemon.
+`deploy/container/` holds a rootless podman pod with two containers. `vigo-opencode` runs `opencode serve` and sees
+only the projects tree and its own state. `vigo` runs the daemon and sees the checkout, the settings and the state.
+Both run with no capabilities, no new privileges, a read-only root, a private network, and a bound on processes and
+memory.
 
-The Secure Enclave push key and the Keychain cannot enter a Linux VM. The container has one authentication key with
-no passphrase, `~/.ssh/vigo_container_ed25519`, added to VIGO-VI. The key is read/write on that account. The
-container's `ssh_config` maps `github.com` and the checkout's `github-read` and `github-write` aliases to that key,
-so the clone needs no remote change.
+They share the pod's network namespace. The daemon reaches the agent on `127.0.0.1:4096`, and the agent publishes
+that port with the password, so another device still asks this one for work. No home directory is mounted: an agent
+tool call cannot read `~/.ssh`, the Keychain, your OpenCode app or the rest of the machine. The agent's git identity
+is `VIGO-VI`, the account whose key the pod holds, and the same pinned host keys as before.
+
+The image is `python:3.14-slim` with git, an SSH client and one OpenCode binary, pinned by version and by the SHA-256
+of its release archive. The agent's settings name no MCP server, because an `npx` server downloads and runs a package
+inside the pod at start.
+
+The agent keeps its own OpenCode sessions under `~/.local/share/vigo-agent`, separate from your OpenCode app. Its
+settings are `~/.config/vigo/opencode/opencode.json`. Sign it in once: that login is its own credential, so a token
+refresh can never log the desktop app out.
 
 ```sh
-podman build -t localhost/vigo deploy/container
+deploy/container/install.sh
+# when another device must reach this one, name the address it uses
+VIGO_PEER_PORT=4098 VIGO_PEER_BIND=100.64.0.5 deploy/container/install.sh
+```
+
+`install.sh` puts the kit in `~/.local/libexec/vigo-container` and starts the unit. The unit runs that copy, not the
+checkout, so `/vigo upgrade` changes the Python without changing how the pod starts. Re-run the installer after a
+change under `deploy/container`, then rebuild the image. The three secrets are made once:
+
+```sh
+podman build -t localhost/vigo ~/.local/libexec/vigo-container
 security find-generic-password -s vigo-token -w | podman secret create vigo-token -
-security find-generic-password -s vigo-opencode -w | podman secret create vigo-opencode -
+security find-generic-password -s vigo-opencode -w | tr -d '\n' | podman secret create vigo-opencode -
 podman secret create vigo-ssh-key ~/.ssh/vigo_container_ed25519
 ```
 
 The Keychain cannot be called from inside the container, so the settings read the secrets from the environment, and
-the peer listens on every interface inside the container:
+the peer listens on every interface inside the pod:
 
 ```jsonc
 "tokenCommand": "printenv VIGO_TOKEN",
@@ -383,56 +403,43 @@ the peer listens on every interface inside the container:
 "peerHost": "0.0.0.0"
 ```
 
-Keep the host settings as `vigo.host.json` before the change. The host `vigo` command then needs the two values in its
-environment:
+The daemon's own device entry now names the pod's loopback, because the agent is beside it:
 
-```sh
-export VIGO_TOKEN=$(security find-generic-password -s vigo-token -w)
-export VIGO_OPENCODE_PASSWORD=$(security find-generic-password -s vigo-opencode -w)
+```jsonc
+{ "name": "this-device", "url": "http://127.0.0.1:4096", "directory": "/Users/you/Projects" }
 ```
 
-On macOS the container is in the podman machine, so a device URL names the host address that the VM can reach. That
-is `host.containers.internal` for a service on the host's loopback, or the host's Tailscale address for one bound
-there. The published peer port must use that address too, because the other device asks it there:
+The Secure Enclave push key and the Keychain cannot enter a Linux VM. The pod has one authentication key with no
+passphrase, `~/.ssh/vigo_container_ed25519`, added to VIGO-VI. It is read and write on that account. `ssh_config` maps
+`github.com` and the checkout's `github-read` and `github-write` aliases to that key, and the agent shares it because
+it may push the branch it works on.
 
-```sh
-VIGO_PEER_PORT=4098 VIGO_PEER_BIND=100.64.0.5 deploy/container/run.sh
-```
-
-`peerHost` is `0.0.0.0` because the published port arrives on the container's own interface, not on its loopback.
-
-To start it at login, install the unit for the platform: `deploy/container/vigo-container.service` for systemd,
-
-```sh
-install -D -m 644 deploy/container/vigo-container.service ~/.config/systemd/user/
-systemctl --user enable --now vigo-container
-```
-
-or `deploy/container/dev.vigo.container.plist.in` for launchd. Fill in the two paths and add `VIGO_PEER_PORT` and
-`VIGO_PEER_BIND` to its environment. Stop the host job first, and move its plist out of `LaunchAgents` so a login
-starts one daemon only:
+The host jobs must be stopped, or two daemons and two agent servers compete for the same channel and port. This
+includes the host OpenCode service, which the pod's agent replaces:
 
 ```sh
 launchctl bootout gui/$(id -u)/dev.vigo.bot
 mv ~/Library/LaunchAgents/dev.vigo.bot.plist ~/Library/LaunchAgents/dev.vigo.bot.plist.off
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.vigo.container.plist
+launchctl bootout gui/$(id -u)/dev.vigo.opencode
+mv ~/Library/LaunchAgents/dev.vigo.opencode.plist ~/Library/LaunchAgents/dev.vigo.opencode.plist.off
 ```
 
 The podman machine is a VM, and the Homebrew package does not start it at login. The launcher starts it when
 `podman info` does not answer, then exits with the command to run if it still does not, so the unit retries through a
-login instead of staying down. Booting the unit out stops both the container and the machine it started.
-
-Roll back with the reverse: boot out the container, move the host plist back, and restore `vigo.host.json`.
-
-The supervisor starts the script again when the bot ends, which is what `/vigo upgrade` does: the bot ends its own
-process there and the new code starts. A bare `run.sh` is a one-shot, for a test. A rebuild must keep the
-`github-read` and `github-write` hosts in `ssh_config`, or a pull inside the container fails.
+login instead of staying down. Booting the unit out stops the pod and the machine it started.
 
 An upgrade is the one stop that keeps the work. A question whose prompt already reached a device is written down
-just before the restart, with the session and the marks that name its turn. The new process watches that turn, then
-posts the answer in the channel, because the interaction ended with the old process. A question that only waited in a
-line is not carried: it never ran, and the state file keeps no message text. A crash, a stop or a restart nobody asked
-for carries nothing either, so the bot never answers a channel with work from hours ago.
+just before the restart, with the session and the marks that name its turn. The pod is recreated and the same agent
+state is mounted, so the resumed turn finds its session. A question that only waited in a line is not carried: it
+never ran. A crash, a stop or a restart nobody asked for carries nothing either.
+
+Roll back with the reverse: boot out `dev.vigo.container`, move the two host plists back to their names, restore the
+settings backup, and start `dev.vigo.opencode` and `dev.vigo.bot`. The host's OpenCode data was never touched by the
+pod, so the rollback finds its sessions as they were.
+
+What the pod does not change: the podman machine mounts all of `/Users` into its VM by default, so a container escape
+reaches the home directory even though the containers cannot. The container boundary is the one this kit controls.
+A narrower machine mount needs a machine rebuilt for it, and that discards the images and containers in the VM.
 
 ## The Discord application, in words
 
