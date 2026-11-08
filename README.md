@@ -391,7 +391,7 @@ change under `deploy/container`, then rebuild the image. The three secrets are m
 podman build -t localhost/vigo ~/.local/libexec/vigo-container
 security find-generic-password -s vigo-token -w | podman secret create vigo-token -
 security find-generic-password -s vigo-opencode -w | tr -d '\n' | podman secret create vigo-opencode -
-podman secret create vigo-ssh-key ~/.ssh/vigo_container_ed25519
+podman secret create vigo-ssh-key - < ~/.ssh/vigo_container_ed25519
 ```
 
 The Keychain cannot be called from inside the container, so the settings read the secrets from the environment, and
@@ -437,9 +437,23 @@ Roll back with the reverse: boot out `dev.vigo.container`, move the two host pli
 settings backup, and start `dev.vigo.opencode` and `dev.vigo.bot`. The host's OpenCode data was never touched by the
 pod, so the rollback finds its sessions as they were.
 
-What the pod does not change: the podman machine mounts all of `/Users` into its VM by default, so a container escape
-reaches the home directory even though the containers cannot. The container boundary is the one this kit controls.
-A narrower machine mount needs a machine rebuilt for it, and that discards the images and containers in the VM.
+The machine is created with only the paths the pod uses, because `podman machine init --volume` replaces the
+defaults rather than adding to them:
+
+```sh
+podman machine init --cpus 8 --memory 8192 --disk-size 120 \
+  -v "$HOME/Projects:$HOME/Projects" \
+  -v "$HOME/.config/vigo:$HOME/.config/vigo" \
+  -v "$HOME/.local/state/vigo:$HOME/.local/state/vigo" \
+  -v "$HOME/.local/share/vigo-agent:$HOME/.local/share/vigo-agent" \
+  -v "$HOME/.local/libexec/vigo-container:$HOME/.local/libexec/vigo-container" \
+  -v "$HOME/.config/containers:/etc/containers" \
+  -v "/private:/private" -v "/var/folders:/var/folders"
+```
+
+`/private`, `/var/folders` and `~/.config/containers` stay because the podman API socket, temporary files and
+registry credentials live there. The rest of the home is no longer in the VM. Rebuilding the machine discards its
+images and its secrets, so rebuild the image and make the three secrets again.
 
 ## The Discord application, in words
 
