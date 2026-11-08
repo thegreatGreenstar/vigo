@@ -30,6 +30,10 @@ FATAL_CLOSE = {
     4013: "invalid intents",
     4014: "the intents are not allowed for this bot",
 }
+# A close code that ends the session as well as the connection: Discord will
+# not resume it, so the next connection must identify instead.
+SESSION_GONE = {4003, 4007, 4009}
+
 OP_TEXT = 0x1
 OP_BINARY = 0x2
 OP_CLOSE = 0x8
@@ -360,6 +364,13 @@ class Gateway:
                 continue
             if opcode == OP_CLOSE:
                 code = struct.unpack("!H", payload[:2])[0] if len(payload) >= 2 else 0
+                if code in SESSION_GONE:
+                    # The session is dead, not just this socket.  Keeping the
+                    # id would resume it again on every retry: Discord answers
+                    # 4003 each time, so the bot never identifies and stays
+                    # down until a restart.  The next connection identifies.
+                    self.session_id = None
+                    self.seq = None
                 raise self._closed(code, payload[2:].decode(errors="replace"))
             if opcode == OP_BINARY:
                 continue

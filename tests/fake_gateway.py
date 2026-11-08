@@ -69,6 +69,9 @@ class FakeGateway:
         self.connection: socket.socket | None = None
         self.closed = False
         self.session_id = "sess_test"
+        # Discord closes a resume whose session it no longer holds: 4003.
+        # A test sets this to answer every resume that way.
+        self.refuse_resume = False
         self.thread = threading.Thread(target=self._serve, daemon=True)
         self.thread.start()
 
@@ -173,6 +176,14 @@ class FakeGateway:
                 elif op == 6:
                     with self.lock:
                         self.resumes.append(message.get("d") or {})
+                    if self.refuse_resume:
+                        try:
+                            _send_frame(connection,
+                                        struct.pack("!H", 4003) + b"Not authenticated",
+                                        opcode=8)
+                        finally:
+                            connection.close()
+                        return
                     _send_frame(connection, json.dumps({"op": 0, "t": "RESUMED", "s": 2, "d": {}}).encode())
                 elif op == 1:
                     with self.lock:

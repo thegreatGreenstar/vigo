@@ -34,6 +34,7 @@ class ConfigTest(unittest.TestCase):
             settings = configuration.load(write_settings(directory, raw))
         self.assertEqual(settings.peer_password, "peer-only")
 
+    @unittest.skipIf(os.name == "nt", "Windows guards with ACLs, not these bits")
     def test_a_readable_file_stops_it(self):
         with TempDir() as directory:
             path = write_settings(directory, base_settings())
