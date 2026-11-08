@@ -19,11 +19,14 @@ TIMES = [("2h", "2 hours"), ("1d", "1 day"), ("7d", "7 days"), ("perm", "permane
 SECONDS = {"2h": 7200, "1d": 86400, "7d": 604800, "perm": None}
 
 # Where a command may appear, by how the app is installed.  A user install
-# (your own profile) lives in DMs and private channels; a guild install lives
-# in servers.  Discord refuses a context that the install cannot reach.
+# (your own profile) is visible in every server, DM and group DM that person
+# opens, and a guild install is visible in the servers the app joined; Discord
+# refuses a context that the install cannot reach.  A user install that omits
+# GUILD would vanish from the command picker of every server, which is the
+# surface its owner installed it for.
 INSTALLS = {
     "both": ([0, 1], [0, 1, 2]),
-    "user": ([1], [1, 2]),
+    "user": ([1], [0, 1, 2]),
     "guild": ([0], [0]),
 }
 
@@ -57,7 +60,7 @@ def spec(install: str = "both", devices: list[str] | None = None) -> list[dict]:
     return [
         {
             "name": "vigo",
-            "description": "Ask the OpenCode agent on your own devices.",
+            "description": "Ask the OpenCode agent behind this app.",
             "type": 1,
             "integration_types": integration_types,
             "contexts": contexts,

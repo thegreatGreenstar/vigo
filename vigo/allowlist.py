@@ -242,6 +242,17 @@ class AllowList:
 
     # -- deciding ---------------------------------------------------------
 
+    def ensure(self) -> None:
+        """Make the list message exist, before another bot message joins it.
+
+        A request card is a DM from the bot too, and the guard that refuses to
+        write a new list beside an unreachable one cannot tell a card from a
+        lost list.  Creating the empty list first keeps the two apart.
+        """
+        channel = self._home()
+        if self._own_message(channel) is None:
+            self._store([])
+
     def may_ask(self, user_id: str) -> bool:
         if user_id == self.owner or user_id in self.listed:
             return True

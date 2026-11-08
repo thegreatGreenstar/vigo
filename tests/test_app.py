@@ -8,7 +8,7 @@ from pathlib import Path
 
 from vigo import __version__, commands
 from vigo import ask as asking
-from vigo.app import WAITING_MAX, App, _attached
+from vigo.app import REQUEST_BUTTON, WAITING_MAX, App, _attached
 from vigo.discord_api import Discord
 from vigo.peer import PeerServer, build_of
 from vigo.state import State
@@ -145,7 +145,7 @@ class AppTest(unittest.TestCase):
             interaction = self.use(app, commands.UPGRADE, who="42")
         answer = self.discord.answer_for(interaction)
         self.assertEqual(answer["data"].get("flags"), 64)
-        self.assertIn("Only this bot's owner can use `/vigo upgrade`",
+        self.assertIn("Only the owner of this Discord application can use `/vigo upgrade`",
                       answer["data"].get("content", ""),
                       "an approved asker is refused, not deferred")
 
@@ -187,6 +187,186 @@ class AppTest(unittest.TestCase):
                      options=[{"name": "prompt", "type": 3, "value": "hi"}])
             self.assertTrue(self.discord.wait_for(
                 lambda: any("hello" in content for content in self.said())))
+
+    def test_another_application_owner_has_the_owner_commands(self):
+        """Vigo2's owner runs Vigo2's queue. A guest of Vigo2 never does."""
+        other = "999999999999999999"
+        with TempDir() as directory:
+            app = self.make(directory, owner=other, users=[GUEST])
+            owned = self.use(app, commands.QUEUE, who=other)
+            refused = self.use(app, commands.QUEUE, who=GUEST)
+        self.assertEqual(self.discord.answer_for(owned)["type"], 5,
+                         "the owner's command is acknowledged, not refused")
+        answer = self.discord.answer_for(refused)["data"]
+        self.assertEqual(answer["flags"], 64)
+        self.assertIn("Only the owner of this Discord application", answer["content"])
+
+    # -- asking the owner for access ---------------------------------------
+
+    def click(self, app: App, custom: str, who: str = STRANGER,
+              name: str = "Alex") -> str:
+        interaction = self.discord.next_id("int")
+        app.handle_interaction({
+            "id": interaction,
+            "token": f"tok_{interaction}",
+            "type": 3,
+            "channel_id": "dm",
+            "user": {"id": who, "username": name.lower().replace(" ", ""),
+                     "global_name": name},
+            "data": {"custom_id": custom},
+        })
+        return interaction
+
+    def owner_cards(self) -> list[dict]:
+        return [message for message in self.discord.messages.get(f"dm_{OWNER}", [])
+                if "asks for access" in message["content"]]
+
+    def test_a_stranger_is_offered_the_request_button(self):
+        with TempDir() as directory:
+            app = self.make(directory)
+            interaction = self.use(app, commands.ASK, who=STRANGER,
+                                   options=[{"name": "prompt", "type": 3, "value": "hi"}])
+        answer = self.discord.answer_for(interaction)["data"]
+        self.assertEqual(answer["flags"], 64)
+        self.assertIn("approved", answer["content"])
+        buttons = answer["components"][0]["components"]
+        self.assertEqual([button["custom_id"] for button in buttons], [REQUEST_BUTTON])
+        self.assertEqual(buttons[0]["label"], "Ask for access")
+
+    def test_help_offers_the_button_and_an_approved_person_does_not_need_it(self):
+        with TempDir() as directory:
+            app = self.make(directory)
+            stranger = self.use(app, commands.HELP, who=STRANGER)
+            app.allow.allow(GUEST, "Guest", None)
+            guest = self.use(app, commands.HELP, who=GUEST)
+        self.assertIn("components", self.discord.answer_for(stranger)["data"])
+        self.assertNotIn("components", self.discord.answer_for(guest)["data"])
+
+    def test_requests_can_be_turned_off(self):
+        with TempDir() as directory:
+            app = self.make(directory, requests=False)
+            interaction = self.use(app, commands.ASK, who=STRANGER,
+                                   options=[{"name": "prompt", "type": 3, "value": "hi"}])
+        answer = self.discord.answer_for(interaction)["data"]
+        self.assertNotIn("components", answer)
+        self.assertIn("allow", answer["content"].lower())
+
+    def test_a_request_reaches_the_owner_and_an_allow_lets_them_ask(self):
+        with TempDir() as directory:
+            app = self.make(directory)
+            asked = self.click(app, REQUEST_BUTTON)
+            self.assertIn("with the owner",
+                          self.discord.originals[f"tok_{asked}"]["content"])
+            cards = self.owner_cards()
+            self.assertEqual(len(cards), 1, "one card, not one per daemon")
+            card = cards[0]
+            self.assertIn("Alex", card["content"])
+            self.assertNotIn(STRANGER, card["content"], "the id stays out of the text")
+            labels = [button["label"] for button in card["components"][0]["components"]]
+            self.assertEqual(labels, ["Allow 1 day", "Allow for good", "Deny"])
+
+            allow_button = card["components"][0]["components"][0]
+            answered = self.click(app, allow_button["custom_id"], who=OWNER)
+            self.assertTrue(self.discord.wait_for(lambda: app.allow.may_ask(STRANGER)))
+            self.assertTrue(app.allow.label(STRANGER).startswith("allowed until"))
+            self.assertIn("allowed", self.discord.originals[f"tok_{answered}"]["content"])
+            told = [message["content"] for message in
+                    self.discord.messages.get(f"dm_{STRANGER}", [])]
+            self.assertTrue(any("allowed you to ask" in text for text in told))
+
+    def test_the_owner_can_allow_for_good(self):
+        with TempDir() as directory:
+            app = self.make(directory)
+            self.click(app, REQUEST_BUTTON)
+            card = self.owner_cards()[0]
+            permanent = card["components"][0]["components"][1]
+            self.assertEqual(permanent["label"], "Allow for good")
+            self.click(app, permanent["custom_id"], who=OWNER)
+            self.assertTrue(self.discord.wait_for(lambda: app.allow.may_ask(STRANGER)))
+            self.assertEqual(app.allow.label(STRANGER), "allowed for good")
+
+    def test_the_owner_can_deny_and_a_second_request_waits(self):
+        with TempDir() as directory:
+            app = self.make(directory)
+            self.click(app, REQUEST_BUTTON)
+            card = self.owner_cards()[0]
+            deny = card["components"][0]["components"][2]
+            self.click(app, deny["custom_id"], who=OWNER)
+            self.assertFalse(app.allow.may_ask(STRANGER))
+            told = [message["content"] for message in
+                    self.discord.messages.get(f"dm_{STRANGER}", [])]
+            self.assertTrue(any("did not allow" in text for text in told))
+
+            self.click(app, REQUEST_BUTTON)
+            self.assertEqual(len(self.owner_cards()), 1, "the denial buys an hour of quiet")
+            self.assertIn("asked recently", self.discord.edits[-1]["content"])
+
+    def test_a_display_name_cannot_carry_markdown_or_a_link(self):
+        with TempDir() as directory:
+            app = self.make(directory)
+            self.click(app, REQUEST_BUTTON, name="[x](https://evil) *@everyone*")
+            card = self.owner_cards()[0]
+        self.assertIn("asks for access", card["content"])
+        for bad in ("[", "]", "(", ")", "@", "://"):
+            self.assertNotIn(bad, card["content"], f"a name must not introduce {bad}")
+        self.assertNotIn("*", card["content"].split("**")[1])
+
+    def test_only_the_owner_answers_a_request_card(self):
+        with TempDir() as directory:
+            app = self.make(directory)
+            self.click(app, REQUEST_BUTTON)
+            card = self.owner_cards()[0]
+            allow = card["components"][0]["components"][0]
+            interaction = self.click(app, allow["custom_id"], who=STRANGER)
+        answer = self.discord.answer_for(interaction)["data"]
+        self.assertEqual(answer["flags"], 64)
+        self.assertIn("Only the bot's owner", answer["content"])
+        self.assertFalse(app.allow.may_ask(STRANGER))
+
+    def test_one_daemon_sends_the_card(self):
+        """Discord accepts one acknowledgement; the other daemon stays quiet."""
+        with TempDir() as directory:
+            app = self.make(directory)
+            interaction = self.discord.next_id("int")
+            payload = {
+                "id": interaction, "token": "tok_once", "type": 3,
+                "channel_id": "dm", "user": {"id": STRANGER, "username": "alex"},
+                "data": {"custom_id": REQUEST_BUTTON},
+            }
+            app.handle_interaction(payload)
+            app.handle_interaction(payload)
+        self.assertEqual(len(self.owner_cards()), 1)
+
+    def test_a_pending_request_is_not_sent_twice(self):
+        with TempDir() as directory:
+            app = self.make(directory)
+            self.click(app, REQUEST_BUTTON)
+            self.click(app, REQUEST_BUTTON)
+        self.assertEqual(len(self.owner_cards()), 1)
+        self.assertIn("already with the owner", self.discord.edits[-1]["content"])
+
+    def test_the_owner_is_told_when_the_requester_dm_is_closed(self):
+        with TempDir() as directory:
+            app = self.make(directory)
+            self.click(app, REQUEST_BUTTON)
+            card = self.owner_cards()[0]
+            allow = card["components"][0]["components"][0]
+            self.discord.no_dm.add(STRANGER)
+            answered = self.click(app, allow["custom_id"], who=OWNER)
+        self.assertIn("could not reach their DM",
+                      self.discord.originals[f"tok_{answered}"]["content"])
+
+    def test_a_closed_owner_dm_is_said_and_the_request_can_be_tried_again(self):
+        with TempDir() as directory:
+            app = self.make(directory, stateChannel="999999999999999999")
+            self.discord.no_dm.add(OWNER)
+            asked = self.click(app, REQUEST_BUTTON)
+            self.assertIn("could not reach",
+                          self.discord.originals[f"tok_{asked}"]["content"])
+            self.assertEqual(app.state.request_state(STRANGER), "")
+            self.discord.no_dm.discard(OWNER)
+            self.click(app, REQUEST_BUTTON)
+        self.assertEqual(len(self.owner_cards()), 1)
 
     # -- the guest share of the plan ---------------------------------------
 
@@ -1973,13 +2153,20 @@ class AppTest(unittest.TestCase):
         self.assertEqual([inner["name"] for inner in queue["options"]], ["public"],
                          "the queue's only option is the public form")
 
-    def test_a_user_install_keeps_to_dms(self):
+    def test_a_user_install_works_in_servers_too(self):
+        """A user install is visible in every server, not only DMs.
+
+        Discord's contexts for a USER_INSTALL command are GUILD, BOT_DM and
+        PRIVATE_CHANNEL.  Leaving GUILD out hides `/vigo` from the command
+        picker of every server the person is in, which is the surface a user
+        install exists for.
+        """
         with TempDir() as directory:
             app = self.make(directory, install="user")
             app.register_commands()
         command = self.discord.global_commands[0]
         self.assertEqual(command["integration_types"], [1])
-        self.assertEqual(command["contexts"], [1, 2])
+        self.assertEqual(command["contexts"], [0, 1, 2])
 
     def test_another_command_is_kept(self):
         with TempDir() as directory:
@@ -2059,7 +2246,7 @@ class AppTest(unittest.TestCase):
             ])
         answer = self.discord.answer_for(interaction)
         self.assertEqual(answer["data"]["flags"], 64)
-        self.assertIn("Only this bot's owner", answer["data"]["content"])
+        self.assertIn("Only the owner of this Discord application", answer["data"]["content"])
         self.assertEqual(self.device.prompts, [])
         self.assertEqual(self.device.goals, {})
 
@@ -2116,7 +2303,7 @@ class AppTest(unittest.TestCase):
                 interaction = self.use(app, sub, who=GUEST)
                 answer = self.discord.answer_for(interaction)
                 self.assertEqual(answer["data"]["flags"], 64)
-                self.assertIn("Only this bot's owner", answer["data"]["content"],
+                self.assertIn("Only the owner of this Discord application", answer["data"]["content"],
                               f"{sub} must not answer an approved person")
 
     def test_an_allow_made_now_lets_the_next_question_run(self):

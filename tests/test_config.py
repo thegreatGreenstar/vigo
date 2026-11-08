@@ -149,6 +149,38 @@ class ConfigTest(unittest.TestCase):
 
     # -- secrets out of the file ------------------------------------------
 
+    def test_the_owner_may_be_left_to_the_application(self):
+        raw = base_settings()
+        raw.pop("owner")
+        with TempDir() as directory:
+            settings = configuration.load(write_settings(directory, raw))
+        self.assertEqual(settings.owner, "", "the daemon fills it from the application")
+
+    def test_an_owner_that_is_given_must_still_be_an_id(self):
+        raw = base_settings(owner="me")
+        with TempDir() as directory:
+            with self.assertRaises(configuration.ConfigError) as caught:
+                configuration.load(write_settings(directory, raw))
+        self.assertIn("owner", str(caught.exception))
+
+    def test_access_requests_are_on_by_default(self):
+        with TempDir() as directory:
+            settings = configuration.load(write_settings(directory, base_settings()))
+        self.assertTrue(settings.requests)
+
+    def test_access_requests_can_be_turned_off(self):
+        raw = base_settings(requests=False)
+        with TempDir() as directory:
+            settings = configuration.load(write_settings(directory, raw))
+        self.assertFalse(settings.requests)
+
+    def test_access_requests_take_true_or_false_only(self):
+        raw = base_settings(requests="yes")
+        with TempDir() as directory:
+            with self.assertRaises(configuration.ConfigError) as caught:
+                configuration.load(write_settings(directory, raw))
+        self.assertIn("requests", str(caught.exception))
+
     def test_the_guest_budget_defaults_to_a_third(self):
         with TempDir() as directory:
             settings = configuration.load(write_settings(directory, base_settings()))

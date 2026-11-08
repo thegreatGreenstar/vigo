@@ -1,11 +1,11 @@
 {
   "token": "the bot token from the Developer Portal",
   "appID": "000000000000000000",
-  "owner": "000000000000000000",
   "device": "macbook",
   "password": "the OPENCODE_PASSWORD every device shares",
   "peerPassword": "a second secret, for the peer API only",
   "install": "both",
+  "requests": true,
   "users": [],
   "model": {
     "providerID": "opencode-go",

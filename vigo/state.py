@@ -18,6 +18,9 @@ from . import log
 
 ANSWER_AGE = 7 * 86400  # seconds a message stays a way back into its conversation
 SUSPEND_AGE = 3600.0   # seconds carried-over work may wait for its restart
+REQUEST_COOLDOWN = 3600.0  # seconds before one person may ask the owner again
+REQUEST_PENDING = 86400.0  # seconds a request waits before the person may ask again
+REQUEST_KEEP = 30 * 86400  # seconds a settled request is remembered, for the cooldown
 
 
 def default_dir() -> Path:
@@ -30,7 +33,7 @@ class State:
         self.path = Path(path or (default_dir() / "state.json"))
         self.lock = threading.Lock()
         self.data: dict = {"sessions": {}, "tickets": {}, "forms": {}, "answers": {},
-                           "channels": {}, "suspended": {}}
+                           "channels": {}, "suspended": {}, "requests": {}}
         self._load()
 
     def _load(self) -> None:
@@ -47,6 +50,7 @@ class State:
                 self.data.setdefault("answers", {})
                 self.data.setdefault("channels", {})
                 self.data.setdefault("suspended", {})
+                self.data.setdefault("requests", {})
                 self._migrate_sessions()
         except (OSError, json.JSONDecodeError) as error:
             broken = self.path.with_suffix(".bad")
@@ -270,6 +274,70 @@ class State:
                 for key in stale:
                     self.data["forms"].pop(key, None)
                 self._write()
+
+    # -- people asking the owner for access -------------------------------
+
+    def request_state(self, user_id: str, now: float | None = None) -> str:
+        """Whether that person has a request waiting, is cooling down, or may ask.
+
+        A request is one DM to the owner.  The record also survives the owner's
+        answer, so a denial buys an hour of quiet rather than a button that can
+        be pressed again at once.  A request that waits a day without an answer
+        stops blocking the person, who may ask again.
+        """
+        with self.lock:
+            entry = self.data["requests"].get(user_id)
+            if not isinstance(entry, dict):
+                return ""
+            stamp = float(entry.get("at") or 0)
+            now = time.time() if now is None else now
+            if entry.get("pending"):
+                return "pending" if now - stamp < REQUEST_PENDING else ""
+            if now - stamp < REQUEST_COOLDOWN:
+                return "cooling"
+            return ""
+
+    def remember_request(self, user_id: str, name: str) -> None:
+        with self.lock:
+            now = int(time.time())
+            self.data["requests"][user_id] = {
+                "name": name[:80], "at": now, "pending": True,
+            }
+            cutoff = now - REQUEST_KEEP
+            stale = [key for key, entry in self.data["requests"].items()
+                     if isinstance(entry, dict) and float(entry.get("at") or 0) < cutoff]
+            for key in stale:
+                self.data["requests"].pop(key, None)
+            self._write()
+
+    def request(self, user_id: str) -> dict | None:
+        with self.lock:
+            entry = self.data["requests"].get(user_id)
+            return dict(entry) if isinstance(entry, dict) else None
+
+    def pending_requests(self, now: float | None = None) -> int:
+        stamp = time.time() if now is None else now
+        with self.lock:
+            return sum(1 for entry in self.data["requests"].values()
+                       if isinstance(entry, dict) and entry.get("pending")
+                       and stamp - float(entry.get("at") or 0) < REQUEST_PENDING)
+
+    def settle_request(self, user_id: str, allowed: bool) -> None:
+        """Close a request: an allow leaves no record, a denial starts the wait."""
+        with self.lock:
+            if allowed:
+                self.data["requests"].pop(user_id, None)
+            else:
+                entry = self.data["requests"].setdefault(user_id, {})
+                entry["pending"] = False
+                entry["at"] = int(time.time())
+            self._write()
+
+    def forget_request(self, user_id: str) -> None:
+        """Drop a request that never reached the owner, so it can be sent again."""
+        with self.lock:
+            self.data["requests"].pop(user_id, None)
+            self._write()
 
     # -- the messages this daemon posted --------------------------------
 

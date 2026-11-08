@@ -28,6 +28,12 @@ class FakeDiscord:
         self.gets: list[str] = []  # every GET path, for a test that counts reads
         self.counter = 0
         self.bot_id = "1"  # the author of every message this bot posts here
+        self.application = {"id": "1", "bot_public": True,
+                            "owner": {"id": "145512144145512144", "username": "owner"},
+                            "integration_types_config": {
+                                "1": {"oauth2_install_params": {
+                                    "scopes": ["applications.commands"], "permissions": "0"}},
+                            }}
         self.gateway = ""
         self.forbidden: set[str] = set()  # channel ids that answer 403
         self.no_dm: set[str] = set()  # user ids whose DM cannot be opened
@@ -124,6 +130,9 @@ class FakeDiscord:
                     return
                 if path.endswith("/users/@me"):
                     self._send(200, {"id": fake.bot_id, "username": "vigo", "bot": True})
+                    return
+                if path.endswith("/applications/@me"):
+                    self._send(200, fake.application)
                     return
                 if "/guilds/" in path and path.endswith("/commands"):
                     guild = path.split("/guilds/")[1].split("/")[0]

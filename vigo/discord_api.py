@@ -108,6 +108,13 @@ class Discord:
             raise self._error(reply, "the token is not the bot's", "GET /users/@me")
         return reply.body
 
+    def application(self) -> dict:
+        """The application as the Developer Portal has it configured."""
+        reply = self._call("GET", "/applications/@me")
+        if not reply.ok or not isinstance(reply.body, dict):
+            raise self._error(reply, "cannot read the application", "GET /applications/@me")
+        return reply.body
+
     def gateway_url(self) -> str:
         reply = self._call("GET", "/gateway/bot")
         if not reply.ok or not isinstance(reply.body, dict):

@@ -15,9 +15,13 @@ the code trusts, what publishing it changes, and what is a limit by design rathe
   not loosen OpenCode's permissions: a project whose `opencode.json` allows everything runs everything without a
   card.
 - **The owner's click.** A tool that OpenCode asks about goes to the owner's DM, and only the owner's user id can
-  answer it. The card says when the question came from an approved person rather than the owner.
+  answer it. The id is the Discord application's owner, read from `/applications/@me` at start; a settings file that
+  names a different one stops the bot. The card says when the question came from an approved person rather than the
+  owner. A second person's own Vigo resolves to their own id, so their guests never inherit their commands.
 - **The daemon's own state.** Who may ask is read from the bot's own allowlist message, written only by the bot, in
-  the state channel or the owner's DM. No prompt, answer, reaction or message text grants anything.
+  the state channel or the owner's DM. No prompt, answer, reaction or message text grants anything. An access request
+  is a button, not a message: it carries the requester's id in its custom id, reaches the owner as a DM, and only the
+  owner's click writes an allow.
 
 ## What an allow means
 
@@ -30,6 +34,12 @@ An approved person's question is answered privately: an ephemeral message in the
 interaction has expired. Their ask never becomes a goal, never chooses a device, never starts a fresh session, and
 they may hold one question at a time. A tool they cause the agent to ask for gets **Allow once** and **Deny**, never
 **Always allow**, because a saved rule outlives the question that asked for it.
+
+A public app does not widen that. It lets anyone install the commands and ask the owner for access, which sends one
+card to the owner's DM and touches no device. The card names the person, carries no numeric id in its text, and only
+the owner can answer it. A pending request is not sent twice, a denial is quiet for an hour, and twenty may wait at
+once. `requests: false` removes the button. The stranger is then told to ask the owner directly, and the refusal still
+runs nothing. Whoever installs the app is a stranger until an allow, exactly as before.
 
 ## Known limits
 

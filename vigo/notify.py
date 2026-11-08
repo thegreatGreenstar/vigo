@@ -19,11 +19,14 @@ from .discord_api import Discord
 # a long one, so a long status report arrives as several messages, not one
 # refused.
 def send_dm(config: Config, user_id: str, content: str,
-            api: Discord | None = None) -> int:
+            api: Discord | None = None,
+            components: list[dict] | None = None) -> int:
     """DM one person; return how many messages it took.
 
-    Raises DiscordError when Discord will not take it, and whatever the HTTP
-    layer raises when nothing answers — the caller says so and exits non-zero.
+    `components` rides on the last message, which is where a request card's
+    buttons belong.  Raises DiscordError when Discord will not take it, and
+    whatever the HTTP layer raises when nothing answers — the caller says so
+    and exits non-zero.
     """
     body = (content or "").strip()
     if not body:
@@ -31,14 +34,18 @@ def send_dm(config: Config, user_id: str, content: str,
     client = api or Discord(config.token, config.app_id)
     channel = client.open_dm(user_id)
     pieces = text.chunk(body) or [body]
-    for piece in pieces:
-        client.send(channel, {
+    for index, piece in enumerate(pieces):
+        payload: dict = {
             "content": piece,
             "allowed_mentions": {"parse": []},
-        })
+        }
+        if components and index == len(pieces) - 1:
+            payload["components"] = components
+        client.send(channel, payload)
     return len(pieces)
 
 
-def send_owner(config: Config, content: str, api: Discord | None = None) -> int:
+def send_owner(config: Config, content: str, api: Discord | None = None,
+               components: list[dict] | None = None) -> int:
     """DM the owner, the one person a device always speaks to."""
-    return send_dm(config, config.owner, content, api=api)
+    return send_dm(config, config.owner, content, api=api, components=components)
