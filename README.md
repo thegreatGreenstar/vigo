@@ -642,9 +642,17 @@ CPU-side tests and the Linux Vulkan path.
 An upgrade is the one stop that keeps the work. A question whose prompt already reached a device is
 written down just before the restart, with the session and the marks that name its turn. The new
 process watches that turn, then posts the answer in the channel, because the interaction ended with the
-old process. A question that only waited in a line is not carried: it never ran, and the state file
-keeps no message text. A crash, a stop or a restart nobody asked for carries nothing either, so the bot
-never answers a channel with work from hours ago.
+old process. The restart ends only the daemon: the launcher keeps the agent container when its image
+has not changed, so the device keeps working on the turn across the upgrade. A question that only
+waited in a line is not carried: it never ran, and the state file keeps no message text. A crash, a
+stop or a restart nobody asked for carries nothing either, so the bot never answers a channel with
+work from hours ago.
+
+A turn can still be lost: the agent may be restarted on its own, or crash. Vigo does not wait for an
+idle the device will never write. The device's own list of running sessions says nothing runs there,
+so the run ends, posts the part the device wrote, says the turn was cut, and lets the channel go. The
+same list keeps a busy stamp left behind by a lost turn from refusing every later question in that
+channel.
 
 
 ## The Discord application, in words
@@ -1286,6 +1294,7 @@ the trade a codespace makes, and it costs one manual step.
 | `/vigo upgrade` says `git refused` and the log names `usekeychain` | the daemon's `ssh` is Homebrew's, which has no `UseKeychain`; the bot's launchd job sets `GIT_SSH_COMMAND=/usr/bin/ssh`, and `./install.sh` writes that again |
 | a question says `still running` | the run passed `timeout`, so the line that question already shows, queued or got-it, ends with the note; the run keeps watching, `/vigo status` shows it, `/vigo stop` ends it |
 | the answer says `never started` | the device admitted the question and its session never began the turn: `opencode serve` there is stuck, so restart it and ask again |
+| the answer says the turn was stopped before it finished | the device restarted or crashed while the turn ran, so it wrote no idle and no more of the answer. The part it wrote is above, and asking again runs the turn |
 | the answer says the model is rate limited, or has no quota left | the plan is spent for now: wait, or `/vigo quick` for a one-off that starts no session, and the log holds the device's own words |
 | an approved person says `/vigo quick` and is refused | that command is the owner's: a one-off leaves no session, so the guest share cannot be counted for it. An ask runs in a session of their own and is capped |
 | an approved person's question says the share of the plan is used, or that its usage cannot be read | the plan's meters live in `/api/experimental/usage/limits`, which OpenCode Go answers: check the version there, and raise `guests.share` or the caps only on purpose |

@@ -117,11 +117,16 @@ esac
 # namespaces.  The daemon reaches OpenCode by name; the agent cannot bind the
 # daemon's published peer port, so it cannot impersonate the peer API.
 podman pod rm -f vigo-pod >/dev/null 2>&1 || true
-podman rm -f vigo vigo-opencode >/dev/null 2>&1 || true
+podman rm -f vigo >/dev/null 2>&1 || true
 podman network exists "$network" >/dev/null 2>&1 || podman network create "$network" >/dev/null
 
+# The agent outlives a daemon restart.  An upgrade ends only the daemon, and
+# the daemon carries a turn in flight over that restart; tearing the agent down
+# would cut the turn off with it.  A changed image, or any stop of this script,
+# replaces the agent: the trap below runs on a signal, never on the daemon's
+# own exit.
 cleanup() { podman rm -f vigo vigo-opencode >/dev/null 2>&1 || true; }
-trap cleanup EXIT INT TERM HUP
+trap cleanup INT TERM HUP
 
 # --- the agent ---------------------------------------------------------------
 set -- \
@@ -230,7 +235,19 @@ else
         set -- "$@" --mount "type=bind,src=$home/.local/bin/ScarletNX-linux-x86_64.AppImage,dst=$home/.local/bin/ScarletNX-linux-x86_64.AppImage,ro"
     fi
 fi
-podman run "$@" "$agent_image" >/dev/null
+reuse_agent=0
+if podman container exists vigo-opencode >/dev/null 2>&1; then
+    held=$(podman inspect --format '{{.Image}}' vigo-opencode 2>/dev/null || true)
+    wanted=$(podman image inspect --format '{{.Id}}' "$agent_image" 2>/dev/null || true)
+    alive=$(podman inspect --format '{{.State.Running}}' vigo-opencode 2>/dev/null || true)
+    if [ -n "$held" ] && [ "$held" = "$wanted" ] && [ "$alive" = true ]; then
+        reuse_agent=1
+    fi
+fi
+if [ "$reuse_agent" = 0 ]; then
+    podman rm -f vigo-opencode >/dev/null 2>&1 || true
+    podman run "$@" "$agent_image" >/dev/null
+fi
 
 # --- the daemon --------------------------------------------------------------
 set -- \

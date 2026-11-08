@@ -47,7 +47,23 @@ class LauncherTest(unittest.TestCase):
             'machine) echo "machine start" >> "$STATE/calls";\n'
             '         [ -f "$STATE/fail" ] && exit 1;\n'
             '         touch "$STATE/up"; exit 0 ;;\n'
-            'run) echo run ;;\n'
+            'container) [ -f "$STATE/agent-exists" ] && exit 0 || exit 1 ;;\n'
+            'image) if [ "$2" = inspect ]; then cat "$STATE/image-id" 2>/dev/null; fi ;;\n'
+            'inspect) case "$*" in\n'
+            '         *Image*) cat "$STATE/agent-image" 2>/dev/null ;;\n'
+            '         *Running*) cat "$STATE/agent-running" 2>/dev/null ;;\n'
+            '         esac ;;\n'
+            'rm) case "$*" in\n'
+            '    *vigo-opencode*) rm -f "$STATE/agent-exists" "$STATE/agent-running" ;;\n'
+            '    esac ;;\n'
+            'run) case "$*" in\n'
+            '     *"--name vigo-opencode"*)\n'
+            '         touch "$STATE/agent-run"\n'
+            '         touch "$STATE/agent-exists"; echo true > "$STATE/agent-running"\n'
+            '         cp "$STATE/image-id" "$STATE/agent-image" 2>/dev/null\n'
+            '         ;;\n'
+            '     *) echo run ;;\n'
+            '     esac ;;\n'
             'esac\n'
             'exit 0\n',
         )
@@ -92,3 +108,35 @@ class LauncherTest(unittest.TestCase):
         self.assertEqual(2, done.returncode)
         self.assertIn("podman is not answering", done.stderr)
         self.assertNotIn("run", done.stdout)
+
+    def test_keeps_the_agent_a_daemon_restart_left_running(self) -> None:
+        """An upgrade ends the daemon, and the agent keeps the turn in flight.
+
+        Replacing the agent on the next start would cancel the turn the daemon
+        carried over the restart, which is what wedged a channel.
+        """
+        (self.state / "agent-exists").touch()
+        (self.state / "agent-running").write_text("true\n", encoding="utf-8")
+        (self.state / "image-id").write_text("sha256:same\n", encoding="utf-8")
+        (self.state / "agent-image").write_text("sha256:same\n", encoding="utf-8")
+
+        done = self._run()
+
+        self.assertEqual(0, done.returncode, done.stderr)
+        self.assertIn("run", done.stdout, "the daemon starts")
+        self.assertFalse((self.state / "agent-run").exists(),
+                         "the agent the restart left is not replaced")
+
+    def test_replaces_the_agent_when_its_image_changed(self) -> None:
+        (self.state / "agent-exists").touch()
+        (self.state / "agent-running").write_text("true\n", encoding="utf-8")
+        (self.state / "image-id").write_text("sha256:new\n", encoding="utf-8")
+        (self.state / "agent-image").write_text("sha256:old\n", encoding="utf-8")
+
+        done = self._run()
+
+        self.assertEqual(0, done.returncode, done.stderr)
+        self.assertTrue((self.state / "agent-run").exists(),
+                        "an agent on an older image is replaced")
+        self.assertEqual("sha256:new\n",
+                         (self.state / "agent-image").read_text(encoding="utf-8"))

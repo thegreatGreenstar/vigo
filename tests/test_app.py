@@ -835,6 +835,18 @@ class AppTest(unittest.TestCase):
         self.assertIn("/vigo stop", shown)
         self.assertNotIn("idle", shown)
 
+    def test_status_does_not_call_a_lost_turn_running(self):
+        """The stamp a device left behind is not a turn, and must not grow."""
+        with TempDir() as directory:
+            app = self.make(directory)
+            session = self.device.new_session("Discord DM")
+            app.state.remember_session(CHANNEL, "macbook", session, "Discord DM")
+            self.device.started_turn(session)
+            self.device.lost_turn(session)
+            shown = app._status(CHANNEL)
+        self.assertIn("idle", shown)
+        self.assertNotIn("still running", shown)
+
     def test_status_says_idle_when_the_device_finished(self):
         with TempDir() as directory:
             app = self.make(directory)
@@ -1091,6 +1103,76 @@ class AppTest(unittest.TestCase):
             self.assertTrue(self.discord.wait_for(
                 lambda: app.run_for(CHANNEL) is None, 5))
         self.assertIn("restart", self.said()[-1].lower())
+
+    def test_a_question_the_device_wrote_but_never_started_ends_the_run(self):
+        """The third shape: the question is on the session, and no turn reads it.
+
+        The device wrote it and its drain never started a turn.  No idle will
+        ever come, so the run must end and say the device is stuck.
+        """
+        self.device.write_only = True
+        with TempDir() as directory:
+            app = self.make(directory)
+            self.use(app, commands.ASK,
+                      options=[{"name": "prompt", "type": 3, "value": "why is CI red?"}])
+            self.assertTrue(self.device.wait_for_prompt())
+            session = app.run_for(CHANNEL).session
+            self.assertTrue(self.discord.wait_for(
+                lambda: any(message.get("type") == "user"
+                            for message in self.device.messages.get(session, [])), 2))
+            # Past the grace a starting turn gets, and still no execution.  The
+            # stream ends too, so the run reads the session instead of events.
+            with self.device.lock:
+                for message in self.device.messages.get(session, []):
+                    if message.get("type") == "user":
+                        message["time"]["created"] -= 20_000
+            self.device.cut_events()
+            self.assertTrue(self.discord.wait_for(
+                lambda: any("never started" in str(content) for content in self.said()), 10))
+            self.assertTrue(self.discord.wait_for(
+                lambda: app.run_for(CHANNEL) is None, 5))
+        self.assertIn("restart", self.said()[-1].lower())
+
+    def test_a_turn_the_device_stops_running_ends_the_run(self):
+        """A restart of the device tears a turn down without writing its idle.
+
+        The event stream ends with it, so the run polls a session that will
+        never say it finished.  The device's own list of running sessions says
+        no turn runs there, and the channel must not wait for one that is not
+        coming.
+        """
+        self.device.script = [("cut",), ("lost", "half of an answer")]
+        with TempDir() as directory:
+            app = self.make(directory)
+            self.use(app, commands.ASK,
+                      options=[{"name": "prompt", "type": 3, "value": "why is CI red?"}])
+            self.assertTrue(self.discord.wait_for(
+                lambda: any("half of an answer" in str(content) for content in self.posted()), 15))
+            self.assertTrue(self.discord.wait_for(
+                lambda: app.run_for(CHANNEL) is None, 5))
+        self.assertIn("stopped this turn", self.said()[-1])
+
+    def test_a_question_runs_when_the_device_left_a_busy_stamp_behind(self):
+        """A turn torn down leaves the session looking busy for ever.
+
+        The device's list says nothing runs there.  A question must not wait
+        for the turn that is gone: it claims the channel, asks, and the device
+        starts a new turn on the same session.
+        """
+        with TempDir() as directory:
+            app = self.make(directory)
+            app.config = dataclasses.replace(app.config, timeout=0.5)
+            session = self.device.new_session("Discord #general")
+            app.state.remember_session(CHANNEL, "macbook", session, "Discord #general")
+            self.device.started_turn(session)
+            self.device.lost_turn(session)
+            self.device.script = [("idle", "the answer after the restart")]
+            self.use(app, commands.ASK,
+                      options=[{"name": "prompt", "type": 3, "value": "why is CI red?"}])
+            self.assertTrue(self.discord.wait_for(
+                lambda: any("the answer after the restart" in str(content)
+                            for content in self.posted()), 10))
+        self.assertEqual(self.asked(), ["why is CI red?"])
 
     def test_the_next_question_runs_when_a_run_ends_without_an_answer(self):
         self.device.hold_next = 1

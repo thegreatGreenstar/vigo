@@ -719,11 +719,21 @@ class App:
         device = self.config.device_named(device_name)
         if device is None:
             return False
+        client = OpenCode(device.url, device.password)
         try:
-            info = OpenCode(device.url, device.password).session(remembered["session"])
+            info = client.session(remembered["session"])
         except OpenCodeError:
             return False  # a device that does not answer says so when asked
-        return busy_since(info) is not None
+        if busy_since(info) is None:
+            return False
+        try:
+            # The stamp only says a turn began.  A restart of the device leaves
+            # it behind with no turn, and a question refused on it would never
+            # be asked again.  The device's own list is the one record of what
+            # runs there now.
+            return remembered["session"] in client.active()
+        except OpenCodeError:
+            return True  # cannot tell, so say it is still working
 
     # -- questions the agent asks -----------------------------------------
 
@@ -2365,6 +2375,15 @@ class App:
                 # work, so a burst is visible before it hits a limit.
                 lines.append(f"{agents} agents are running on your devices")
         busy = busy_since(info)
+        if busy is not None and device:
+            # A stamp a device left behind when it stopped the turn is not a
+            # turn.  The date it began would otherwise grow for ever under a
+            # run nobody can see.
+            try:
+                if remembered["session"] not in client.active():
+                    busy = None
+            except OpenCodeError:
+                pass
         if running:
             elapsed = f"running for {text.duration(running.elapsed)}"
             if running.elapsed > self.config.timeout:

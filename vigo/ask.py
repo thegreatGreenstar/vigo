@@ -42,6 +42,10 @@ FOOTER = {
         "the device took the question and never started on it. "
         "`opencode serve` there is stuck: restart it, then ask again."
     ),
+    "lost": (
+        "the device stopped this turn before it finished. "
+        "Ask again for the rest."
+    ),
 }
 
 END_EVENTS = {
@@ -115,6 +119,12 @@ CHANNEL_KEY = "vigoChannel"
 
 # How long to wait between looks at a session another daemon is working on.
 POLL = 0.5
+
+# How long a question may sit on a session that runs no turn before the device
+# is said to have never started on it.  The device marks a session running as
+# it takes the prompt, so a question older than this with no turn is a drain
+# that is stuck, not a slow start.
+STARTED = 10.0
 
 # How long an answer of ours counts as the one already in the channel, in
 # seconds.  Longer than a retry or a restart takes, shorter than a person
@@ -994,9 +1004,17 @@ class Ask:
         # device, and the turn does not move until somebody answers it.
         self._pending_forms(session)
         # The stream carries nothing from before it connected, so a turn that
-        # ended in between is read from the session's newest message.
-        outcome = ("succeeded" if self._verdict(session) == "finished"
-                   else self._watch(session, stream))
+        # ended in between is read from the session's newest message.  One that
+        # the device no longer runs is over too: nothing will write its idle,
+        # and watching for one would hold the channel for ever.  A turn that
+        # waits on a person's answer is not over, whatever the list says.
+        verdict = "running" if self.waiting else self._verdict(session)
+        if verdict == "finished":
+            outcome = "succeeded"
+        elif verdict == "lost":
+            outcome = "lost"
+        else:
+            outcome = self._watch(session, stream)
         session_stop.set()
         stream.close()
         self._finish(session, outcome)
@@ -1033,6 +1051,9 @@ class Ask:
                 if verdict == "never started":
                     outcome = "never started"
                     break
+                if verdict == "lost" and not self.waiting:
+                    outcome = "lost"
+                    break
                 # The note goes at the end of the line this question already
                 # shows: a second message beside it splits one question into
                 # two, and the person reads the queued line as stale.
@@ -1048,8 +1069,15 @@ class Ask:
                 if now >= poll_at:
                     poll_at = now + 2.0
                     self._pending_forms(session)
-                    if self._is_idle(session):
+                    verdict = self._verdict(session)
+                    if verdict == "finished":
                         outcome = "succeeded"
+                        break
+                    if verdict == "never started":
+                        outcome = "never started"
+                        break
+                    if verdict == "lost" and not self.waiting:
+                        outcome = "lost"
                         break
                 else:
                     time.sleep(min(0.4, poll_at - now))
@@ -1103,17 +1131,6 @@ class Ask:
             log.info(f"ask: {outcome}: {self.failure}")
         log.info(f"ask: done on {self.device_name} ({outcome})")
 
-    def _is_idle(self, session: str) -> bool:
-        """Whether this turn has ended, judged by its own idle.
-
-        A session keeps the idle of every turn it finished, so one from the
-        turn before is not this turn's end.  Only an idle newer than the
-        message that was newest at the prompt counts, which is what `_verdict`
-        reads: a session with a long turn and a short turn in it ended early
-        here once, and the answer stopped mid-sentence.
-        """
-        return self._verdict(session) == "finished"
-
     def _wait_for_turn(self, session: str, until: float) -> bool:
         """Wait until the device is free and this run holds the channel.
 
@@ -1137,6 +1154,13 @@ class Ask:
             if held == "mine":
                 try:
                     if busy_since(self.client.session(session)) is None:
+                        return True
+                    # The stamp only says a turn began.  The device's own list
+                    # is what says one still runs: a restart leaves the stamp
+                    # behind with no turn, and waiting on it would refuse this
+                    # channel for ever.  The lease above already covers another
+                    # daemon, so a session that is not there is not at work.
+                    if session not in self.client.active():
                         return True
                 except OpenCodeError:
                     return True  # cannot tell: ask, and the run reports what happens
@@ -1170,9 +1194,15 @@ class Ask:
 
         - `finished`: the newest message is an idle that was not there when we
           asked, so the answer is on the device even though no event carried it.
-        - `never started`: the session has not changed since we asked.  Nothing
-          is going to run the question, and watching further would hold this
-          channel for ever with every later question behind it.
+        - `never started`: the session has not changed since we asked, or the
+          only change is the question itself and the device runs no turn on it.
+          Nothing is going to run the question, and watching further would hold
+          this channel for ever with every later question behind it.
+        - `lost`: the newest message is part of an answer, and the device runs
+          no turn on the session.  A restart of the device, a crash or a stop
+          tears a turn down without writing its idle, and waiting for one that
+          will never come holds this channel for ever.  The device's own list
+          of running sessions is what says so.
         - `running` or `waiting`: the device took it and is working, or will not
           answer at all.  Both keep the old behaviour: keep watching.
         """
@@ -1190,4 +1220,23 @@ class Ask:
             return "never started"
         if message.get("type") == "idle":
             return "finished"
-        return "running"
+        if message.get("type") != "assistant":
+            # The question itself, a goal line or a shell record: the turn has
+            # not written an answer yet, so there is nothing to call over.  A
+            # question the device wrote and then left with no turn is the
+            # never-started shape, once it has had time to begin.
+            created = (message.get("time") or {}).get("created")
+            if (message.get("type") in ("user", "synthetic")
+                    and isinstance(created, (int, float))
+                    and time.time() * 1000.0 - created > STARTED * 1000.0):
+                try:
+                    if session not in self.client.active():
+                        return "never started"
+                except OpenCodeError:
+                    return "running"
+            return "running"
+        try:
+            active = self.client.active()
+        except OpenCodeError:
+            return "running"  # cannot tell, so keep the old behaviour
+        return "running" if session in active else "lost"
