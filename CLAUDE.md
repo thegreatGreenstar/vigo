@@ -52,7 +52,8 @@ procedure to the end:
    moves. A behaviour nobody can find in the docs is half done.
 5. **Run the gate.** `tests/ci-local.sh` runs the suite, ruff, the secrets check and the Linux 3.12 to 3.14 matrix in
    `podman`; `tests/ci-codespace.sh --machine standardLinux32gb` answers the Linux half on a clean machine instead
-   (`gh codespace create` asks for a machine on a terminal, and a run in the background has none). Say which half the
+   (`gh codespace create` asks for a machine on a terminal, and a run in the background has none). It refuses to start
+   on a laptop that is not on AC power with the battery at 80% or more; a desktop always runs it. Say which half the
    answer covers and which it does not.
 6. **One commit, then a draft pull request.** Subject `[area] an imperative sentence`, body says why and how it was
    verified. Push the branch, open the pull request with `--draft`, watch the quick stage, mark it ready when green.
@@ -114,7 +115,9 @@ Torn between two sizes: pick the smaller, and say so.
 - A test does not sleep. `tests/fake_opencode.py` takes `("until", event)` in a script, so the test decides when a
   turn ends; a sleep makes the suite slower and flakier for no extra coverage.
 - Before pushing, run `tests/ci-local.sh`: the suite, ruff and the secrets check on this machine, and the Linux
-  3.12 to 3.14 matrix in `podman`. `tests/ci-codespace.sh` answers the Linux half on a clean Linux machine instead,
+  3.12 to 3.14 matrix in `podman`. It refuses to start on a laptop that is not on AC power with the battery at 80% or
+  more; a desktop always runs it, because the podman VM heats a laptop and CI is free now that the repository is
+  public. `tests/ci-codespace.sh` answers the Linux half on a clean Linux machine instead,
   with no VM on this one, and `tests/in-containers.sh` is what the podman path runs. Windows and macOS stay in the
   workflow: `podman` on a Mac is a Linux VM, and Windows has already differed from Linux once (a socket read that
   `shutdown` does not wake there).
