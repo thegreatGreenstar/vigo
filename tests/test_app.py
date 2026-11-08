@@ -384,7 +384,7 @@ class AppTest(unittest.TestCase):
         self.assertIn("why does it crash?", told, "the person's words stay first")
         self.assertIn("“crash.log”, 4 KB", told)
         self.assertIn("https://cdn.discordapp.com/attachments/1/2/crash.log?ex=signed", told)
-        self.assertIn("curl -L -o /tmp/vigo-attached", told)
+        self.assertIn('curl -L -o "$(mktemp)"', told)
         self.assertIn("Never `cat` a file whole", told, "a log is grepped, not printed")
 
     def test_a_file_with_no_name_is_still_offered(self):
@@ -1410,6 +1410,23 @@ class AppTest(unittest.TestCase):
                          "the goal went to the task's own session")
         self.assertIn(self.device.sessions[task]["title"], answer)
 
+    def test_a_task_title_with_a_path_stays_out_of_the_answer(self):
+        """The session keeps the words; the channel reads only that it exists."""
+        self.device.script = [("idle", "done")]
+        with TempDir() as directory:
+            app = self.make(directory)
+            self.use(app, commands.ASK, options=[
+                {"name": "prompt", "type": 3, "value": "fix /Users/alice/secret/thing"},
+            ])
+            self.assertTrue(self.discord.wait_for(
+                lambda: any("its own OpenCode session" in str(content)
+                            or "an OpenCode session of its own" in str(content)
+                            for content in self.said()), 10))
+            answer = next(str(content) for content in self.said()
+                          if "OpenCode session" in str(content))
+        self.assertNotIn("/Users/alice", answer)
+        self.assertIn("an OpenCode session of its own", answer)
+
     def test_a_question_stays_in_the_conversation(self):
         self.device.script = [("idle", "answered")]
         with TempDir() as directory:
@@ -1447,6 +1464,21 @@ class AppTest(unittest.TestCase):
         self.assertNotIn("improve the message received response", request)
         self.assertEqual(question, "Got it, tidying the reply wording. I'll follow up here.",
                          "the phrasing follows the work, not a fixed template")
+
+    def test_the_ack_line_names_no_secret_or_path(self):
+        """The phrase is posted in the channel, so it gets the answer's check."""
+        self.device.script = [("idle", "done")]
+        with TempDir() as directory:
+            app = self.make(directory)
+            self.device.description = "reading " + "M" * 25 + ".GaBcDe." + "a" * 27
+            self.use(app, commands.ASK,
+                     options=[{"name": "prompt", "type": 3, "value": "look at this"}])
+            self.assertTrue(self.discord.wait_for(
+                lambda: any("done" in str(content) for content in self.said()), 10))
+            acks = [entry["content"] for entry in self.discord.edits
+                    if str(entry["content"]).startswith("Got it")]
+            self.assertTrue(acks)
+            self.assertEqual(acks[0], "Got it. I'll follow up here.")
 
     def test_an_ask_is_acknowledged_first_and_answered_after(self):
         self.device.script = [("idle", "just the answer")]
@@ -1600,7 +1632,8 @@ class AppTest(unittest.TestCase):
             dm = self.discord.messages.get(self.discord.dm_channels[OWNER], [])
         self.assertTrue(any("nobody may see this" in message["content"] for message in dm),
                         "the person who asked still gets the answer")
-        self.assertTrue(any("arrived too late" in message["content"] for message in dm))
+        self.assertTrue(any("the answer to" in message["content"] for message in dm),
+                        "it names the question it belongs to")
         self.assertEqual(self.discord.messages.get(CHANNEL, []), [],
                          "a hidden answer is never posted in the channel")
         self.assertEqual(self.discord.followups, [])
@@ -1916,6 +1949,183 @@ class AppTest(unittest.TestCase):
         names = [command["name"] for command in self.discord.global_commands]
         self.assertEqual(names, ["other", "vigo"])
 
+
+    def test_an_approved_asker_runs_in_a_session_of_their_own(self):
+        """The owner's conversation is not the approved person's to read."""
+        self.device.script = [("idle", "the first answer")]
+        with TempDir() as directory:
+            app = self.make(directory, users=[GUEST])
+            self.use(app, commands.ASK,
+                     options=[{"name": "prompt", "type": 3, "value": "what is a pointer"}])
+            self.assertTrue(self.discord.wait_for(
+                lambda: any("the first answer" in content for content in self.said()), 10))
+            self.device.script = [("idle", "the second answer")]
+            self.use(app, commands.ASK, who=GUEST,
+                     options=[{"name": "prompt", "type": 3, "value": "what is a heap"}])
+            self.assertTrue(self.discord.wait_for(
+                lambda: any("the second answer" in content for content in self.said()), 10))
+        sessions = [session for session, _text in self.device.prompts]
+        self.assertEqual(len(sessions), 2)
+        self.assertNotEqual(sessions[0], sessions[1],
+                            "a shared session would carry one asker's history to the other")
+        keys = [self.device.sessions[session]["metadata"].get(asking.CHANNEL_KEY)
+                for session in sessions]
+        self.assertIn(CHANNEL, keys)
+        self.assertIn(f"{CHANNEL}:{GUEST}", keys)
+
+    def test_an_approved_asker_is_answered_privately(self):
+        """Nothing about the owner's machine is posted where the channel reads."""
+        self.device.script = [("idle", "the config lives in /home/you/.config")]
+        with TempDir() as directory:
+            app = self.make(directory, users=[GUEST])
+            interaction = self.use(app, commands.ASK, who=GUEST, options=[
+                {"name": "prompt", "type": 3, "value": "where is the config"},
+            ])
+            deferred = self.discord.answer_for(interaction)
+            self.assertEqual(deferred["data"]["flags"], 64,
+                             "the question's own line is private too")
+            self.assertTrue(self.discord.wait_for(
+                lambda: any("the config lives" in entry["content"]
+                            for entry in self.discord.followups), 10))
+        answers = [entry for entry in self.discord.followups
+                   if "the config lives" in entry["content"]]
+        self.assertEqual(answers[0]["flags"], 64, "the answer is ephemeral")
+        self.assertEqual(self.discord.messages.get(CHANNEL, []), [],
+                         "an approved person's answer never lands in the channel")
+
+    def test_an_approved_ask_is_a_question_not_a_goal(self):
+        """No goal, no subagent: one turn, then the work stops."""
+        self.device.script = [("idle", "done")]
+        with TempDir() as directory:
+            app = self.make(directory, users=[GUEST])
+            self.use(app, commands.ASK, who=GUEST, options=[
+                {"name": "prompt", "type": 3, "value": "fix the tests"},
+            ])
+            self.assertTrue(self.discord.wait_for(
+                lambda: any("done" in content for content in self.said()), 10))
+        self.assertEqual(self.device.goals, {}, "an approved ask sets no goal")
+        self.assertEqual(self.device.commands, [], "no `/goal` is sent for it")
+        session = self.device.prompts[0][0]
+        self.assertEqual(self.device.sessions[session]["agent"], "build",
+                         "the work must not run under the subagent agent")
+
+    def test_an_approved_asker_cannot_set_a_goal(self):
+        with TempDir() as directory:
+            app = self.make(directory, users=[GUEST])
+            interaction = self.use(app, commands.GOAL, who=GUEST, options=[
+                {"name": "objective", "type": 3, "value": "rewrite the parser"},
+            ])
+        answer = self.discord.answer_for(interaction)
+        self.assertEqual(answer["data"]["flags"], 64)
+        self.assertIn("Only this bot's owner", answer["data"]["content"])
+        self.assertEqual(self.device.prompts, [])
+        self.assertEqual(self.device.goals, {})
+
+    def test_an_approved_asker_cannot_choose_the_device(self):
+        with TempDir() as directory:
+            app = self.make(directory, users=[GUEST])
+            interaction = self.use(app, commands.ASK, who=GUEST, options=[
+                {"name": "prompt", "type": 3, "value": "what is a pointer"},
+                {"name": "device", "type": 3, "value": "macbook"},
+            ])
+        answer = self.discord.answer_for(interaction)
+        self.assertEqual(answer["data"]["flags"], 64)
+        self.assertIn("owner chooses the device", answer["data"]["content"])
+        self.assertEqual(self.device.prompts, [])
+
+    def test_an_approved_asker_has_one_question_in_flight(self):
+        gate = threading.Event()
+        self.device.script = [("until", gate), ("idle", "finished")]
+        with TempDir() as directory:
+            app = self.make(directory, users=[GUEST])
+            self.use(app, commands.ASK, who=GUEST, options=[
+                {"name": "prompt", "type": 3, "value": "what is a pointer"},
+            ])
+            self.assertTrue(self.device.wait_for_prompt(10))
+            self.use(app, commands.ASK, who=GUEST, options=[
+                {"name": "prompt", "type": 3, "value": "and a heap"},
+            ])
+            self.assertTrue(self.discord.wait_for(
+                lambda: any("already have a question in flight" in entry["content"]
+                            for entry in self.discord.edits), 10))
+            self.assertEqual(len(self.device.prompts), 1,
+                             "the second question is not sent to the device")
+            gate.set()
+            self.assertTrue(self.discord.wait_for(
+                lambda: any("finished" in content for content in self.said()), 10))
+
+    def test_the_help_for_an_approved_asker_says_what_they_may_do(self):
+        with TempDir() as directory:
+            app = self.make(directory, users=[GUEST])
+            interaction = self.use(app, commands.HELP, who=GUEST)
+        answer = self.discord.answer_for(interaction)
+        self.assertEqual(answer["data"]["flags"], 64)
+        text = answer["data"]["content"]
+        self.assertIn("private to you", text)
+        self.assertIn("belong to the owner", text)
+        self.assertNotIn("/vigo status", text)
+        self.assertNotIn("/vigo devices", text)
+
+    def test_only_the_owner_reads_the_device_state(self):
+        with TempDir() as directory:
+            app = self.make(directory, users=[GUEST])
+            for sub in (commands.STATUS, commands.DEVICES, commands.QUEUE,
+                        commands.ALLOW, commands.DENY, commands.ALLOWED, commands.STOP):
+                interaction = self.use(app, sub, who=GUEST)
+                answer = self.discord.answer_for(interaction)
+                self.assertEqual(answer["data"]["flags"], 64)
+                self.assertIn("Only this bot's owner", answer["data"]["content"],
+                              f"{sub} must not answer an approved person")
+
+    def test_an_allow_made_now_lets_the_next_question_run(self):
+        self.device.script = [("idle", "the answer")]
+        with TempDir() as directory:
+            app = self.make(directory)
+            self.use(app, commands.ALLOW, options=[
+                {"name": "user", "type": 6, "value": {"id": GUEST, "username": "Guest"}},
+            ])
+            self.assertTrue(self.discord.wait_for(lambda: app.allow.may_ask(GUEST)))
+            self.use(app, commands.ASK, who=GUEST, options=[
+                {"name": "prompt", "type": 3, "value": "what is a heap"},
+            ])
+            self.assertTrue(self.discord.wait_for(
+                lambda: any("the answer" in content for content in self.said()), 10))
+            self.assertEqual(len(self.device.prompts), 1)
+
+    def test_an_allow_that_ran_out_refuses_the_next_question(self):
+        with TempDir() as directory:
+            app = self.make(directory)
+            app.allow.allow(GUEST, "Guest", 0)
+            interaction = self.use(app, commands.ASK, who=GUEST, options=[
+                {"name": "prompt", "type": 3, "value": "what is a heap"},
+            ])
+        answer = self.discord.answer_for(interaction)
+        self.assertIn("approved", answer["data"]["content"])
+        self.assertEqual(self.device.prompts, [])
+
+    def test_a_deny_stops_a_question_that_waits_its_turn(self):
+        """Access taken back while the question waits is read again before it runs."""
+        gate = threading.Event()
+        self.device.script = [("until", gate), ("idle", "owner answer")]
+        with TempDir() as directory:
+            app = self.make(directory)
+            app.allow.allow(GUEST, "Guest", None)
+            self.use(app, commands.ASK,
+                     options=[{"name": "prompt", "type": 3, "value": "what is a pointer"}])
+            self.assertTrue(self.device.wait_for_prompt(10))
+            self.use(app, commands.ASK, who=GUEST, options=[
+                {"name": "prompt", "type": 3, "value": "what is a heap"},
+            ])
+            _done, _said = app.allow.deny(GUEST)
+            gate.set()
+            self.assertTrue(self.discord.wait_for(
+                lambda: any("owner answer" in content for content in self.said()), 10))
+            self.assertTrue(self.discord.wait_for(
+                lambda: any("Your access ended" in content for content in self.said()), 10))
+            self.assertTrue(self.discord.wait_for(
+                lambda: any("Your access ended" in content for content in self.said()), 10))
+        self.assertEqual(len(self.device.prompts), 1,
+                         "the denied question never reached the device")
 
 if __name__ == "__main__":
     unittest.main()

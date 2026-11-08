@@ -69,6 +69,17 @@ class ConfigTest(unittest.TestCase):
                 configuration.load(write_settings(directory, raw))
         self.assertIn("http", str(caught.exception))
 
+    def test_a_url_carries_no_user_or_password(self):
+        for key in ("url", "peer"):
+            with self.subTest(key=key):
+                entry = {"name": "macbook", "url": "http://127.0.0.1:1", "directory": "/a"}
+                entry[key] = "http://opencode:secret@127.0.0.1:1"
+                raw = base_settings(devices=[entry])
+                with TempDir() as directory:
+                    with self.assertRaises(configuration.ConfigError) as caught:
+                        configuration.load(write_settings(directory, raw))
+                self.assertIn("password", str(caught.exception))
+
     def test_a_directory_is_absolute(self):
         raw = base_settings(devices=[
             {"name": "macbook", "url": "http://127.0.0.1:1", "directory": "project"},

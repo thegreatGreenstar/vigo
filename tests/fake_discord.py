@@ -24,6 +24,8 @@ class FakeDiscord:
         self.global_commands: list[dict] = []
         self.global_command_puts = 0
         self.dm_channels: dict[str, str] = {}
+        self.channel_types: dict[str, int] = {}  # 1 is a DM, 3 a group DM
+        self.gets: list[str] = []  # every GET path, for a test that counts reads
         self.counter = 0
         self.bot_id = "1"  # the author of every message this bot posts here
         self.gateway = ""
@@ -115,6 +117,8 @@ class FakeDiscord:
                 parts = urlsplit(self.path)
                 path = parts.path
                 query = parse_qs(parts.query)
+                with fake.lock:
+                    fake.gets.append(path)
                 if path.endswith("/gateway/bot"):
                     self._send(200, {"url": fake.gateway, "shards": 1})
                     return
@@ -134,7 +138,13 @@ class FakeDiscord:
                         self._send(403, {"code": 50001, "message": "Missing Access"})
                         return
                     limit = int(query.get("limit", ["50"])[0])
-                    self._send(200, fake.messages.get(channel, [])[:limit])
+                    rows = fake.messages.get(channel, [])
+                    before = query.get("before", [""])[0]
+                    if before:
+                        at = next((index for index, message in enumerate(rows)
+                                   if message["id"] == before), len(rows))
+                        rows = rows[at + 1:]
+                    self._send(200, rows[:limit])
                     return
                 if "/channels/" in path and "/messages/" in path:
                     channel = path.split("/channels/")[1].split("/")[0]
@@ -146,7 +156,9 @@ class FakeDiscord:
                     self._send(404, {"code": 10008, "message": "Unknown Message"})
                     return
                 if "/channels/" in path:
-                    self._send(200, {"id": path.rsplit("/", 1)[1], "name": "general"})
+                    channel = path.rsplit("/", 1)[1]
+                    self._send(200, {"id": channel, "name": "general",
+                                     "type": fake.channel_types.get(channel, 1)})
                     return
                 self._send(404, {"code": 0, "message": "no route"})
 
