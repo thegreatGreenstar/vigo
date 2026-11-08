@@ -2,9 +2,10 @@
 <!--
   Keep Vigo's container running at login, on macOS.
 
-  deploy/container/install.sh fills in __KIT__ and __HOME__ and loads it.  Add
-  VIGO_BIND_ADDRESS to EnvironmentVariables when another device must reach this
-  one through the podman machine; the default is 127.0.0.1.
+  deploy/container/install.sh fills in __KIT__ and __HOME__ and loads it.  Set
+  VIGO_BIND_ADDRESS when another device must reach this one through the podman
+  machine; the install writes it here and keeps it on a reinstall.  The
+  default is 127.0.0.1.
 -->
 <plist version="1.0">
 <dict>
