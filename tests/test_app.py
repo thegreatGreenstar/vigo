@@ -308,6 +308,48 @@ class AppTest(unittest.TestCase):
                         "the answer leads; a task names the session it ran in after it")
         self.assertEqual(self.asked()[0], "say hi")
 
+    def test_an_older_daemon_leaves_the_use_to_a_newer_peer(self):
+        peer_url = self._peer(built=2000)
+        with TempDir() as directory:
+            app = self._two_devices(directory, peer_url)
+            app._built = 1000
+            interaction = self.use(app, commands.ASK,
+                                   options=[{"name": "prompt", "type": 3, "value": "hi"}])
+            self.assertIsNone(self.discord.answer_for(interaction),
+                              "the older daemon does not acknowledge the use")
+            self.assertEqual(self.device.prompts, [],
+                             "and no device turn is spent on it")
+
+    def test_a_newer_daemon_answers_beside_an_older_peer(self):
+        peer_url = self._peer(built=1000)
+        with TempDir() as directory:
+            app = self._two_devices(directory, peer_url)
+            app._built = 2000
+            interaction = self.use(app, commands.ASK,
+                                   options=[{"name": "prompt", "type": 3, "value": "hi"}])
+            self.assertIsNotNone(self.discord.answer_for(interaction),
+                                 "the newer daemon acknowledges it")
+            self.assertTrue(self.device.wait_for_prompt())
+
+    def _peer(self, built: int) -> str:
+        """A peer daemon that answers with the commit time a test names."""
+        server = PeerServer("127.0.0.1", 0, "pc", "pw", built=built).start()
+        self.addCleanup(server.stop)
+        return f"http://127.0.0.1:{server.server.server_address[1]}"
+
+    def _two_devices(self, directory: Path, peer_url: str) -> App:
+        settings = load_settings(
+            directory,
+            devices=[
+                {"name": "macbook", "url": self.device.url, "directory": "/tmp/project"},
+                {"name": "pc", "url": "http://127.0.0.1:1",
+                 "directory": "/tmp/other", "peer": peer_url},
+            ],
+        )
+        api = Discord("token", settings.app_id, base=self.discord.url)
+        self.app = App(settings, api=api, state=State(directory / "state.json"))
+        return self.app
+
     def test_the_device_is_told_who_reads_the_answer(self):
         self.device.script = [("idle", "fine")]
         with TempDir() as directory:

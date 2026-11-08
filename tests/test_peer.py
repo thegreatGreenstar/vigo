@@ -15,6 +15,7 @@ from vigo.peer import (
     _supervisor,
     _why,
     build_of,
+    built_of,
     update_self,
 )
 
@@ -36,6 +37,11 @@ class PeerTest(unittest.TestCase):
         info = PeerClient(self.url, "pw").info()
         self.assertEqual(info["device"], "macbook")
         self.assertEqual(info["version"], __version__)
+
+    def test_it_says_when_its_commit_was_made(self):
+        """The one number two checkouts can be ordered by: the commit's time."""
+        info = PeerClient(self.url, "pw").info()
+        self.assertEqual(info["built"], built_of())
 
     def test_the_password_is_checked(self):
         with self.assertRaises(OSError):
@@ -261,6 +267,21 @@ class BuildTest(unittest.TestCase):
     def test_a_directory_that_is_not_git_has_no_build(self):
         with tempfile.TemporaryDirectory() as directory:
             self.assertEqual(build_of(Path(directory)), "")
+
+    def test_it_reads_when_the_commit_was_made(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            git("init", "-q", str(root), cwd=root)
+            git("config", "user.email", "t@example.com", cwd=root)
+            git("config", "user.name", "t", cwd=root)
+            (root / "one.txt").write_text("one\n", encoding="utf-8")
+            git("add", ".", cwd=root)
+            git("commit", "-qm", "one", cwd=root)
+            self.assertEqual(built_of(root), int(git("log", "-1", "--format=%ct", cwd=root)))
+
+    def test_a_directory_that_is_not_git_has_no_time(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self.assertEqual(built_of(Path(directory)), 0)
 
 
 if __name__ == "__main__":

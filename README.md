@@ -31,8 +31,13 @@ Discord  <──gateway/HTTP──>  vigo (this program)  <──HTTP──>  op
 
 Only one daemon answers a given use: they all try to acknowledge it at once,
 Discord takes the first, and the rest are told it was already answered and
-stop. Whoever wins can drive every device, so it does not matter which one it
-is, and a device answers even when its own daemon is not running.
+stop. Whoever wins can drive every device, so the device answers even when its
+own daemon is not running. When the two daemons run different code, the one
+with the older checkout steps out before that acknowledgement for a question,
+so the newer code answers: it queues where the older one refuses, and it does
+not put a second prompt into a session the other is working. A peer is asked
+for its commit's time for this, kept a few seconds, and skipped when it does
+not answer.
 
 ### GitHub work
 

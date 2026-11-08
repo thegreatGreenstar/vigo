@@ -102,6 +102,7 @@ class _Handler(BaseHTTPRequestHandler):
         self._send(200, {"device": self.server.device,
                          "version": self.server.version or __version__,
                          "build": self.server.build,
+                         "built": self.server.built,
                          "queue": self.server.queue()})
 
     def do_POST(self) -> None:
@@ -157,6 +158,22 @@ def head_of(checkout: Path | None = None) -> str:
     here = Path(checkout or CHECKOUT)
     code, said = _run(["git", "log", "-1", "--format=%h %s"], here, timeout=10.0)
     return said.strip() if code == 0 and said else ""
+
+
+def built_of(checkout: Path | None = None) -> int:
+    """When this checkout's commit was made, in seconds; 0 when it is not git.
+
+    A hash orders nothing and the version string is shared between releases,
+    so the commit's own time is the one thing two daemons can compare.  A
+    rebase writes a new time, and that is the point: the checkout was made
+    again then, and the daemon that reads it starts from the newer code.
+    """
+    here = Path(checkout or CHECKOUT)
+    code, said = _run(["git", "log", "-1", "--format=%ct"], here, timeout=10.0)
+    try:
+        return int(said.strip().splitlines()[0]) if code == 0 and said else 0
+    except ValueError:
+        return 0
 
 
 def _launchd_workdir(printed: str) -> str:
@@ -258,7 +275,7 @@ def update_self(checkout: Path | None = None, restart: bool = True,
 class PeerServer:
     def __init__(self, host: str, port: int, device: str, password: str,
                  checkout: Path | None = None, restart: bool = True,
-                 version: str = "", build: str = "",
+                 version: str = "", build: str = "", built: int = 0,
                  queue: Callable[[], list] | None = None,
                  suspend: Callable[[], None] | None = None) -> None:
         self.server = ThreadingHTTPServer((host, port), _Handler)
@@ -268,6 +285,7 @@ class PeerServer:
         self.server.restart = restart  # type: ignore[attr-defined]
         self.server.version = version  # type: ignore[attr-defined]
         self.server.build = build or build_of(checkout)  # type: ignore[attr-defined]
+        self.server.built = built or built_of(checkout)  # type: ignore[attr-defined]
         # What this daemon runs and waits on, for `/vigo queue` on the other
         # one.  A daemon that holds nothing yet answers with an empty list.
         self.server.queue = queue or (lambda: [])  # type: ignore[attr-defined]
