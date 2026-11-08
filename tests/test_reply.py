@@ -312,6 +312,12 @@ class TwoDaemonsReplyTest(unittest.TestCase):
         self.assertTrue(self.mac.wait_for(
             lambda: any("the first answer" in (entry.get("content") or "")
                         for entry in self.mac.followups), 10))
+        # The answer is remembered just after it is posted, so the followup
+        # appearing is one step ahead of the state: read the state when it has
+        # the message, not the instant the text lands.
+        self.assertTrue(
+            self.mac.wait_for(lambda: bool(mac.state.data["answers"]), 10),
+            "the answer was remembered, so a reply to it is a question")
         answer = next(reversed(mac.state.data["answers"]))
         self.assertTrue(self.mac.wait_for(lambda: not mac.runs, 10), "the first run ended")
         self.device.script = [("idle", "the second answer")]
