@@ -68,7 +68,7 @@ for name in "$token_secret" "$password_secret" "$key_secret"; do
     case "$name" in
     "$key_secret")
         printf 'vigo: podman secret %s is missing; make it from the key with no passphrase:\n' "$name" >&2
-        printf '  podman secret create %s ~/.ssh/vigo_container_ed25519\n' "$name" >&2
+        printf '  podman secret create %s - < ~/.ssh/vigo_container_ed25519\n' "$name" >&2
         ;;
     *)
         printf 'vigo: podman secret %s is missing; make it from the value:\n' "$name" >&2

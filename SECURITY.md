@@ -37,10 +37,10 @@ they may hold one question at a time. A tool they cause the agent to ask for get
 
 ## Known limits
 
-- **The podman machine mounts the home directory.** Containers see only the paths named in `run.sh`, but the VM
-  around them has all of `/Users` on a virtiofs mount by default. A container escape reaches the home directory
-  through that mount. Narrowing it means recreating the machine, which discards its images and containers, so the kit
-  treats the container as the boundary it controls and says this one is outside it.
+- **The VM's own mounts are a second boundary.** A machine created with podman's defaults mounts all of `/Users`
+  into the VM, so a container escape reaches the home even though the containers cannot. The setup in the README
+  creates the machine with only the pod's paths, so the VM holds no SSH directory and no rest of the home. A machine
+  created with the defaults needs that rebuild before the same sentence is true.
 - **The agent's OpenCode credential lives in its container state.** It is a separate sign-in from the desktop app, so
   revoking one does not revoke the other. It sits in `~/.local/share/vigo-agent` on the host, readable by the user
   and by the daemon's container, which already holds the Discord token.
