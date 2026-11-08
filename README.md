@@ -479,11 +479,16 @@ where the rest is when there is one.
 A run that passes `timeout` adds a note to the end of the line the question
 already shows, the queued line or the got-it line, so the question keeps one
 message, and the run keeps watching. No second message arrives for it. The
-answer still arrives, and the channel stays busy until it does. No progress
-line is posted. If the device is not working on it by then — nothing on the
-session is newer than the question — the run ends and says so, because a device
-that took the question and will not run it would hold the channel for ever with
-every later question behind it.
+line is edited by the message's own id, which the daemon keeps when it writes
+the line, so the note still lands after Discord's fifteen minutes on the
+interaction have run out: a question that waited in the queue can pass them
+before its run even starts. When Discord takes no edit at all, because the
+line is ephemeral or the app is not in that channel, the note goes out alone
+rather than not at all. The answer still arrives, and the channel stays busy
+until it does. No progress line is posted. If the device is not working on it
+by then — nothing on the session is newer than the question — the run ends and
+says so, because a device that took the question and will not run it would hold
+the channel for ever with every later question behind it.
 
 When a turn fails, the answer names what the person can act on: the model is
 rate limited, the account has no quota left, the session is out of context, or
@@ -797,7 +802,7 @@ on Windows and says why.
 python3 -m unittest discover -s tests -t . -v   # the canonical run
 python3 -m tests.parallel                       # the same suite on threads
 tests/ci-local.sh                               # what CI runs, as far as this machine can
-tests/ci-codespace.sh                           # the Linux half, in a Codespace
+tests/ci-codespace.sh --machine standardLinux32gb   # the Linux half, in a Codespace
 tests/in-containers.sh                          # Linux 3.12-3.14, in podman
 tests/in-codespace.sh                           # Linux 3.12-3.14, inside a codespace
 ```
@@ -806,7 +811,9 @@ tests/in-codespace.sh                           # Linux 3.12-3.14, inside a code
 0.17.4 in a container, the secrets check, and the Linux matrix in podman. It names what it cannot answer, which is
 Windows and any Python that is not installed. It takes about a minute and a half on this Mac.
 
-`tests/ci-codespace.sh` is the Linux half of CI, on a Linux machine rather than this one. It creates a Codespace,
+`tests/ci-codespace.sh` is the Linux half of CI, on a Linux machine rather than this one. A run with no terminal
+there passes `--machine`, because `gh codespace create` would ask for one: this repository's plan offers
+`basicLinux32gb` and `standardLinux32gb`. The script creates a Codespace,
 copies this working tree into it (uncommitted changes included, so nothing has to be pushed first), runs
 `tests/in-codespace.sh` there, prints the result, and deletes the codespace however the run ends. `--keep` stops it
 instead, so the next run is quick; a stopped codespace still holds storage against the quota, so delete it when done.
