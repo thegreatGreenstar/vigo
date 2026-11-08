@@ -33,6 +33,11 @@ class FakeOpenCode:
         self.permission_replies: list[tuple[str, str, str]] = []
         self.form_replies: list[tuple[str, str, dict]] = []
         self.forms: dict[str, dict] = {}
+        self.agents = [
+            {"id": "build", "mode": "primary", "name": "Build"},
+            {"id": "general", "mode": "subagent", "name": "General"},
+            {"id": "explore", "mode": "subagent", "name": "Explore"},
+        ]
         self.interrupts: list[str] = []
         self.counter = 0
         self.script: list[tuple] = []
@@ -331,11 +336,7 @@ class FakeOpenCode:
                 if path == "/api/agent":
                     self._send(200, {
                         "location": {"directory": fake.directory},
-                        "data": [
-                            {"id": "build", "mode": "primary", "name": "Build"},
-                            {"id": "general", "mode": "subagent", "name": "General"},
-                            {"id": "explore", "mode": "subagent", "name": "Explore"},
-                        ],
+                        "data": list(fake.agents),
                     })
                     return
                 if path == "/api/session/active":

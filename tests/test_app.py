@@ -349,6 +349,71 @@ class AppTest(unittest.TestCase):
                           if note in str(said.get("content") or "")],
                          "the note is not a message of its own")
 
+    def test_a_note_keeps_the_line_under_discords_limit(self):
+        """A line at the limit gives way to the note, never the other way round."""
+        line = "q" * 2000
+        note = "Still running on the device. `/vigo stop` ends it."
+        grown = asking._grown(line, note)
+        self.assertLessEqual(len(grown), 2000)
+        self.assertTrue(grown.endswith(note), "the note is whole")
+        self.assertIn("…", grown, "the cut line says it was cut")
+
+    def test_a_note_without_a_line_is_still_said(self):
+        """The acknowledgement never landed, so there is no line to grow."""
+        gate = threading.Event()
+        self.addCleanup(gate.set)
+        self.device.script = [("until", gate), ("idle", "the late answer")]
+        with TempDir() as directory:
+            app = self.make(directory)
+            app.config = dataclasses.replace(app.config, timeout=0.2)
+            self.discord.uneditable.add("tok")  # the deferred message is gone
+            self.use(app, commands.ASK,
+                     options=[{"name": "prompt", "type": 3, "value": "hi"}])
+            note = "Still running on the device. `/vigo stop` ends it."
+            self.assertTrue(self.discord.wait_for(
+                lambda: any(content == note for content in self.posted()), 10),
+                "the note goes out alone when there is no line to edit")
+
+    def test_a_note_edits_the_line_after_the_interaction_token_expires(self):
+        """Discord stops taking the token after 15 minutes; the line is still there.
+
+        A question that waits its turn spends that time in the queue, so the
+        run that starts later can only edit its message by the channel's id.
+        The note belongs on that line, not in a message beside it.
+        """
+        first, second = threading.Event(), threading.Event()
+        self.addCleanup(first.set)
+        self.addCleanup(second.set)
+        self.device.script = [("until", first), ("idle", "the first answer")]
+        with TempDir() as directory:
+            app = self.make(directory)
+            app.config = dataclasses.replace(app.config, timeout=0.2)
+            self.use(app, commands.ASK, token="tok_first",
+                     options=[{"name": "prompt", "type": 3, "value": "first"}])
+            self.assertTrue(self.device.wait_for_prompt())
+            self.use(app, commands.ASK, token="tok_second",
+                     options=[{"name": "prompt", "type": 3, "value": "second"}])
+            queued = self.discord.originals["tok_second"]["content"]
+            self.assertTrue(queued.startswith("Queued behind 1 question"), queued)
+            # The queue outlives the interaction: Discord takes no edit on it.
+            self.discord.uneditable.add("tok_second")
+            self.device.script = [("until", second), ("idle", "the second answer")]
+            first.set()
+            note = "Still running on the device. `/vigo stop` ends it."
+            self.assertTrue(self.discord.wait_for(
+                lambda: self.discord.originals["tok_second"]["content"]
+                == f"{queued}\n\n{note}", 10),
+                "the queued line grows the note at its end")
+            second.set()
+            self.assertTrue(self.discord.wait_for(
+                lambda: any("the second answer" in said for said in self.posted()), 15))
+        self.assertFalse([said for said in self.discord.followups
+                          if note in str(said.get("content") or "")],
+                         "the note is not a message of its own")
+        self.assertFalse([message for message in self.discord.messages.get(CHANNEL, [])
+                          if note in message["content"]],
+                         "the note is not a channel message either")
+
     def test_a_run_past_the_timeout_keeps_the_channel_busy(self):
         finishing = threading.Event()
         self.addCleanup(finishing.set)
@@ -474,7 +539,7 @@ class AppTest(unittest.TestCase):
         self.assertLessEqual(len(device["description"]), 100)
         self.assertIn("3 devices", device["description"])
 
-    def test_a_task_ask_gives_the_subagent_a_goal(self):
+    def test_a_task_ask_gives_the_worker_a_goal(self):
         self.device.script = [("idle", "done")]
         with TempDir() as directory:
             app = self.make(directory)
@@ -488,8 +553,8 @@ class AppTest(unittest.TestCase):
                          [("goal", "fix the failing test")])
         self.assertEqual(question_of(self.device.goals[session]["objective"]),
                          "fix the failing test")
-        self.assertEqual(self.device.sessions[session]["agent"], "general",
-                         "the goal is the subagent's, not the conversation agent's")
+        self.assertEqual(self.device.sessions[session]["agent"], "build",
+                         "the work runs under a primary agent, which can delegate subagents")
 
     def test_a_question_ask_only_asks(self):
         self.device.script = [("idle", "because the table moved")]
@@ -513,8 +578,8 @@ class AppTest(unittest.TestCase):
             session = app.state.session_for(CHANNEL)["session"]
         self.assertEqual(self.goals(), [("goal", "keep the build green")])
         self.assertEqual(self.device.goals[session]["objective"], "keep the build green")
-        self.assertEqual(self.device.sessions[session]["agent"], "general",
-                         "the goal is the subagent's, not the conversation agent's")
+        self.assertEqual(self.device.sessions[session]["agent"], "build",
+                         "the work runs under a primary agent, which can delegate subagents")
         self.assertIn("session of its own", written)
 
     def test_a_second_objective_steers_the_goal_the_channel_has(self):
@@ -1132,6 +1197,10 @@ class AppTest(unittest.TestCase):
         self.assertIn("at most 3 at a time", rule)
         self.assertIn("use fewer when fewer are enough", rule)
         self.assertIn("none when none is", rule)
+        self.assertIn("starts with fresh context", rule)
+        self.assertIn("cannot start another subagent", rule)
+        self.assertIn("exact files, the exact result", rule)
+        self.assertIn("read every report", rule)
 
     def test_an_answer_that_names_github_work_leads_with_it(self):
         self.device.script = [
@@ -1233,7 +1302,8 @@ class AppTest(unittest.TestCase):
             answer = next(content for content in self.said()
                           if "its own OpenCode session" in content)
         self.assertNotEqual(task, conversation, "the task does not run in the conversation")
-        self.assertEqual(self.device.sessions[task]["agent"], "general")
+        self.assertEqual(self.device.sessions[task]["agent"], "build",
+                         "a primary agent: a subagent agent cannot start subagents")
         self.assertIn("fix the failing test", self.device.sessions[task]["title"])
         self.assertEqual({session for session, _name, _text in self.device.commands}, {task},
                          "the goal went to the task's own session")

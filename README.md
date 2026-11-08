@@ -428,9 +428,9 @@ What the Developer Portal asks for, if it helps:
 | `/vigo ask prompt:<text> [file] [device] [hidden] [new]` | approved users | asks the device you last worked on; the question is acknowledged at once and the answer follows as a new message, public in the channel unless `hidden:true`, in which case only you see the question and answer. A task gets a goal, which the device works toward in a session of its own. A file attached with it, or a reply to an answer that carries one, is fetched and read on that device: a log or a dump never has to be pasted |
 | `/vigo goal objective:<text> [device] [hidden]` | approved users | gives the device an objective to keep working toward, with no question, in a session of its own; `pause`, `resume` and `clear` control the goal it already has |
 | `/vigo quick prompt:<text> [device] [hidden]` | approved users | one answer, with no session and no tools; the message stays as thinking until the answer is ready, then becomes it, with no line before, and the device is told the same two-paragraph limit as a question |
-| `/vigo status` | approved users | the channel's session, its device, tokens and cost, and the subagents at work under it; every question that waits, and the last three that ran |
+| `/vigo status` | owner | the channel's session, its device, tokens and cost, and the subagents at work under it; every question that waits, and the last three that ran |
 | `/vigo queue [public]` | owner | every channel that runs or waits, on this daemon and the other ones, every task in each line, and how many agents work on each task; `public:true` shows the channel a redacted copy |
-| `/vigo devices` | approved users | what is up, and which one a question would go to |
+| `/vigo devices` | owner | what is up, and which one a question would go to |
 | `/vigo stop` | owner | interrupts the channel's run, and drops the questions that wait behind it |
 | `/vigo upgrade [device]` | owner | pulls and restarts a daemon that runs a different commit; empty does every one of them, and the owner gets a DM naming each device and the commit it moved from and to. A turn already running on that daemon carries over the restart, and its answer still arrives |
 | `/vigo allow user:<who> [for:<2h｜1d｜7d｜perm>]` | owner | lets someone ask, for a time; 1 day when unnamed |
@@ -485,11 +485,16 @@ where the rest is when there is one.
 A run that passes `timeout` adds a note to the end of the line the question
 already shows, the queued line or the got-it line, so the question keeps one
 message, and the run keeps watching. No second message arrives for it. The
-answer still arrives, and the channel stays busy until it does. No progress
-line is posted. If the device is not working on it by then — nothing on the
-session is newer than the question — the run ends and says so, because a device
-that took the question and will not run it would hold the channel for ever with
-every later question behind it.
+line is edited by the message's own id, which the daemon keeps when it writes
+the line, so the note still lands after Discord's fifteen minutes on the
+interaction have run out: a question that waited in the queue can pass them
+before its run even starts. When Discord takes no edit at all, because the
+line is ephemeral or the app is not in that channel, the note goes out alone
+rather than not at all. The answer still arrives, and the channel stays busy
+until it does. No progress line is posted. If the device is not working on it
+by then — nothing on the session is newer than the question — the run ends and
+says so, because a device that took the question and will not run it would hold
+the channel for ever with every later question behind it.
 
 When a turn fails, the answer names what the person can act on: the model is
 rate limited, the account has no quota left, the session is out of context, or
@@ -499,15 +504,21 @@ or the session never ran — says that, instead of reading like an empty answer.
 
 An ask may hand parts of its work to subagents — **up to three at a time, only
 where it helps**: fewer when fewer are enough, none when none is. Both a
-question and a goal say so. The **plan** is your OpenCode subscription: one
+question and a goal say so, and the rule carries what a subagent costs: it
+starts with fresh context, it cannot see the conversation, and it cannot start
+another subagent. So the work gives each one the exact files, the exact result
+and the constraints, runs independent parts in the background, and reads every
+report before it trusts it. The **plan** is your OpenCode subscription: one
 account, and both machines draw on it, so its concurrency and its rate limits
-are shared. Vigo starts at most ten agents at work at once across every device
-it drives — ten, not more, because a burst past the plan's limits comes back as
-failed turns instead of answers. An "agent" there is a session whose turn is
-running: a conversation answering a question, a task's own session, or a
-session OpenCode made for a subagent. A question that would be the eleventh is
-refused, saying how many run, and `/vigo status` names the count when more than
-one agent runs.
+are shared. Vigo refuses a question that arrives when ten agents already run on
+the devices it drives, because a burst past the plan's limits comes back as
+failed turns instead of answers. The count is read when the question arrives,
+so the subagents a running turn starts after that are not in it: the turn is
+told to keep its own fan-out to three. An "agent" there is a session
+whose turn is running: a conversation answering a question, a task's own
+session, or a session OpenCode made for a subagent. A question that would be
+the eleventh is refused, saying how many run, and `/vigo status` names the
+count when more than one agent runs.
 
 In a direct message, reply to a message the bot posted and the reply is the
 next question in the same session. Its answer is posted in the DM as a message.
@@ -528,10 +539,13 @@ turns, so that line is the one that says it is finished.
 
 A task does not run in the conversation's session. It gets a session of its
 own, named for the channel and the first words of the task, and it runs under
-the device's subagent agent (`general` in OpenCode) instead of the default one.
+the device's coding agent (`build` in OpenCode), a primary agent rather than a
+subagent: OpenCode runs a subagent only in a child session through its
+`subagent` tool, and a subagent cannot start another subagent, so a subagent
+agent could not follow the rule above.
 A goal goes the same way, whether the wording of an ask made it or
 `/vigo goal objective:…` set it: it runs in a session of its own under that
-subagent agent, so the conversation keeps answering questions while the goal
+coding agent, so the conversation keeps answering questions while the goal
 works. A channel that already holds a goal keeps its session, so a second
 objective steers the work that runs instead of starting another.
 OpenCode lists that session, so the person can open it there and carry on with
@@ -794,7 +808,7 @@ on Windows and says why.
 python3 -m unittest discover -s tests -t . -v   # the canonical run
 python3 -m tests.parallel                       # the same suite on threads
 tests/ci-local.sh                               # what CI runs, as far as this machine can
-tests/ci-codespace.sh                           # the Linux half, in a Codespace
+tests/ci-codespace.sh --machine standardLinux32gb   # the Linux half, in a Codespace
 tests/in-containers.sh                          # Linux 3.12-3.14, in podman
 tests/in-codespace.sh                           # Linux 3.12-3.14, inside a codespace
 ```
@@ -803,7 +817,9 @@ tests/in-codespace.sh                           # Linux 3.12-3.14, inside a code
 0.17.4 in a container, the secrets check, and the Linux matrix in podman. It names what it cannot answer, which is
 Windows and any Python that is not installed. It takes about a minute and a half on this Mac.
 
-`tests/ci-codespace.sh` is the Linux half of CI, on a Linux machine rather than this one. It creates a Codespace,
+`tests/ci-codespace.sh` is the Linux half of CI, on a Linux machine rather than this one. A run with no terminal
+there passes `--machine`, because `gh codespace create` would ask for one: this repository's plan offers
+`basicLinux32gb` and `standardLinux32gb`. The script creates a Codespace,
 copies this working tree into it (uncommitted changes included, so nothing has to be pushed first), runs
 `tests/in-codespace.sh` there, prints the result, and deletes the codespace however the run ends. `--keep` stops it
 instead, so the next run is quick; a stopped codespace still holds storage against the quota, so delete it when done.

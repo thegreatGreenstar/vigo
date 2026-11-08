@@ -4,7 +4,7 @@
 #
 #   tests/ci-codespace.sh                     # create, run, delete
 #   tests/ci-codespace.sh --keep              # stop it instead, so a rerun is fast
-#   tests/ci-codespace.sh --machine standardLinux8Core
+#   tests/ci-codespace.sh --machine standardLinux32gb   # a run with no terminal
 #   tests/ci-codespace.sh --base main         # the ref whose .devcontainer to use
 #   tests/ci-codespace.sh --name my-run       # the display name to create
 #
@@ -120,6 +120,7 @@ fi
 created=$(gh codespace create "$@" | tail -1 | tr -d '\r')
 if [ -z "$created" ]; then
     say "gh created no codespace"
+    [ -n "$machine" ] || say "gh asks for a machine when no terminal can answer: pass --machine"
     exit 1
 fi
 say "created $created"

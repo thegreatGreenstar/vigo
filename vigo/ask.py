@@ -43,7 +43,9 @@ END_EVENTS = {
 # What every piece of work is told, a question and a goal alike: the plan is a
 # subscription, and a fan-out that ignores it buys failures instead of answers.
 # Three is a ceiling, not a target: one subagent is as right as three when one
-# is what the work needs.
+# is what the work needs.  The session that runs the work must be a primary
+# agent, because OpenCode runs a subagent only through the subagent tool, and a
+# subagent cannot start another one.
 SUBTASKS = 3
 # What every piece of work is told about the thing it is part of: the model has
 # no other way to know it is Vigo, and a question like "explain how Vigo works"
@@ -72,7 +74,11 @@ STAYS = (
 RULES = (
     f"You may hand parts of this work to subagents, at most {SUBTASKS} at a time, "
     "only where it helps: use fewer when fewer are enough, and none when none is. "
-    "Report what they did.\n\n"
+    "A subagent starts with fresh context: it does not see this conversation, and "
+    "it cannot start another subagent. Give each one the exact files, the exact "
+    "result and the constraints, start independent parts in the background, and "
+    "read every report before you trust it. The judgement and the final answer "
+    "stay with you. Report what they did.\n\n"
     "When the work went to GitHub, report it the way a maintainer reports it there: "
     "the verdict in the first sentence, then the facts that change what the reader "
     "does next, each with its number (a pull request or issue, a commit, a file and "
@@ -136,6 +142,19 @@ def _recent(stamp: object, seconds: float) -> bool:
     return abs(time.time() - when.timestamp()) <= seconds
 
 
+def _grown(line: str, note: str, limit: int = 2000) -> str:
+    """The line with the note at its end, and the note whole.
+
+    A line near Discord's limit gives way to the note it gains, with an
+    ellipsis where the line was cut, so the note is never the half that is
+    lost.
+    """
+    room = limit - len(note) - 2
+    if len(line) > room:
+        line = line[:max(room - 1, 0)].rstrip() + "…"
+    return f"{line}\n\n{note}"
+
+
 class Host(Protocol):
     """What a run needs from the app: its settings, what it remembers, its Discord."""
 
@@ -159,9 +178,10 @@ def open_session(app: Host, client: OpenCode, device: Device, channel_id: str,
     with the channel it belongs to.
 
     `worker` makes a session of the task's own, never the channel's: the work
-    runs there under `agent`, and OpenCode lists it, so the person can open
-    that session and carry on in it directly.  The channel remembers it, so a
-    follow-up and `/vigo status` reach the session the work is in.
+    runs there under `agent`, a primary agent, and OpenCode lists it, so the
+    person can open that session and carry on in it directly.  The channel
+    remembers it, so a follow-up and `/vigo status` reach the session the work
+    is in.
     """
     if worker:
         created = client.create_session(
@@ -326,30 +346,46 @@ class Ask:
             log.debug(f"ask: cannot edit the message ({error})")
             return False
 
-    def _append(self, content: str) -> bool:
-        """Add a line to the end of the line this question already shows.
+    def _set_line(self, content: str) -> bool:
+        """Put this text on the line the question already shows, if it has one.
 
         A question has one line in the channel: the queued line, or the got-it
-        line.  A note about the same question belongs at the end of it, not in
-        a second message beside it.  False when there is no line to edit, or
-        Discord will not take the edit: the caller says it another way then.
+        line.  A note or an error about the same question belongs on that line,
+        not in a second message beside it.  The channel's own id carries it,
+        and the id still works when Discord no longer takes the interaction's
+        token, which is the case for a question that waited in the queue past
+        the token's fifteen minutes.  The token is the way when Discord
+        returned no id.  False when there is no line, or Discord takes neither
+        way.
         """
         if not self.shown:
             return False
-        text = f"{self.shown}\n\n{content}"[:2000]
+        said = content[:2000]
+        if self.message_id:
+            try:
+                self.app.api.edit(self.channel_id, self.message_id, {
+                    "content": said,
+                    "allowed_mentions": {"parse": []},
+                })
+                self.shown = said
+                return True
+            except Exception as error:
+                log.info(f"ask: cannot edit the question's line ({error})")
         if not self.reply_in_channel:
-            return self._edit(text)
-        if not self.message_id:
+            if self._edit(said):
+                self.shown = said
+                return True
+        return False
+
+    def _append(self, content: str) -> bool:
+        """Add a line to the end of the line this question already shows.
+
+        The note stays whole even when the line is near Discord's limit: a note
+        cut in half says nothing about why the run continues.
+        """
+        if not self.shown:
             return False
-        try:
-            self.app.api.edit(self.channel_id, self.message_id, {
-                "content": text,
-                "allowed_mentions": {"parse": []},
-            })
-            return True
-        except Exception as error:
-            log.info(f"ask: cannot edit the question's line ({error})")
-            return False
+        return self._set_line(_grown(self.shown, content))
 
     def _final(self, body: str, outcome: str, cost: float, tokens: dict,
                steps: int = 0, context: int = 0) -> None:
@@ -553,12 +589,16 @@ class Ask:
         return False
 
     def _tell(self, content: str) -> None:
-        """An error from the run, visible even when the deferred message is gone."""
-        if self.reply_in_channel or not self.token:
-            self._late_answer(content)
+        """An error from the run, on the question's line when it still has one."""
+        if self.shown:
+            if self._set_line(content):
+                return
+        elif self.token and not self.reply_in_channel and self._edit(content):
+            # No line to grow, but the deferred message of a live interaction
+            # is still this run's to edit: that is where the person is looking.
+            # A turn carried over a restart has no token: its line is gone.
             return
-        if not self._edit(content):
-            self._late_answer(content)
+        self._late_answer(content)
 
     # -- the session ------------------------------------------------------
 
@@ -567,13 +607,14 @@ class Ask:
             return open_session(
                 self.app, self.client, self.device, self.channel_id, self.new, self.title,
             )
-        # A task is work, not a question: it runs in a session of its own, with
-        # a subagent, so the conversation stays a conversation and the person
-        # can open the work where it happens.
+        # A task is work, not a question: it runs in a session of its own, so
+        # the conversation stays a conversation and the person can open the
+        # work where it happens.  Its agent is a primary one, because the rule
+        # lets the work delegate subagents, and a subagent agent cannot.
         self.task_title = f"{self.title} · {text.subject(self.prompt, 40)}"
         return open_session(
             self.app, self.client, self.device, self.channel_id, self.new,
-            self.task_title, agent=self.client.subagent_agent(), worker=True,
+            self.task_title, agent=self.client.worker_agent(), worker=True,
         )
 
     # -- the answer -------------------------------------------------------
