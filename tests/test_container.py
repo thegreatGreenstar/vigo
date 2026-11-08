@@ -60,6 +60,11 @@ class Image(unittest.TestCase):
         for tool in ("clang", "cmake", "nodejs", "vulkan-validationlayers", "opencode"):
             self.assertNotIn(tool, daemon)
 
+    def test_pacman_can_run_without_a_landlock_sandbox(self) -> None:
+        # pacman 7.1's sandbox needs Landlock, which the podman machine on macOS
+        # refuses; without the switch the build stops before it fetches anything.
+        self.assertIn("DisableSandbox", read("Containerfile.agent"))
+
 
 class Pod(unittest.TestCase):
     def setUp(self) -> None:
@@ -130,6 +135,12 @@ class Pod(unittest.TestCase):
             self.agent,
         )
 
+    def test_the_daemon_mounts_its_settings_once(self) -> None:
+        # podman refuses a destination twice.  The macOS branch used to repeat
+        # the settings and the peer password, so the daemon never started there.
+        self.assertEqual(self.daemon.count("dst=/config/vigo.json"), 1)
+        self.assertEqual(self.daemon.count("dst=/config/peer.password"), 1)
+
     def test_agent_data_cannot_contain_protected_paths(self) -> None:
         self.assertIn("VIGO_AGENT_DATA must not be the home directory", self.text)
         self.assertIn("contains the protected", self.text)
@@ -153,6 +164,14 @@ class Images(unittest.TestCase):
         run = read("run.sh")
         self.assertIn("agent_image=", run)
         self.assertIn('podman run "$@" "$agent_image"', run)
+
+    def test_the_arm64_base_has_an_arm64_image(self) -> None:
+        # docker.io/library/archlinux carries no arm64 manifest, so it cannot
+        # start on the podman machine of an Apple silicon Mac.  Arch Linux ARM
+        # is the arm64 build of the same distribution.
+        build = (ROOT / "deploy" / "build-container.sh").read_text(encoding="utf-8")
+        self.assertNotIn("library/archlinux", build)
+        self.assertIn("archlinuxarm", build)
 
 
 class Services(unittest.TestCase):
