@@ -3,7 +3,7 @@ import struct
 import threading
 import unittest
 
-from vigo.gateway import Gateway, GatewayClosed, WebSocket, gateway_url_ok
+from vigo.gateway import FatalGatewayError, Gateway, GatewayClosed, WebSocket, gateway_url_ok
 from tests.fake_gateway import FakeGateway
 
 
@@ -57,6 +57,28 @@ class GatewayTest(unittest.TestCase):
         self.assertEqual(self.fake.resumes[0]["session_id"], "sess_test")
         self.assertTrue(self.fake.wait_for(lambda: len(self.fake.identifies) >= 2, 8),
                         "the daemon resumed a session Discord had ended, and never identified again")
+
+    def test_a_refused_identify_stops_the_daemon_instead_of_retrying(self):
+        self.fake.refuse_identify = True
+        self.gateway = Gateway(self.fake.url, "token", 1,
+                               lambda event, data: None, self.states.append)
+        raised: list[BaseException] = []
+
+        def run() -> None:
+            try:
+                self.gateway.run()
+            except BaseException as error:  # a retry shows instead as a live thread
+                raised.append(error)
+
+        thread = threading.Thread(target=run, daemon=True)
+        thread.start()
+        thread.join(5)
+        self.assertFalse(thread.is_alive(),
+                         "the daemon kept identifying after Discord refused the token")
+        self.assertEqual(len(raised), 1)
+        self.assertIsInstance(raised[0], FatalGatewayError)
+        self.assertEqual(len(self.fake.identifies), 1,
+                         "the daemon identified again after Discord refused it")
 
     def test_a_status_set_before_the_connection_goes_out_with_the_identify(self):
         self.gateway = Gateway(self.fake.url, "token", 1,

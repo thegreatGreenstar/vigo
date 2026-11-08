@@ -1130,6 +1130,7 @@ the trade a codespace makes, and it costs one manual step.
 | What you see | What it means |
 | --- | --- |
 | `resuming` then `closed with 4003` in the log, and the bot stays quiet | Discord ended the session, and the daemon was resuming it again on every retry; it now drops the dead session and identifies on the next connection |
+| `closed with 4003` before any `ready`, and the process exits | Discord refused the token at identify; the daemon stops rather than sending the same token again, so the supervisor's restart meets the same refusal until the token is right |
 | `closed with 4004` | the token is not the bot's; reset it and copy it again |
 | `closed with 4014` | the bot asked for an intent Discord does not allow it; the bot asks only for `DIRECT_MESSAGES` |
 | `no device answers` | no `opencode serve` is reachable from this daemon: check the URL, the port, and the password |

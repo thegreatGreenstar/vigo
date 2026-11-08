@@ -72,6 +72,9 @@ class FakeGateway:
         # Discord closes a resume whose session it no longer holds: 4003.
         # A test sets this to answer every resume that way.
         self.refuse_resume = False
+        # Discord answers an identify it will not take with 4003 too, when
+        # the token is wrong.  A test sets this to refuse every identify.
+        self.refuse_identify = False
         self.thread = threading.Thread(target=self._serve, daemon=True)
         self.thread.start()
 
@@ -167,6 +170,14 @@ class FakeGateway:
                 if op == 2:
                     with self.lock:
                         self.identifies.append(message.get("d") or {})
+                    if self.refuse_identify:
+                        try:
+                            _send_frame(connection,
+                                        struct.pack("!H", 4003) + b"Authentication failed",
+                                        opcode=8)
+                        finally:
+                            connection.close()
+                        return
                     _send_frame(connection, json.dumps({
                         "op": 0, "t": "READY", "s": 1,
                         "d": {"session_id": self.session_id,
