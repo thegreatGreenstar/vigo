@@ -564,11 +564,13 @@ class App:
                       working: bool, now: float) -> int:
         """How many answering servers have a session at work.
 
-        A listing of each server's sessions is the only record of a turn that
-        another daemon started, and it is not free: the answer is kept for
-        `BUSY_EVERY` seconds, and thrown away when the count of servers that
-        answer changes or this daemon starts or stops thinking.  That last part
-        is what turns the light red as soon as an ask runs.
+        The device's own list of running sessions is the only record of a turn
+        that another daemon started.  A busy stamp is not: a restart leaves it
+        behind with no turn, and no stale stamp may turn the light red for
+        ever.  The read is not free, so the answer is kept for `BUSY_EVERY`
+        seconds, and thrown away when the count of servers that answer changes
+        or this daemon starts or stops thinking.  That last part is what turns
+        the light red as soon as an ask runs.
         """
         if (up == self.busy_up and working == self.busy_working
                 and now - self.busy_at < (showing.BUSY_WORKING if working
@@ -580,13 +582,13 @@ class App:
                 continue
             device = state.device
             try:
-                sessions = OpenCode(
+                active = OpenCode(
                     device.url, device.password, timeout=2.0,
-                ).sessions(limit=100)
+                ).active()
             except OpenCodeError as error:
                 log.debug(f"presence: {device.name}: busy is not known ({error.message})")
                 continue
-            if any(busy_since(info) is not None for info in sessions):
+            if active:
                 busy += 1
         self.busy_up = up
         self.busy_working = working
@@ -647,19 +649,21 @@ class App:
             self.presence.wait(showing.TICK)
 
     def _running_agents(self) -> int:
-        """Agents at work on the plan: a busy session on any device is one.
+        """Agents at work on the plan: a running session on any device is one.
 
         One subscription pays for both machines, so the count is over both: ten
-        at once is the concurrency this keeps to.  A device that does not answer
+        at once is the concurrency this keeps to.  The device's own list is
+        what runs, because a busy stamp left by a restart is not an agent and
+        would count against the plan for ever.  A device that does not answer
         cannot be counted, and its work is the ask's problem, not this guard's.
         """
         total = 0
         for device in self.config.devices.values():
             try:
-                sessions = OpenCode(device.url, device.password).sessions(limit=100)
+                active = OpenCode(device.url, device.password).active()
             except OpenCodeError:
                 continue
-            total += sum(1 for info in sessions if busy_since(info) is not None)
+            total += len(active)
         return total
 
     def _describe(self, prompt: str, device_name: str) -> str:
@@ -2544,7 +2548,7 @@ class App:
         for client, active, listed in answers.values():
             for info in listed:
                 busy = busy_since(info)
-                if busy is None:
+                if busy is None or str(info.get("id") or "") not in active:
                     continue
                 metadata = info.get("metadata")
                 channel = (str(metadata.get(asking.CHANNEL_KEY) or "")
