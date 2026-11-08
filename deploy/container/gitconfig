@@ -1,0 +1,21 @@
+# Who a commit belongs to inside the pod, and how the macOS agent signs one.
+#
+# The Linux agent's own ~/.gitconfig overrides this with its TPM public key.
+# On macOS the key is a podman secret at /run/secrets/vigo-ssh-key; ssh-keygen
+# can sign with that private key directly, so the agent still signs every commit.
+[user]
+	name = Vigo
+	email = 77800979+VIGO-VI@users.noreply.github.com
+	signingkey = /run/secrets/vigo-ssh-key
+
+[init]
+	defaultBranch = main
+
+[gpg]
+	format = ssh
+
+[commit]
+	gpgsign = true
+
+[tag]
+	gpgsign = true

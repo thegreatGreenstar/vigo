@@ -195,6 +195,13 @@ def _in_container() -> bool:
     return any(Path(mark).exists() for mark in ("/run/.containerenv", "/.dockerenv"))
 
 
+# A marker, not a command: in a container the bot is PID 1, and the kernel
+# drops every signal sent to PID 1 from inside its own namespace, SIGKILL
+# included.  The process ends itself instead, and the unit that runs the
+# container starts it again.
+EXIT_SELF = ["vigo-exit-self"]
+
+
 def _supervisor(checkout: Path, container: bool | None = None) -> list[str] | None:
     """The command that restarts this daemon, when a supervisor runs it here.
 
@@ -207,9 +214,7 @@ def _supervisor(checkout: Path, container: bool | None = None) -> list[str] | No
     here = checkout.resolve()
     in_container = _in_container() if container is None else container
     if in_container:
-        # SIGKILL, because a signal with a default action is ignored by PID 1,
-        # which the bot is when the image's entry point starts it.
-        return ["sh", "-c", f"kill -KILL {os.getpid()}"]
+        return EXIT_SELF
     if _run(["systemctl", "--user", "is-active", "--quiet", "vigo.service"],
             here, timeout=10.0)[0] == 0:
         return ["systemctl", "--user", "restart", "vigo.service"]
@@ -238,6 +243,10 @@ def _restart_later(command: list[str], here: Path,
             before_restart()
         except Exception as error:  # the restart must still happen
             log.failure("update: cannot write down the work this restart cuts off", error)
+    if command == EXIT_SELF:
+        # The container's PID 1 ends itself; the unit outside starts it again.
+        # Nothing after this runs, as a kill would leave nothing after it.
+        os._exit(0)
     code, said = _run(command, here, timeout=30.0)
     if code != 0:
         log.error(f"update: restart refused ({said or code})")

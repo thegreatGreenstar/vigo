@@ -1,12 +1,13 @@
-import os
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from vigo import __version__, httpc
 from vigo.peer import (
+    EXIT_SELF,
     PeerClient,
     PeerServer,
     _in_container,
@@ -178,10 +179,20 @@ class SupervisorTest(unittest.TestCase):
     def test_a_container_is_restarted_by_its_supervisor(self):
         """No systemd and no launchd run inside one; the unit outside does."""
         with tempfile.TemporaryDirectory() as directory:
-            self.assertEqual(
-                _supervisor(Path(directory), container=True),
-                ["sh", "-c", f"kill -KILL {os.getpid()}"],
-            )
+            self.assertEqual(_supervisor(Path(directory), container=True), EXIT_SELF)
+
+    def test_a_container_ends_itself_because_pid_one_ignores_signals(self):
+        """The kernel drops a signal to PID 1 from inside its own namespace."""
+        with tempfile.TemporaryDirectory() as directory:
+            marker = Path(directory) / "order.txt"
+
+            def hook() -> None:
+                marker.write_text("hook", encoding="utf-8")
+
+            with mock.patch("vigo.peer.os._exit") as exit_:
+                _restart_later(EXIT_SELF, Path(directory), hook, delay=0.0)
+            self.assertEqual(marker.read_text(encoding="utf-8"), "hook")
+            exit_.assert_called_once_with(0)
 
     def test_a_checkout_no_supervisor_runs_is_not_restarted(self):
         if _in_container():
@@ -304,6 +315,21 @@ class PeerPasswordTest(unittest.TestCase):
         )
         app = App(settings, api=None, state=None)
         self.assertEqual(app.peer_password(), "mine")
+
+    def test_a_peer_password_overrides_the_device_password(self):
+        from vigo.app import App
+        from vigo.config import Device, Config
+
+        settings = Config(
+            token="t", app_id="1", owner="2", device="macbook", password="",
+            peer_password="peer-only",
+            devices={
+                "macbook": Device("macbook", "http://127.0.0.1:1", "/a", "opencode"),
+            },
+        )
+        app = App(settings, api=None, state=None)
+        self.assertEqual(app.peer_password(), "peer-only")
+        self.assertEqual(app._peer_secret(settings.devices["macbook"]), "peer-only")
 
     def test_a_shared_password_is_still_used(self):
         from vigo.app import App
