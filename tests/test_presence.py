@@ -143,11 +143,11 @@ class AppPresenceTest(unittest.TestCase):
         one cannot reach: only the peer port answers, which is what the test
         is about.
         """
-        peer = PeerServer("127.0.0.1", 0, "fresh-device", "pw",
+        peer = PeerServer("127.0.0.1", 0, "pc", "pw",
                           status=lambda: status).start()
         self.addCleanup(peer.stop)
         entry = {
-            "name": "fresh-device", "url": "http://127.0.0.1:1",
+            "name": "pc", "url": "http://127.0.0.1:1",
             "directory": "/tmp/other",
             "peer": f"http://127.0.0.1:{peer.server.server_address[1]}",
         }
