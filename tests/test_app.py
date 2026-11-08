@@ -18,6 +18,7 @@ from tests.support import TempDir, load_settings, question_of
 
 OWNER = "145512144145512144"
 STRANGER = "888888888888888888"
+GUEST = "424242424242424242"
 CHANNEL = "chan_1"
 
 
@@ -186,6 +187,106 @@ class AppTest(unittest.TestCase):
                      options=[{"name": "prompt", "type": 3, "value": "hi"}])
             self.assertTrue(self.discord.wait_for(
                 lambda: any("hello" in content for content in self.said())))
+
+    # -- the guest share of the plan ---------------------------------------
+
+    def test_an_approved_persons_session_carries_the_mark(self):
+        """The device records whose session it is, for the plan's accounting."""
+        self.device.script = [("idle", "done")]
+        with TempDir() as directory:
+            app = self.make(directory, users=[GUEST])
+            self.use(app, commands.ASK, who=GUEST, options=[
+                {"name": "prompt", "type": 3, "value": "what is a pointer"},
+            ])
+            self.assertTrue(self.discord.wait_for(
+                lambda: any("done" in content for content in self.said()), 10))
+        session = self.device.prompts[0][0]
+        self.assertEqual(self.device.sessions[session]["metadata"]["vigoGuest"], GUEST)
+        self.assertEqual(self.device.sessions[session]["metadata"][asking.CHANNEL_KEY],
+                         f"{CHANNEL}:{GUEST}")
+
+    def test_a_session_from_before_the_mark_is_marked_when_it_is_used(self):
+        """A guest session made by an older vigo is marked on its next ask."""
+        session = self.device.new_session(
+            metadata={asking.CHANNEL_KEY: f"{CHANNEL}:{GUEST}"})
+        self.device.script = [("idle", "done")]
+        with TempDir() as directory:
+            app = self.make(directory, users=[GUEST])
+            self.use(app, commands.ASK, who=GUEST, options=[
+                {"name": "prompt", "type": 3, "value": "what is a pointer"},
+            ])
+            self.assertTrue(self.discord.wait_for(
+                lambda: any("done" in content for content in self.said()), 10))
+        self.assertEqual(len(self.device.prompts), 1)
+        self.assertEqual(self.device.prompts[0][0], session, "the old session is reused")
+        self.assertEqual(self.device.sessions[session]["metadata"]["vigoGuest"], GUEST)
+
+    def test_the_share_refuses_a_guest_before_the_device_is_asked(self):
+        self.device.meters = {"monthly": 90.0}
+        used = self.device.new_session(metadata={"vigoGuest": GUEST})
+        self.device.add_message(used, "assistant", tokens={
+            "input": 1_000_000, "output": 0, "reasoning": 0})
+        with TempDir() as directory:
+            app = self.make(
+                directory, users=[GUEST],
+                guests={"hourly": 0, "daily": 0,
+                        "perUserHourly": 0, "perUserDaily": 0},
+            )
+            self.use(app, commands.ASK, who=GUEST, options=[
+                {"name": "prompt", "type": 3, "value": "what is a pointer"},
+            ])
+            self.assertTrue(self.discord.wait_for(
+                lambda: any("share of the owner's plan" in content
+                            for content in self.said()), 10))
+        self.assertEqual(self.device.prompts, [], "a refusal costs the plan nothing")
+
+    def test_a_guest_below_the_share_still_asks(self):
+        self.device.meters = {"monthly": 5.0}
+        self.device.script = [("idle", "the answer")]
+        with TempDir() as directory:
+            app = self.make(directory, users=[GUEST])
+            self.use(app, commands.ASK, who=GUEST, options=[
+                {"name": "prompt", "type": 3, "value": "what is a pointer"},
+            ])
+            self.assertTrue(self.discord.wait_for(
+                lambda: any("the answer" in content for content in self.said()), 10))
+        self.assertEqual(len(self.device.prompts), 1)
+
+    def test_the_owner_is_never_capped_by_the_guest_share(self):
+        self.device.meters = {"monthly": 100.0}
+        self.device.limited_meters = ("rolling",)
+        self.device.script = [("idle", "the owner's answer")]
+        with TempDir() as directory:
+            app = self.make(directory, users=[GUEST])
+            self.use(app, commands.ASK, options=[
+                {"name": "prompt", "type": 3, "value": "what is a pointer"},
+            ])
+            self.assertTrue(self.discord.wait_for(
+                lambda: any("the owner's answer" in content for content in self.said()), 10))
+        self.assertEqual(len(self.device.prompts), 1)
+
+    def test_the_status_names_what_guests_have_used(self):
+        with TempDir() as directory:
+            app = self.make(directory, users=[GUEST])
+            self.use(app, commands.STATUS)
+            self.assertTrue(self.discord.wait_for(
+                lambda: any("**Guests**" in content for content in self.said()), 10))
+        said = next(content for content in self.said() if "**Guests**" in content)
+        self.assertIn("33.3%", said)
+        self.assertIn("today", said)
+
+    def test_an_approved_persons_one_off_is_refused(self):
+        """A one-off leaves no session, so its use of the plan cannot be counted."""
+        self.device.answer = "a " * 1200
+        with TempDir() as directory:
+            app = self.make(directory, users=[GUEST])
+            self.use(app, commands.QUICK, who=GUEST, options=[
+                {"name": "prompt", "type": 3, "value": "say hi"},
+            ])
+            self.assertTrue(self.discord.wait_for(
+                lambda: any("is the owner's" in content for content in self.said()), 10))
+        self.assertEqual(self.device.generated, [], "nothing was sent to the device")
+        self.assertEqual(self.discord.messages.get(CHANNEL, []), [])
 
     # -- asking -----------------------------------------------------------
 
