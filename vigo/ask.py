@@ -314,6 +314,20 @@ def _adopt(client: OpenCode, channel_id: str) -> dict | None:
 
 
 @dataclass
+class Resume:
+    """Where a turn that an upgrade's restart interrupted had got to.
+
+    The session is the device's, which kept working while vigo restarted, and
+    the two marks are what tell this turn from the ones before it: the time of
+    the prompt, and the newest message that was there when it went in.
+    """
+
+    session: str
+    prompted_at: float
+    before: str
+
+
+@dataclass
 class Run:
     session: str
     device: str
@@ -321,6 +335,9 @@ class Run:
     prompt: str = ""
     user: str = ""     # who asked, so an approved asker's in-flight work is counted
     stop: threading.Event = field(default_factory=threading.Event)
+    # The question that owns this run, which an upgrade writes down before its
+    # restart: the queue shows a run, but only the question knows how to end it.
+    ask: Ask | None = None
 
     @property
     def elapsed(self) -> float:
@@ -334,7 +351,8 @@ class Ask:
                  device_name: str, prompt: str, new: bool, title: str,
                  hidden: bool = False, goal: str = "", reply_in_channel: bool = False,
                  private: bool = False, note: str = "",
-                 asked_at: float = 0.0, session_key: str = "") -> None:
+                 asked_at: float = 0.0, session_key: str = "",
+                 resume: Resume | None = None) -> None:
         self.app = app
         self.token = token
         self.channel_id = channel_id
@@ -343,8 +361,11 @@ class Ask:
         self.user_id = user_id
         # The channel's session is the owner's conversation.  An approved
         # asker gets a session of their own, so their question never reads the
-        # owner's history and the owner never reads theirs.
-        self.session_key = session_key or channel_id
+        # owner's history and the owner never reads theirs.  A run carried
+        # over a restart computes it the same way, because it knows who asked.
+        self.session_key = session_key or (
+            channel_id if user_id == app.config.owner else f"{channel_id}:{user_id}"
+        )
         self.device_name = device_name
         self.device = app.config.device_named(device_name)
         self.client = OpenCode(self.device.url, self.device.password)
@@ -359,8 +380,10 @@ class Ask:
         # When Discord received the interaction, not when the run starts: the
         # token's 15 minutes begin there, and the queue can hold the run back.
         self.asked_at = asked_at or time.monotonic()
+        self.resume = resume
         self.run = Run(session="", device=device_name, started=time.monotonic(),
                        prompt=prompt, user=user_id)
+        self.run.ask = self
         self.buffer = ""
         self.lease: leasing.Lease | None = None
         self.waiting = False
@@ -507,9 +530,10 @@ class Ask:
         if self._already_answered(parts[0]):
             # Two runs can watch one device turn, and both would post it.
             log.info("ask: the channel already has that answer; not posting it twice")
-        elif self.reply_in_channel:
-            # The question came as a message, so the answer is one: there is no
-            # interaction to edit and nothing that expires.
+        elif self.reply_in_channel or not self.token:
+            # The question came as a message, or it outlived the interaction
+            # that carried it over a restart: either way there is nothing to
+            # edit that Discord still takes, so the answer is a message.
             for part in parts:
                 self._late_answer(part, check=False)
         else:
@@ -697,9 +721,10 @@ class Ask:
         if self.shown:
             if self._set_line(content):
                 return
-        elif not self.reply_in_channel and self._edit(content):
+        elif self.token and not self.reply_in_channel and self._edit(content):
             # No line to grow, but the deferred message of a live interaction
             # is still this run's to edit: that is where the person is looking.
+            # A turn carried over a restart has no token: its line is gone.
             return
         if not self._token_live() or not self._edit(content):
             self._late_answer(content)
@@ -738,7 +763,17 @@ class Ask:
         tokens = {"input": 0, "output": 0, "reasoning": 0}
         steps = 0
         context = 0
-        for message in reversed(messages):
+        # The message that was newest when the prompt went in ends the turn
+        # before this one, and nothing older is part of this answer.  A turn
+        # that a restart interrupted reads its answer after the fact, and the
+        # time below is a guess where the id is a fact.
+        rows = list(reversed(messages))
+        if self.before:
+            for position, message in enumerate(rows):
+                if str(message.get("id") or "") == self.before:
+                    rows = rows[position + 1:]
+                    break
+        for message in rows:
             if message.get("type") != "assistant":
                 continue
             created = float((message.get("time") or {}).get("created") or 0)
@@ -851,6 +886,25 @@ class Ask:
 
     # -- the run ----------------------------------------------------------
 
+    def record(self) -> dict:
+        """What a restart for an upgrade must keep to carry this turn over.
+
+        It holds no question and no answer: the device has both, and the state
+        file keeps no conversation text.  It holds no interaction token either,
+        because that died with the interaction and a token is the one secret of
+        a run.  What is here is where the turn is and how to tell it from the
+        ones before it.
+        """
+        return {
+            "user_id": self.user_id,
+            "device": self.device_name,
+            "hidden": self.hidden,
+            "goal": bool(self.goal),
+            "session": self.run.session,
+            "prompted_at": self.prompted_at,
+            "before": self.before,
+        }
+
     def run_it(self) -> None:
         try:
             self._run()
@@ -874,6 +928,9 @@ class Ask:
             # asked does not run on access that has since been taken back.
             log.info("ask: the asker's access ended before the run started")
             self._tell("Your access ended before this question started, so it did not run.")
+            return
+        if self.resume is not None:
+            self._resume()
             return
         try:
             session = self._open_session()
@@ -911,8 +968,45 @@ class Ask:
             self._tell("The device would not take the question.")
             return
 
-        # The wait for a free device is not time on the turn, so the deadline
-        # starts here, not when the run did.
+        outcome = self._watch(session, stream)
+        session_stop.set()
+        stream.close()
+        self._finish(session, outcome)
+
+    def _resume(self) -> None:
+        """Carry on a turn that a restart for an upgrade cut off.
+
+        Its prompt reached the device before the old process ended, and the
+        device kept working on it, so nothing is asked again and nothing is
+        claimed: this watches the same session to its end and posts the answer
+        the channel would have had.  A turn that ended while the daemon was
+        down left no event to read, so the session itself is asked first.
+        """
+        session = self.resume.session
+        self.run.session = session
+        self.prompted_at = self.resume.prompted_at
+        self.before = self.resume.before
+        self.app.register_run(self.channel_id, self.run)
+        session_stop = threading.Event()
+        stream = EventStream(self.device.url, self.device.password, session_stop).start()
+        stream.ready.wait(3.0)
+        # A form the agent asked while no daemon listened is still on the
+        # device, and the turn does not move until somebody answers it.
+        self._pending_forms(session)
+        # The stream carries nothing from before it connected, so a turn that
+        # ended in between is read from the session's newest message.
+        outcome = ("succeeded" if self._verdict(session) == "finished"
+                   else self._watch(session, stream))
+        session_stop.set()
+        stream.close()
+        self._finish(session, outcome)
+
+    def _watch(self, session: str, stream: EventStream) -> str:
+        """Watch the turn to its end, and say how it ended.
+
+        The wait for a free device is not time on the turn, so the deadline
+        starts here, not when the run did.
+        """
         deadline = time.monotonic() + self.app.config.timeout
         noted = False
         stream_dead = False
@@ -997,12 +1091,12 @@ class Ask:
                         outcome = "succeeded"
                         break
 
-
         if not outcome:
             outcome = "interrupted" if self.run.stop.is_set() else "succeeded"
-        session_stop.set()
-        stream.close()
+        return outcome
 
+    def _finish(self, session: str, outcome: str) -> None:
+        """The turn is over: read its answer, and post it where it belongs."""
         answer, cost, tokens, steps, context = self._collect(session)
         self._final(answer, outcome, cost, tokens, steps, context)
         if self.failure:
@@ -1010,13 +1104,15 @@ class Ask:
         log.info(f"ask: done on {self.device_name} ({outcome})")
 
     def _is_idle(self, session: str) -> bool:
-        try:
-            for message in self.client.messages(session, limit=6, order="desc"):
-                if message.get("type") == "idle":
-                    return True
-        except OpenCodeError:
-            pass
-        return False
+        """Whether this turn has ended, judged by its own idle.
+
+        A session keeps the idle of every turn it finished, so one from the
+        turn before is not this turn's end.  Only an idle newer than the
+        message that was newest at the prompt counts, which is what `_verdict`
+        reads: a session with a long turn and a short turn in it ended early
+        here once, and the answer stopped mid-sentence.
+        """
+        return self._verdict(session) == "finished"
 
     def _wait_for_turn(self, session: str, until: float) -> bool:
         """Wait until the device is free and this run holds the channel.
