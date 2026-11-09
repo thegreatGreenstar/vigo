@@ -334,6 +334,41 @@ def _inline(value: object, size: int) -> str:
     return text.shorten(" ".join(str(value).split()), size).replace("`", "'")
 
 
+def _merge_queue_row(old: dict | None, new: dict) -> dict:
+    """One channel's row, from what two daemons say about it.
+
+    The same channel can be in this daemon's line and a peer's, and both may
+    know a part of it: one the run, the other the questions behind it.  The
+    merged row is what `/vigo queue` reads, so the answer does not change with
+    whichever daemon won the interaction.
+    """
+    if old is None:
+        return dict(new)
+    merged = dict(old)
+    if str(merged.get("title") or "") in ("", "untitled") and new.get("title"):
+        merged["title"] = new["title"]
+    if not merged.get("prompt") and new.get("prompt"):
+        merged["prompt"] = str(new["prompt"])
+    old_running = merged.get("running")
+    new_running = new.get("running")
+    if isinstance(new_running, (int, float)) and (
+            not isinstance(old_running, (int, float)) or new_running >= old_running):
+        merged["running"] = new_running
+        for key in ("prompt", "device"):
+            if new.get(key):
+                merged[key] = new[key]
+    waiting = [str(prompt) for prompt in (merged.get("waiting") or [])]
+    for prompt in new.get("waiting") or []:
+        said = str(prompt)
+        if said and said not in waiting:
+            waiting.append(said)
+    merged["waiting"] = waiting
+    merged["agents"] = max(int(merged.get("agents") or 0), int(new.get("agents") or 0))
+    if new.get("device"):
+        merged.setdefault("device", new["device"])
+    return merged
+
+
 class App:
     def __init__(self, config: Config, api: Discord | None = None, state: State | None = None,
                  checkout: Path | None = None) -> None:
@@ -527,12 +562,63 @@ class App:
 
         The owner pays for every turn on the plan and every device holds one
         conversation for that person, so an approved asker gets one at a time.
+        The capacity belongs to the plan, not to one daemon: a question may run
+        under the other daemon, or wait in its line.  The devices' own sessions
+        are the record both daemons read, and a peer also says which guests
+        have a line that has not reached a device yet.
         """
+        if user_id in self._local_guests():
+            return True
+        # An active session marked for this person is a turn on the plan,
+        # whichever daemon started it or restarted under it.
+        if user_id in self._device_guests():
+            return True
+        return user_id in self._peer_guests()
+
+    def _local_guests(self) -> set[str]:
+        """The approved people with a run or a waiting question in this process."""
         with self.runs_lock:
-            if any(run.user == user_id for run in self.runs.values()):
-                return True
-            return any(worker.user_id == user_id
-                       for line in self.waiting.values() for worker in line)
+            found = {run.user for run in self.runs.values() if run.user}
+            found.update(worker.user_id for line in self.waiting.values()
+                         for worker in line if worker.user_id)
+        return found
+
+    def _device_guests(self) -> set[str]:
+        """The approved people with a session working on any device now.
+
+        This is the shared record: both daemons read the same OpenCode
+        servers, so a turn started by one is seen by the other.  A device that
+        does not answer adds nothing, and its own guard is the one that holds.
+        """
+        found: set[str] = set()
+        for _client, active, listed in self._device_answers().values():
+            for session, who in usage.guest_sessions(listed).items():
+                if session in active:
+                    found.add(who)
+        return found
+
+    def _peer_guests(self) -> set[str]:
+        """The approved people a peer says have work in flight."""
+        found: set[str] = set()
+        for name in self.config.devices:
+            if name == self.config.device:
+                continue
+            url = self._peer_url(name)
+            if not url:
+                continue
+            device = self.config.device_named(name)
+            try:
+                info = PeerClient(url, self._peer_secret(device), timeout=1.0).info()
+            except OSError:
+                continue
+            guests = info.get("guests")
+            if isinstance(guests, list):
+                found.update(str(who) for who in guests if who)
+        return found
+
+    def busy_guests(self) -> list[str]:
+        """The approved people with work in flight here, for a peer's guard."""
+        return sorted(self._local_guests())
 
     # -- the status Discord shows ----------------------------------------
 
@@ -666,6 +752,110 @@ class App:
                 continue
             total += len(active)
         return total
+
+    # -- what a channel holds, across the daemons -------------------------
+
+    def channel_state(self, channel_id: str) -> dict:
+        """This daemon's line, session and run for one channel.
+
+        It is what `/vigo status` on another daemon needs, and it holds ids and
+        the text of the questions this daemon took, never anything about the
+        person reading the answer.  The peer link is authenticated, and only
+        the owner's daemons may call it.
+        """
+        with self.runs_lock:
+            run = self.runs.get(channel_id)
+            waiting = list(self.waiting.get(channel_id) or [])
+            finished = list(self.finished.get(channel_id) or [])
+        remembered = self.state.session_for(channel_id)
+        return {
+            "session": remembered,
+            "run": {
+                "device": run.device,
+                "session": run.session,
+                "elapsed": round(run.elapsed, 1),
+                "prompt": run.prompt,
+            } if run else None,
+            "waiting": [worker.prompt for worker in waiting],
+            "finished": finished,
+        }
+
+    def _peer_channel_states(self, channel_id: str) -> dict[str, dict]:
+        """What each peer holds for one channel, when its peer port answers."""
+        found: dict[str, dict] = {}
+        for name in self.config.devices:
+            if name == self.config.device:
+                continue
+            url = self._peer_url(name)
+            if not url:
+                continue
+            device = self.config.device_named(name)
+            client = PeerClient(url, self._peer_secret(device), timeout=1.5)
+            try:
+                found[name] = client.channel(channel_id)
+                continue
+            except OSError:
+                pass  # a peer on older code has no channel route; ask what it has
+            try:
+                info = client.info()
+            except OSError:
+                continue  # that peer is off: say nothing
+            queue = info.get("queue")
+            if not isinstance(queue, list):
+                continue
+            for row in queue:
+                if not isinstance(row, dict) or str(row.get("channel") or "") != channel_id:
+                    continue
+                running = row.get("running")
+                found[name] = {
+                    "session": {"device": name, "session": "",
+                                "title": str(row.get("title") or "untitled"),
+                                "at": 0.0},
+                    "run": {
+                        "device": name,
+                        "session": "",
+                        "elapsed": float(running),
+                        "prompt": str(row.get("prompt") or ""),
+                    } if isinstance(running, (int, float)) else None,
+                    "waiting": [str(prompt) for prompt in (row.get("waiting") or [])],
+                    "finished": [],
+                }
+                break
+        return found
+
+    def _session_from_devices(self, channel_id: str) -> dict | None:
+        """The channel's newest session on any device, when no daemon remembered it.
+
+        A daemon that restarted with a fresh state file still leaves the
+        session on the device, marked with the channel it was made for.  The
+        devices are the record both daemons share, so status reads it rather
+        than saying no question was ever asked.
+        """
+        found: list[dict] = []
+        for device in self.config.devices.values():
+            client = OpenCode(device.url, device.password, timeout=2.0)
+            try:
+                listed = client.sessions(limit=100)
+            except OpenCodeError:
+                continue
+            for info in listed:
+                metadata = info.get("metadata")
+                if not isinstance(metadata, dict):
+                    continue
+                if str(metadata.get(asking.CHANNEL_KEY) or "") != channel_id:
+                    continue
+                when = info.get("time")
+                created = 0.0
+                if isinstance(when, dict):
+                    created = float(when.get("created") or 0) / 1000.0
+                found.append({
+                    "device": device.name,
+                    "session": str(info.get("id") or ""),
+                    "title": str(info.get("title") or ""),
+                    "at": created,
+                })
+                break
+        return max(found, key=lambda entry: float(entry.get("at") or 0), default=None)
 
     def _describe(self, prompt: str, device_name: str) -> str:
         """A short phrase for what was taken on, written by the device.
@@ -1614,11 +1804,13 @@ class App:
 
         # Acknowledge before touching a device: Discord gives three seconds, and
         # a probe does not fit in them.  Two daemons both try to acknowledge and
-        # Discord takes the first.  For a question, the one whose checkout is
-        # older stays out of the way here, before that, so the newer code
-        # answers: it queues where the older one refuses, and it does not put a
-        # second prompt into a session the other is already working.
-        if sub in (commands.ASK, commands.QUICK, commands.GOAL) and self._peer_ahead():
+        # Discord takes the first.  The one whose checkout is older stays out of
+        # the way here, before that, so the newer code answers: it queues where
+        # the older one refuses, it does not put a second prompt into a session
+        # the other is already working, and its status and queue read the peers
+        # rather than one daemon's memory.
+        if sub in (commands.ASK, commands.QUICK, commands.GOAL, commands.STATUS,
+                   commands.QUEUE, commands.DEVICES) and self._peer_ahead():
             log.info(f"{sub}: left to the newer daemon")
             return
         if not self._defer(interaction_id, token, ephemeral=self._ephemeral(sub, options, owner)):
@@ -2343,18 +2535,37 @@ class App:
             log.error(f"dm: cannot reach the owner ({error.message})")
 
     def _status(self, channel_id: str) -> str:
-        remembered = self.state.session_for(channel_id)
-        running = self.run_for(channel_id)
-        device = None
+        """The channel as every daemon sees it, merged by the one that won.
+
+        Both daemons receive the command and Discord takes the first
+        acknowledgement, so the daemon that answers may not hold this channel's
+        line, session or run.  Asking the peers is what keeps the answer the
+        same from either side: without it, the other daemon said no question
+        was ever asked.  The states are ordered by device name, not by which
+        one is local, so the same set reads the same from both sides.
+        """
+        states = {self.config.device: self.channel_state(channel_id)}
+        states.update(self._peer_channel_states(channel_id))
+        ordered = [state for _name, state in sorted(states.items())]
+        remembered = max(
+            (state["session"] for state in ordered
+             if isinstance(state.get("session"), dict)),
+            key=lambda entry: float(entry.get("at") or 0), default=None,
+        ) or self._session_from_devices(channel_id)
+        run = max(
+            (state["run"] for state in ordered if isinstance(state.get("run"), dict)),
+            key=lambda entry: float(entry.get("elapsed") or 0), default=None,
+        )
+        device = self.config.device_named(str((remembered or {}).get("device") or ""))
+        client: OpenCode | None = None
         info: dict = {}
         lines: list[str] = []
         if remembered:
-            device = self.config.device_named(remembered["device"])
             lines = [
                 "**This channel** has an OpenCode session",
                 f"“{remembered.get('title') or 'untitled'}”",
             ]
-            if device:
+            if device and str(remembered.get("session") or ""):
                 client = OpenCode(device.url, device.password)
                 try:
                     info = client.session(remembered["session"])
@@ -2382,7 +2593,8 @@ class App:
                 # work, so a burst is visible before it hits a limit.
                 lines.append(f"{agents} agents are running on your devices")
         busy = busy_since(info)
-        if busy is not None and device:
+        if (busy is not None and device and client is not None and remembered
+                and remembered.get("session")):
             # A stamp a device left behind when it stopped the turn is not a
             # turn.  The date it began would otherwise grow for ever under a
             # run nobody can see.
@@ -2391,9 +2603,10 @@ class App:
                     busy = None
             except OpenCodeError:
                 pass
-        if running:
-            elapsed = f"running for {text.duration(running.elapsed)}"
-            if running.elapsed > self.config.timeout:
+        if run:
+            elapsed_seconds = float(run.get("elapsed") or 0)
+            elapsed = f"running for {text.duration(elapsed_seconds)}"
+            if elapsed_seconds > self.config.timeout:
                 elapsed += " · still running on the device"
             lines.append(elapsed)
         elif busy is not None:
@@ -2419,7 +2632,19 @@ class App:
             except usage.UsageError as error:
                 log.info(f"status: the guest share cannot be read ({error})")
                 lines.append("**Guests**: the plan's usage cannot be read")
-        line = self._line_text(channel_id)
+        waiting: list[str] = []
+        for state in ordered:
+            for prompt in state.get("waiting") or []:
+                said = str(prompt)
+                if said and said not in waiting:
+                    waiting.append(said)
+        finished: list[str] = []
+        for state in ordered:
+            for prompt in state.get("finished") or []:
+                said = str(prompt)
+                if said and said not in finished:
+                    finished.append(said)
+        line = self._line_text(waiting, finished[-3:])
         if line:
             lines.append("")
             lines.extend(line)
@@ -2454,7 +2679,7 @@ class App:
         paused is a state the person must see, because a paused goal that says
         it is running would be a promise nothing keeps.
         """
-        if not remembered or device is None:
+        if not remembered or device is None or not remembered.get("session"):
             return ""
         try:
             held = OpenCode(device.url, device.password).goal(remembered["session"])
@@ -2495,8 +2720,13 @@ class App:
         found: list[dict] = []
         for channel, run, waiting in entries:
             remembered = self.state.session_for(channel) or {}
+            # The device the row belongs to, so a peer's copy of it lands in
+            # the same block here and there.
+            where = (run.device if run
+                     else waiting[0].device_name if waiting else self.config.device)
             found.append({
                 "channel": channel,
+                "device": where,
                 "title": str(remembered.get("title") or "untitled"),
                 "running": round(run.elapsed, 1) if run else None,
                 "prompt": run.prompt if run else "",
@@ -2546,7 +2776,7 @@ class App:
         that a line already runs, on this daemon or on a peer.
         """
         found: dict[str, dict] = {}
-        for client, active, listed in answers.values():
+        for device_name, (client, active, listed) in answers.items():
             for info in listed:
                 busy = busy_since(info)
                 if busy is None or str(info.get("id") or "") not in active:
@@ -2559,6 +2789,7 @@ class App:
                 session = str(info.get("id") or "")
                 found[channel] = {
                     "channel": channel,
+                    "device": device_name,
                     "title": str(info.get("title") or "untitled"),
                     "running": round(max(0.0, time.time() - busy / 1000.0), 1),
                     "prompt": self._goal_of(client, session),
@@ -2597,11 +2828,20 @@ class App:
         line at all.  The device still says it is working, which is what
         `/vigo status` reads, so the sessions it runs are listed here too.  A
         channel that a daemon already reports as running is not listed again.
+
+        Every daemon's rows are merged by channel and then grouped by the
+        device that holds them, in the same order on both sides.  The block
+        that used to be called "This daemon" moved from one end to the other
+        with whichever daemon answered, which is what made two answers to one
+        command read differently.
         """
         answers = self._device_answers()
-        local = self.queue_snapshot(answers)
-        # (a device's name, its rows or None when it has none, and why) here first
-        groups: list[tuple[str, list[dict] | None, str]] = [("", local, "")]
+        rows: dict[str, dict] = {}
+        for row in self.queue_snapshot(answers):
+            channel = str(row.get("channel") or "")
+            if channel:
+                rows[channel] = _merge_queue_row(rows.get(channel), row)
+        silent: dict[str, str] = {}
         for name in self.config.devices:
             if name == self.config.device:
                 continue
@@ -2612,29 +2852,51 @@ class App:
             try:
                 info = PeerClient(url, self._peer_secret(device), timeout=1.5).info()
             except OSError:
-                groups.append((name, None, "does not answer on its peer port"))
+                silent[name] = "does not answer on its peer port"
                 continue
             queue = info.get("queue")
             if not isinstance(queue, list):
-                groups.append((name, None, "runs an older vigo, which reports no queue"))
+                silent[name] = "runs an older vigo, which reports no queue"
                 continue
-            groups.append((name, queue, ""))
-        held = {entry.get("channel") for _, entries, _ in groups
-                for entry in (entries or []) if isinstance(entry, dict)
-                and entry.get("running") is not None}
-        rows = self._device_runs(answers, held)
-        if rows:
-            local = local + rows
-            groups[0] = ("", local, "")
+            for entry in queue:
+                if not isinstance(entry, dict):
+                    continue
+                channel = str(entry.get("channel") or "")
+                if not channel:
+                    continue
+                row = dict(entry)
+                row.setdefault("device", name)
+                rows[channel] = _merge_queue_row(rows.get(channel), row)
+        held = {channel for channel, row in rows.items()
+                if row.get("running") is not None}
+        for row in self._device_runs(answers, held):
+            channel = str(row.get("channel") or "")
+            if channel:
+                rows[channel] = _merge_queue_row(rows.get(channel), row)
+        names = sorted(set(self.config.devices)
+                       | {str(row["device"]) for row in rows.values() if row.get("device")})
+        groups: list[tuple[str, list[dict] | None, str]] = []
+        for name in names:
+            entries = [row for _channel, row in sorted(rows.items())
+                       if str(row.get("device") or self.config.device) == name]
+            why = silent.get(name, "")
+            if why and not entries:
+                groups.append((name, None, why))
+            else:
+                groups.append((name, entries, why))
         if public:
             said = self._queue_public(groups)
             said = self._fit(said, more="… (the rest does not fit here)")
         else:
-            said = self._fit("\n\n".join(
-                self._queue_block(entries, name) if entries is not None
-                else f"⚠️ `{name}` {why}"
-                for name, entries, why in groups
-            ))
+            parts: list[str] = []
+            for name, entries, why in groups:
+                if entries is None:
+                    parts.append(f"⚠️ `{name}` {why}")
+                    continue
+                parts.append(self._queue_block(entries, name))
+                if why:
+                    parts.append(f"⚠️ `{name}` {why}")
+            said = self._fit("\n\n".join(parts))
         return said or "Nothing runs and nothing waits."
 
     @staticmethod
@@ -2681,8 +2943,8 @@ class App:
             for number, prompt in enumerate(waiting, 1):
                 lines.append(f"{number}. “{self._shareable(prompt)}”")
         listed: list[str] = []
-        for _, entries, why in groups:
-            if entries is None and why not in listed:
+        for _, _entries, why in groups:
+            if why and why not in listed:
                 listed.append(why)
         lines.extend(f"⚠️ another daemon {why}" for why in listed)
         return "\n".join(lines)
@@ -2732,23 +2994,21 @@ class App:
         said = self._shareable(prompt) if public else text.shorten(prompt, 60)
         return f"0. “{said}”"
 
-    def _line_text(self, channel_id: str) -> list[str]:
+    def _line_text(self, waiting: list[str], finished: list[str]) -> list[str]:
         """Every task that waits in this channel, and the last three that ran.
 
         The whole line, not a sample: it holds ten at most, and a queue that
-        does not name a task cannot be asked about, only waited on.
+        does not name a task cannot be asked about, only waited on.  The line
+        may be spread over both daemons, so the caller merges the two first.
         """
-        with self.runs_lock:
-            waiting = list(self.waiting.get(channel_id) or [])
-            finished = list(self.finished.get(channel_id) or [])
         lines: list[str] = []
         if waiting:
             lines.append(f"**Next up** ({len(waiting)} waiting):")
-            for number, worker in enumerate(waiting, 1):
-                lines.append(f"{number}. “{text.shorten(worker.prompt, 80)}”")
+            for number, prompt in enumerate(waiting, 1):
+                lines.append(f"{number}. “{text.shorten(prompt, 80)}”")
         if finished:
             lines.append("**Finished:**")
-            lines.extend(f"“{text.shorten(prompt, 80)}”" for prompt in finished[-3:])
+            lines.extend(f"“{text.shorten(prompt, 80)}”" for prompt in finished)
         return lines
 
     def _devices(self, pick: Pick, detailed: bool = False) -> str:
@@ -2948,6 +3208,8 @@ class App:
                            built=self.built,
                            status=lambda: self.presence.own,
                            queue=self.queue_snapshot,
+                           channel=self.channel_state,
+                           guests=self.busy_guests,
                            suspend=self._suspend_runs).start()
             except OSError as error:  # the tailnet is not up, or the port is taken
                 log.error(f"peer: not listening ({error})")

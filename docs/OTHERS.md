@@ -164,7 +164,8 @@ An allow is permission to ask, not to drive the machine:
 
 - Questions only. Their ask never becomes a goal and never chooses a device.
 - Their question and answer are private to them, in a session of their own.
-- One question in flight at a time.
+- One question in flight at a time on every machine, because the limit is the
+  plan's and both daemons read what the other holds.
 - They spend the share of your plan kept for approved people, a third by
   default, with hourly and daily caps.
 - Every tool the agent asks for still goes to you as a card. An approved
