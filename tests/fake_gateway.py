@@ -69,6 +69,9 @@ class FakeGateway:
         self.connection: socket.socket | None = None
         self.closed = False
         self.session_id = "sess_test"
+        # A test that holds READY sees what the client sends before it.
+        self.ready_gate = threading.Event()
+        self.ready_gate.set()
         # Discord closes a resume whose session it no longer holds: 4003.
         # A test sets this to answer every resume that way.
         self.refuse_resume = False
@@ -178,6 +181,7 @@ class FakeGateway:
                         finally:
                             connection.close()
                         return
+                    self.ready_gate.wait(5.0)
                     _send_frame(connection, json.dumps({
                         "op": 0, "t": "READY", "s": 1,
                         "d": {"session_id": self.session_id,
