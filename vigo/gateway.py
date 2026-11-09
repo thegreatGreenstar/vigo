@@ -281,7 +281,8 @@ class Gateway:
         """Show this daemon with `status`: online, idle, dnd or invisible.
 
         A status set before the connection is up is kept and sent as soon as
-        Discord allows it after the identify.
+        Discord allows it after the identify.  The app never asks for
+        `invisible`, because a daemon with a live connection is not offline.
         """
         self.presence = status
         self._send_presence()
