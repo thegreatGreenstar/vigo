@@ -123,7 +123,7 @@ The host runner is the one door to it: it runs the program with argv, reads its 
 program's own MCP server.
 
 ```sh
-./deploy/container/install.sh          # installs and loads it, and gives the agent the MCP entry
+./deploy/container/install.sh          # installs and loads it, and gives the agent one MCP entry per program
 podman secret inspect host-runner-token
 ```
 
@@ -132,9 +132,23 @@ podman secret inspect host-runner-token
 token is `~/.config/vigo/host-runner.token` on the host and the podman secret `host-runner-token` in
 the agent. The daemon does not hold it.
 
+A program is either a `binary` with agent-supplied `args`, or `steps`: a fixed table of named
+commands, where the agent names a step and passes nothing else. The example's `scarletnx-build` is
+the second kind, so the agent can rebuild the Mac app and run it. The steps are the ones in the
+checkout's `LOCAL_SPEC.md`, in order:
+
+1. `configure`, `build`, `test` - cmake and ctest on `build/macos`.
+2. `package` - cpack writes `ScarletNX-macos-arm64.zip` to `~/Library/Caches/vigo-host-build`.
+3. `clean`, `install` - `ditto` unpacks it into `~/.local/share/vigo-built`, which is outside the
+   folder the agent's container mounts, so the agent cannot replace the binary the runner starts.
+
+`scarletnx-built` runs that copy; `scarletnx` keeps running the installed `/Applications` app. A
+build compiles the checkout the agent can edit, so a build step runs with the Mac user's rights.
+Steps run with the program's `timeout` (the example says 1800 seconds) unless the call names another.
+
 The runner binds `127.0.0.1` only, so it is not on the tailnet. The agent reaches it through the
 podman machine's host gateway at `http://host.containers.internal:4099`, and its OpenCode config
-carries the remote MCP entry under the name `scarletnx-host`: ScarletNX's own project config already
+carries one remote MCP entry per program: `<name>-host`. ScarletNX's own project config already
 names an MCP `scarletnx` (a macOS binary), and the distinct name keeps the two from overriding each
 other inside that project.
 
@@ -143,6 +157,8 @@ What it accepts, and what it does not:
 - an argument may name a path only under the program's `dataRoot`. A program that loads a native
   module from the path it is given would otherwise let the agent run its own code as the Mac's user.
   ScarletNX is the example: `--game` dlopens `recompiled/<id>/<id>_code.so`.
+- a `steps` program takes no argument at all: the agent picks a name from the table, and the command
+  comes from the config, which the agent's container cannot write.
 - the program's MCP tools are limited to the names `mcp.tools` lists. A tool that writes stays out
   unless you name it; ScarletNX's `edenprobe_*` creates a case in a checkout, so the example lists
   only the reading tools and the GDB ones.
@@ -153,14 +169,15 @@ Checks:
 token=$(cat ~/.config/vigo/host-runner.token)
 curl -s -H "Authorization: Bearer $token" http://127.0.0.1:4099/health
 curl -s -H "Authorization: Bearer $token" -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' \
-    "http://127.0.0.1:4099/mcp?program=scarletnx"
+    "http://127.0.0.1:4099/mcp?program=scarletnx-build"
 launchctl print gui/$(id -u)/dev.vigo.host-runner | head -5
 ```
 
-`POST /run` takes `{"program": "...", "args": [...], "timeout": 60}`; `/log` reads
+`POST /run` takes `{"program": "...", "args": [...], "timeout": 60}`, and for a steps program
+`{"program": "...", "step": "build", "timeout": 1800}`; `/log` reads
 `?program=...&path=...&tail=200` under the data root. On the MCP the runner adds `<name>_run`, and
 `<name>_log` only when the program has no MCP of its own (ScarletNX's `read_log` and `scan_log` are
-already there).
+already there). `timeout_seconds` on the MCP is the same number.
 
 A project that needs system packages the agent image lacks gets its own image:
 

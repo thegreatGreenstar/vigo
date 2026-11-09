@@ -32,6 +32,42 @@
           "gdb_detach"
         ]
       }
+    },
+    "scarletnx-build": {
+      "cwd": "~/Projects/Emulation/ScarletNX",
+      "dataRoot": "~/Projects/Emulation/ScarletNX/build",
+      "timeout": 1800,
+      "steps": {
+        "configure": [
+          "cmake",
+          "--preset",
+          "macos",
+          "-DSNX_MOLTENVK=~/Projects/Emulation/ScarletNX/.cache/moltenvk-macos"
+        ],
+        "build": ["cmake", "--build", "--preset", "macos"],
+        "test": ["ctest", "--test-dir", "build/macos", "--output-on-failure"],
+        "package": [
+          "cpack",
+          "--config",
+          "build/macos/CPackConfig.cmake",
+          "-B",
+          "~/Library/Caches/vigo-host-build"
+        ],
+        "clean": ["rm", "-rf", "~/.local/share/vigo-built/ScarletNX.app"],
+        "install": [
+          "ditto",
+          "-x",
+          "-k",
+          "~/Library/Caches/vigo-host-build/ScarletNX-macos-arm64.zip",
+          "~/.local/share/vigo-built"
+        ]
+      }
+    },
+    "scarletnx-built": {
+      "binary": "~/.local/share/vigo-built/ScarletNX.app/Contents/MacOS/scarletnx",
+      "cwd": "~/Library/Application Support/scarletnx",
+      "dataRoot": "~/Library/Application Support/scarletnx",
+      "logFile": "state/last-run.log"
     }
   }
 }

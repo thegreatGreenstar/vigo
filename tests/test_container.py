@@ -201,7 +201,7 @@ class Services(unittest.TestCase):
             "dev.vigo.host-runner.plist.in",
             "host-runner.example.json",
             "host-runner-token",
-            "mcp?program=scarletnx",
+            "mcp?program={name}",
         ):
             self.assertIn(line, installer, f"the installer does not mention {line}")
 
@@ -213,6 +213,17 @@ class Services(unittest.TestCase):
         self.assertEqual(program["dataRoot"], "~/Library/Application Support/scarletnx")
         self.assertIn("read_log", program["mcp"]["tools"])
         self.assertNotIn("edenprobe_run", program["mcp"]["tools"])
+
+    def test_the_example_has_a_build_door(self) -> None:
+        import json
+        example = json.loads((ROOT / "deploy" / "host-runner.example.json").read_text(encoding="utf-8"))
+        build = example["programs"]["scarletnx-build"]
+        self.assertNotIn("binary", build)
+        self.assertIn("configure", build["steps"])
+        self.assertIn("build", build["steps"])
+        # The built copy is outside the folder the agent's container mounts,
+        # so the agent cannot replace the binary the runner starts.
+        self.assertNotIn("~/Projects", example["programs"]["scarletnx-built"]["binary"])
 
     def test_the_ssh_clients_use_the_right_key(self) -> None:
         mac = read("ssh_config")

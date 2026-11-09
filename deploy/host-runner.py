@@ -11,7 +11,9 @@ to such a program, and nothing else:
                   (when the program has no MCP) `<name>_log` made here
 
 A program is a JSON entry in the config, not code.  A second one (Eden, another
-emulator) is a config change:
+emulator) is a config change.  A program with `steps` instead of `binary` runs
+one named command from a fixed table, so a build takes no argument from the
+agent at all:
 
     {
       "bind": "127.0.0.1",
@@ -28,6 +30,22 @@ emulator) is a config change:
                         "--mcp", "--repo", "~/Projects/Emulation/ScarletNX",
                         "--data", "~/Library/Application Support/scarletnx"],
             "tools": ["scan_log", "read_log"]
+          }
+        },
+        "scarletnx-build": {
+          "cwd": "~/Projects/Emulation/ScarletNX",
+          "dataRoot": "~/Projects/Emulation/ScarletNX/build",
+          "timeout": 1800,
+          "steps": {
+            "configure": ["cmake", "--preset", "macos",
+                          "-DSNX_MOLTENVK=~/Projects/Emulation/ScarletNX/.cache/moltenvk-macos"],
+            "build": ["cmake", "--build", "--preset", "macos"],
+            "test": ["ctest", "--test-dir", "build/macos", "--output-on-failure"],
+            "package": ["cpack", "--config", "build/macos/CPackConfig.cmake",
+                        "-B", "~/Library/Caches/vigo-host-build"],
+            "install": ["ditto", "-x", "-k",
+                        "~/Library/Caches/vigo-host-build/ScarletNX-macos-arm64.zip",
+                        "~/.local/share/vigo-built"]
           }
         }
       }
@@ -51,6 +69,7 @@ import argparse
 import hmac
 import json
 import os
+import shutil
 import subprocess
 import sys
 import threading
@@ -59,7 +78,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-VERSION = "1.0"
+VERSION = "1.1"
 MOST_ARGS = 128
 MOST_ARG = 8192
 MOST_BODY = 1024 * 1024
@@ -67,12 +86,16 @@ MOST_OUTPUT = 256 * 1024
 MOST_LOG = 4 * 1024 * 1024
 DEFAULT_TAIL = 200
 DEFAULT_TIMEOUT = 60
-MOST_TIMEOUT = 600
+MOST_TIMEOUT = 3600
 MCP_TIMEOUT = 180.0
+
+# The PATH a program and its MCP child get: what the Mac's own user has without
+# a shell profile, and where Homebrew's cmake, ninja and ctest live.
+RUN_PATH = "/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin"
 
 # What a program's entry may say.  An unknown key stops the runner and names
 # itself, like the bot's settings.
-PROGRAM_KEYS = {"binary", "cwd", "dataRoot", "logFile", "mcp", "environment"}
+PROGRAM_KEYS = {"binary", "steps", "cwd", "dataRoot", "logFile", "mcp", "environment", "timeout"}
 MCP_KEYS = {"command", "tools"}
 CONFIG_KEYS = {"bind", "port", "tokenFile", "programs"}
 
@@ -90,6 +113,28 @@ def _path(value: object, where: str) -> Path:
     return path
 
 
+def _expand(part: str) -> str:
+    """An argument with a leading `~`, or a `~` after the first `=`, expanded.
+
+    A step has no shell, so `-Dcache=~/x` would otherwise reach cmake as a
+    literal tilde.  The rule matches the one the MCP command gets.
+    """
+    if part.startswith("~"):
+        return str(Path(os.path.expanduser(part)))
+    flag, equal, value = part.partition("=")
+    if equal and value.startswith("~"):
+        return f"{flag}={os.path.expanduser(value)}"
+    return part
+
+
+def _resolves(command: str) -> bool:
+    """Whether a step's command can be started: a file, or a name on RUN_PATH."""
+    if command.startswith("~") or os.sep in command:
+        path = Path(os.path.expanduser(command))
+        return path.is_file() and os.access(path, os.X_OK)
+    return shutil.which(command, path=RUN_PATH) is not None
+
+
 class Program:
     """One program the runner may start, and the MCP it may speak to."""
 
@@ -100,7 +145,19 @@ class Program:
         unknown = set(raw) - PROGRAM_KEYS
         if unknown:
             raise ConfigError(f"programs.{name} has the unknown key {sorted(unknown)[0]!r}")
-        self.binary = _path(raw.get("binary"), f"programs.{name}.binary")
+        binary = raw.get("binary")
+        steps = raw.get("steps")
+        if binary is not None and steps is not None:
+            raise ConfigError(f"programs.{name} has both 'binary' and 'steps'")
+        if binary is None and steps is None:
+            raise ConfigError(f"programs.{name} has neither 'binary' nor 'steps'")
+        self.binary: Path | None = (_path(binary, f"programs.{name}.binary")
+                                    if binary is not None else None)
+        self.steps = self._steps(steps, f"programs.{name}.steps") if steps is not None else {}
+        timeout = raw.get("timeout", DEFAULT_TIMEOUT)
+        if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or timeout <= 0:
+            raise ConfigError(f"programs.{name}.timeout is not a positive number of seconds")
+        self.timeout = float(min(timeout, MOST_TIMEOUT))
         self.cwd = _path(raw.get("cwd"), f"programs.{name}.cwd")
         root = _path(raw.get("dataRoot"), f"programs.{name}.dataRoot")
         self.data_root = Path(os.path.realpath(root))
@@ -127,8 +184,7 @@ class Program:
             if (not isinstance(command, list) or not command
                     or any(not isinstance(part, str) or not part for part in command)):
                 raise ConfigError(f"programs.{name}.mcp.command is not a list of strings")
-            self.mcp_command = [str(Path(os.path.expanduser(part))) if part.startswith("~") else part
-                                for part in command]
+            self.mcp_command = [_expand(part) for part in command]
             tools = mcp.get("tools")
             if tools is not None:
                 if not isinstance(tools, list) or any(not isinstance(t, str) for t in tools):
@@ -145,9 +201,28 @@ class Program:
             raise ConfigError(f"{where} is outside the data root: {value}")
         return real
 
+    @staticmethod
+    def _steps(raw: object, where: str) -> dict[str, list[str]]:
+        """The fixed commands a step program may run, and nothing else."""
+        if not isinstance(raw, dict) or not raw:
+            raise ConfigError(f"{where} is not an object with one step")
+        steps: dict[str, list[str]] = {}
+        for name, argv in raw.items():
+            if not isinstance(name, str) or not name.strip() or any(c in name for c in "\0\n\r"):
+                raise ConfigError(f"{where} has a step name that is not a word")
+            if (not isinstance(argv, list) or not argv
+                    or any(not isinstance(part, str) or not part for part in argv)):
+                raise ConfigError(f"{where}.{name} is not a list of strings")
+            if any("\0" in part or "\n" in part or "\r" in part for part in argv):
+                raise ConfigError(f"{where}.{name} holds a control character")
+            steps[name] = [_expand(part) for part in argv]
+        return steps
+
     @property
     def available(self) -> bool:
-        return self.binary.is_file() and os.access(self.binary, os.X_OK)
+        if self.binary is not None:
+            return self.binary.is_file() and os.access(self.binary, os.X_OK)
+        return all(_resolves(argv[0]) for argv in self.steps.values())
 
 
 class Config:
@@ -284,7 +359,7 @@ class McpChild:
 
     def _env(self) -> dict[str, str]:
         env = {
-            "PATH": "/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin",
+            "PATH": RUN_PATH,
             "HOME": str(Path.home()),
             "LANG": "C.UTF-8",
             "TMPDIR": os.environ.get("TMPDIR", "/tmp"),
@@ -400,15 +475,26 @@ class Runner:
     def run(self, body: dict) -> dict:
         program = self.program(body.get("program"))
         if not program.available:
-            raise ValueError(f"the binary of {program.name} is missing: {program.binary}")
-        args = check_args(program, body.get("args"))
-        timeout = body.get("timeout", DEFAULT_TIMEOUT)
+            missing = program.binary if program.binary is not None else "a step command"
+            raise ValueError(f"the program {program.name} is missing: {missing}")
+        step: str | None = None
+        if program.steps:
+            if body.get("args") is not None:
+                raise ValueError(f"{program.name} runs a named step and takes no args")
+            step = body.get("step")
+            if not isinstance(step, str) or step not in program.steps:
+                raise ValueError(f"{program.name} has no step {step!r}: "
+                                 + ", ".join(sorted(program.steps)))
+            command = list(program.steps[step])
+        else:
+            command = [str(program.binary), *check_args(program, body.get("args"))]
+        timeout = body.get("timeout", body.get("timeout_seconds", program.timeout))
         if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or timeout <= 0:
             raise ValueError("timeout is not a positive number of seconds")
         timeout = min(float(timeout), float(MOST_TIMEOUT))
         started = time.monotonic()
         env = {
-            "PATH": "/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin",
+            "PATH": RUN_PATH,
             "HOME": str(Path.home()),
             "LANG": "C.UTF-8",
             "TMPDIR": os.environ.get("TMPDIR", "/tmp"),
@@ -417,7 +503,7 @@ class Runner:
         timed_out = False
         try:
             completed = subprocess.run(
-                [str(program.binary), *args], cwd=str(program.cwd), env=env,
+                command, cwd=str(program.cwd), env=env,
                 capture_output=True, timeout=timeout,
             )
             code = completed.returncode
@@ -436,6 +522,8 @@ class Runner:
             "stdout": out[-MOST_OUTPUT:].decode("utf-8", "replace"),
             "stderr": err[-MOST_OUTPUT:].decode("utf-8", "replace"),
         }
+        if step is not None:
+            result["step"] = step
         if program.log_file and program.log_file.is_file():
             result["log"] = {
                 "path": str(program.log_file),
@@ -476,20 +564,36 @@ class Runner:
         return _error(ident, -32601, f"no method {method!r}")
 
     def _tools(self, program: Program) -> list[dict]:
-        tools = [{
-            "name": f"{program.name}_run",
-            "description": (f"Run {program.name} on the Mac with these arguments and return its exit code, "
-                            "output and the tail of its log. A path argument must stay under the program's "
-                            "data root."),
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "args": {"type": "array", "items": {"type": "string"}},
-                    "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": MOST_TIMEOUT},
+        if program.steps:
+            run = {
+                "name": f"{program.name}_run",
+                "description": (f"Run one step of {program.name} on the Mac ({', '.join(sorted(program.steps))}) "
+                                "and return its exit code and output. A step takes no arguments."),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "step": {"type": "string", "enum": sorted(program.steps)},
+                        "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": MOST_TIMEOUT},
+                    },
+                    "required": ["step"],
                 },
-                "required": ["args"],
-            },
-        }]
+            }
+        else:
+            run = {
+                "name": f"{program.name}_run",
+                "description": (f"Run {program.name} on the Mac with these arguments and return its exit code, "
+                                "output and the tail of its log. A path argument must stay under the program's "
+                                "data root."),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "args": {"type": "array", "items": {"type": "string"}},
+                        "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": MOST_TIMEOUT},
+                    },
+                    "required": ["args"],
+                },
+            }
+        tools = [run]
         # A program with an MCP of its own already offers its log tools; a
         # second one here would only give the model two names for one read.
         if not program.mcp_command:

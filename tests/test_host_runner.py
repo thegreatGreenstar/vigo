@@ -110,6 +110,86 @@ class HostRunnerTest(unittest.TestCase):
         with self.assertRaises(host_runner.ConfigError):
             self.make(logFile=outside)
 
+    def test_a_program_is_a_binary_or_a_step_table(self) -> None:
+        with self.assertRaises(host_runner.ConfigError) as caught:
+            self.make(steps={"build": ["true"]})
+        self.assertIn("both", str(caught.exception))
+        with self.assertRaises(host_runner.ConfigError) as caught:
+            self.make(binary=None)
+        self.assertIn("neither", str(caught.exception))
+
+    def test_a_step_must_be_a_list_of_strings(self) -> None:
+        for bad in ({"build": "true"}, {"build": []}, {"build": [1]}):
+            with self.assertRaises(host_runner.ConfigError, msg=bad):
+                self.make(binary=None, steps=bad)
+
+    def test_a_step_timeout_is_a_positive_number(self) -> None:
+        with self.assertRaises(host_runner.ConfigError):
+            self.make(timeout=0)
+
+    # --- steps, the fixed commands ------------------------------------------
+    def steps(self, **program: object) -> tuple["host_runner.Runner", "host_runner.Program"]:
+        table = {
+            "hello": [sys.executable, "-c", "print('step')"],
+            "slow": [sys.executable, "-c", "import time; time.sleep(2)"],
+        }
+        return self.runner(binary=None, steps=table, **program)
+
+    def test_a_step_runs_its_command_and_says_which(self) -> None:
+        runner, _ = self.steps()
+        ran = runner.run({"program": "sample", "step": "hello"})
+        self.assertEqual(ran["step"], "hello")
+        self.assertEqual(ran["code"], 0)
+        self.assertEqual(ran["stdout"].strip(), "step")
+
+    def test_a_step_takes_no_argument_and_no_unknown_name(self) -> None:
+        runner, _ = self.steps()
+        with self.assertRaises(ValueError) as caught:
+            runner.run({"program": "sample", "step": "nope"})
+        self.assertIn("no step", str(caught.exception))
+        with self.assertRaises(ValueError) as caught:
+            runner.run({"program": "sample", "step": "hello", "args": ["--any"]})
+        self.assertIn("takes no args", str(caught.exception))
+
+    def test_a_programs_timeout_applies_to_its_steps(self) -> None:
+        runner, _ = self.steps(timeout=0.2)
+        ran = runner.run({"program": "sample", "step": "slow"})
+        self.assertTrue(ran["timed_out"])
+
+    def test_the_mcp_run_tool_lists_the_steps_and_takes_a_timeout(self) -> None:
+        runner, program = self.steps()
+        listed = runner.mcp(program, {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}})
+        run = next(tool for tool in listed["result"]["tools"] if tool["name"] == "sample_run")
+        self.assertEqual(run["inputSchema"]["required"], ["step"])
+        self.assertEqual(run["inputSchema"]["properties"]["step"]["enum"], ["hello", "slow"])
+        ran = runner.mcp(program, {
+            "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+            "params": {"name": "sample_run",
+                       "arguments": {"step": "slow", "timeout_seconds": 0.2}},
+        })
+        self.assertTrue(json.loads(ran["result"]["content"][0]["text"])["timed_out"])
+
+    def test_mcp_refuses_an_unknown_step(self) -> None:
+        runner, program = self.steps()
+        refused = runner.mcp(program, {
+            "jsonrpc": "2.0", "id": 3, "method": "tools/call",
+            "params": {"name": "sample_run", "arguments": {"step": "nope"}},
+        })
+        self.assertTrue(refused["result"]["isError"])
+        self.assertIn("no step", refused["result"]["content"][0]["text"])
+
+    def test_the_example_config_names_a_build_door(self) -> None:
+        raw = json.loads((ROOT / "deploy" / "host-runner.example.json").read_text(encoding="utf-8"))
+        raw["tokenFile"] = str(self.token_file)
+        self.config_file.write_text(json.dumps(raw), encoding="utf-8")
+        config = host_runner.Config(self.config_file)
+        build = config.programs["scarletnx-build"]
+        self.assertEqual(build.steps["build"][:3], ["cmake", "--build", "--preset"])
+        self.assertIn("configure", build.steps)
+        self.assertIn("install", build.steps)
+        self.assertNotEqual(config.programs["scarletnx-built"].binary,
+                            config.programs["scarletnx"].binary)
+
     # --- argument rooting, the boundary -------------------------------------
     def test_a_path_outside_the_data_root_is_refused(self) -> None:
         _, program = self.runner()
@@ -196,6 +276,16 @@ class HostRunnerTest(unittest.TestCase):
         })
         self.assertTrue(refused["result"]["isError"])
         self.assertIn("not offer", refused["result"]["content"][0]["text"])
+
+    def test_the_mcp_run_tool_honours_its_timeout(self) -> None:
+        runner, program = self.runner()
+        ran = runner.mcp(program, {
+            "jsonrpc": "2.0", "id": 5, "method": "tools/call",
+            "params": {"name": "sample_run",
+                       "arguments": {"args": ["-c", "import time; time.sleep(2)"],
+                                     "timeout_seconds": 0.2}},
+        })
+        self.assertTrue(json.loads(ran["result"]["content"][0]["text"])["timed_out"])
 
     def test_a_missing_binary_is_not_run(self) -> None:
         runner, program = self.runner(binary=str(self.base / "missing"))
