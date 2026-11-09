@@ -407,9 +407,10 @@ class Gateway:
                 else:
                     self._identify()
                     sent = "identify"
-                # Discord starts every connection without a status, so the one
-                # this daemon holds is sent with the identify or the resume.
-                self._send_presence()
+                # Discord starts every connection without a status.  The one
+                # this daemon holds is sent once Discord has accepted the
+                # identify or the resume: a presence sent before READY was
+                # ignored, which left the bot invisible while it was online.
                 identified = True
                 self.on_state("up")
             elif op == 11:
@@ -434,8 +435,10 @@ class Gateway:
                     self.session_id = (data or {}).get("session_id")
                     accepted = True
                     self.on_state("ready")
+                    self._send_presence()
                 elif event == "RESUMED":
                     accepted = True
+                    self._send_presence()
                 self.on_event(event, data or {})
 
         return True

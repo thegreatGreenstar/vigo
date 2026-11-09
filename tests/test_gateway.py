@@ -80,12 +80,20 @@ class GatewayTest(unittest.TestCase):
         self.assertEqual(len(self.fake.identifies), 1,
                          "the daemon identified again after Discord refused it")
 
-    def test_a_status_set_before_the_connection_goes_out_with_the_identify(self):
+    def test_a_status_set_early_goes_out_after_ready(self):
+        """Discord ignores a presence sent before it accepts the identify.
+
+        The bot stayed invisible while it was online because the status went
+        out beside the identify, not after READY.
+        """
         self.gateway = Gateway(self.fake.url, "token", 1,
                                lambda event, data: None, self.states.append)
+        self.fake.ready_gate.clear()
         self.gateway.set_presence("idle")
         threading.Thread(target=self.gateway.run, daemon=True).start()
-        self.assertTrue(self.fake.wait_for(lambda: self.states.count("ready") >= 1, 5))
+        self.assertTrue(self.fake.wait_for(lambda: bool(self.fake.identifies), 5))
+        self.assertEqual(self.fake.presences, [], "nothing goes out before READY")
+        self.fake.ready_gate.set()
         self.assertTrue(self.fake.wait_for(lambda: bool(self.fake.presences), 5))
         self.assertEqual(self.fake.presences[0]["status"], "idle")
         self.assertEqual(self.fake.presences[0]["activities"], [])
