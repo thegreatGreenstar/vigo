@@ -178,6 +178,7 @@ class HostRunnerTest(unittest.TestCase):
         self.assertTrue(refused["result"]["isError"])
         self.assertIn("no step", refused["result"]["content"][0]["text"])
 
+    @unittest.skipUnless(sys.platform == "darwin", "the example names Mac paths")
     def test_the_example_config_names_a_build_door(self) -> None:
         raw = json.loads((ROOT / "deploy" / "host-runner.example.json").read_text(encoding="utf-8"))
         raw["tokenFile"] = str(self.token_file)
