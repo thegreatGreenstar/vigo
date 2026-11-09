@@ -171,7 +171,7 @@ exit 0
         )
 
     def test_a_refused_laptop_starts_no_suite(self) -> None:
-        result = self._run(1, "on battery at 100%: the local gate needs AC power")
+        result = self._run(3, "on battery at 100%: the local gate needs AC power")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("skipped:", result.stdout)
         self.assertFalse(self.podman.exists(), "podman ran after the gate refused")
@@ -182,6 +182,13 @@ exit 0
         self.assertIn("cannot read the power state", result.stdout)
         self.assertNotIn("skipped:", result.stdout)
         self.assertFalse(self.podman.exists(), "podman ran after the probe failed")
+
+    def test_a_broken_check_is_not_a_refusal(self) -> None:
+        """A SyntaxError exits 1; only exit 3 means the machine said no."""
+        result = self._run(1, "SyntaxError: invalid syntax")
+        self.assertEqual(result.returncode, 1)
+        self.assertNotIn("skipped:", result.stdout)
+        self.assertFalse(self.podman.exists(), "podman ran after a broken check")
 
     def test_an_allowed_machine_runs_the_gate(self) -> None:
         result = self._run(0, "on AC power at 96%")

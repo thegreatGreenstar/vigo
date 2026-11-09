@@ -273,12 +273,6 @@ class FakeOpenCode:
                 # which is what a run reads when the event that said so was
                 # missed: a restart in between leaves nothing else.
                 self.add_message(session, "idle")
-                self.emit("session.execution.succeeded", {"sessionID": session})
-                self.emit("session.idle", {"sessionID": session})
-                if not self.stay_busy:
-                    # With `stay_busy` the turn ends but the device still looks
-                    # busy: the other daemon's turn began under it.
-                    self.finished_turn(session)
                 with self.lock:
                     if session in self.sessions:
                         self.sessions[session]["cost"] = 0.002
@@ -286,6 +280,15 @@ class FakeOpenCode:
                             "input": 120, "output": 8, "reasoning": 0,
                             "cache": {"read": 0, "write": 0},
                         }
+                # The device is idle before it says so: the next question in
+                # the channel may start the moment it hears the event, and it
+                # must not find the turn before this one still busy.
+                if not self.stay_busy:
+                    # With `stay_busy` the turn ends but the device still looks
+                    # busy: the other daemon's turn began under it.
+                    self.finished_turn(session)
+                self.emit("session.execution.succeeded", {"sessionID": session})
+                self.emit("session.idle", {"sessionID": session})
                 return
 
     # -- the handler ------------------------------------------------------

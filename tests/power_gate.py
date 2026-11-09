@@ -5,6 +5,10 @@ Actions is free now that the repository is public, so the local run is a
 convenience.  It runs on a desktop, which has no battery, or on a laptop that is
 on AC power with its battery at 80% or more.  Anything else is refused with the
 reason, so a skipped gate is never mistaken for a green one.
+
+Exit 0 means it may run, 3 means the machine said no, and 2 means the state
+cannot be read.  Any other status is a fault in the check itself, which must
+stop the gate rather than pass for a refusal.
 """
 
 from __future__ import annotations
@@ -15,6 +19,7 @@ import subprocess
 import sys
 
 MINIMUM_PERCENT = 80
+REFUSED = 3
 SYSFS = pathlib.Path("/sys/class/power_supply")
 
 type Power = tuple[bool, int] | None  # (on AC, battery percent), or a desktop
@@ -113,7 +118,7 @@ def main() -> int:
         return 2
     allowed, reason = verdict(state)
     print(reason)
-    return 0 if allowed else 1
+    return 0 if allowed else REFUSED
 
 
 if __name__ == "__main__":

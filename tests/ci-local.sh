@@ -24,14 +24,14 @@ status=0
 say() { printf '%s\n' "$*"; }
 
 # The check comes before the first suite: a run that may not finish should not
-# start.  Exit 1 is the machine saying no; any other failure is the reading
+# start.  Exit 3 is the machine saying no; any other failure is the reading
 # itself, and it must not pass for a refusal.
 if power=$(python3 tests/power_gate.py 2>&1); then
     say "power: $power"
 else
     code=$?
     say "power: $power"
-    if [ "$code" -eq 1 ]; then
+    if [ "$code" -eq 3 ]; then
         say ""
         say "skipped: run this on AC power with the battery at 80% or more, or on a desktop."
         exit 0
