@@ -30,6 +30,8 @@ class GatewayTest(unittest.TestCase):
         self.assertTrue(self.fake.wait_for(lambda: bool(self.fake.identifies), 5))
         self.assertEqual(self.fake.identifies[0]["intents"], 1)
         self.assertEqual(self.fake.identifies[0]["token"], "token")
+        self.assertEqual(self.fake.identifies[0]["presence"]["status"], "online",
+                         "the account is not left offline until the first change")
 
     def test_a_dispatch_reaches_the_handler(self):
         self.start()
