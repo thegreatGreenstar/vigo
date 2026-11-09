@@ -89,6 +89,32 @@ class PeerTest(unittest.TestCase):
         info = PeerClient(f"http://127.0.0.1:{server.server.server_address[1]}", "pw").info()
         self.assertEqual(info["queue"], tasks)
 
+    def test_it_reports_what_it_holds_for_one_channel(self):
+        """`/vigo status` on the other daemon reads the line it does not hold."""
+        held = {
+            "session": {"device": "macbook", "session": "ses_1",
+                        "title": "Discord DM", "at": 10.0},
+            "run": {"device": "macbook", "session": "ses_1",
+                    "elapsed": 4.0, "prompt": "their task"},
+            "waiting": ["the next one"],
+            "finished": ["the one before"],
+        }
+        server = PeerServer("127.0.0.1", 0, "macbook", "pw",
+                            channel=lambda channel: held if channel == "c1" else {}).start()
+        self.addCleanup(server.stop)
+        client = PeerClient(f"http://127.0.0.1:{server.server.server_address[1]}", "pw")
+        self.assertEqual(client.channel("c1"), {"device": "macbook", **held})
+        self.assertEqual(client.channel("other"), {"device": "macbook"})
+
+    def test_it_reports_the_guests_with_work_in_flight(self):
+        """One question at a time for an approved person is shared by every daemon."""
+        self.assertEqual(PeerClient(self.url, "pw").info()["guests"], [])
+        server = PeerServer("127.0.0.1", 0, "macbook", "pw",
+                            guests=lambda: ["777777777777777777"]).start()
+        self.addCleanup(server.stop)
+        info = PeerClient(f"http://127.0.0.1:{server.server.server_address[1]}", "pw").info()
+        self.assertEqual(info["guests"], ["777777777777777777"])
+
 
 class UpdateTest(unittest.TestCase):
     def test_a_checkout_is_pulled_and_never_forcefully(self):

@@ -572,6 +572,17 @@ class AppTest(unittest.TestCase):
             self.assertEqual(self.device.prompts, [],
                              "and no device turn is spent on it")
 
+    def test_an_older_daemon_leaves_status_and_queue_to_a_newer_peer(self):
+        """The newer code is the one that knows how to read the peer's state."""
+        peer_url = self._peer(built=2000)
+        with TempDir() as directory:
+            app = self._two_devices(directory, peer_url)
+            app._built = 1000
+            for sub in (commands.STATUS, commands.QUEUE):
+                interaction = self.use(app, sub)
+                self.assertIsNone(self.discord.answer_for(interaction),
+                                  f"{sub} is left to the newer daemon")
+
     def test_a_newer_daemon_answers_beside_an_older_peer(self):
         peer_url = self._peer(built=1000)
         with TempDir() as directory:
@@ -1395,6 +1406,143 @@ class AppTest(unittest.TestCase):
         self.assertIn("**Finished:**", written)
         self.assertIn("“old four”", written)
         self.assertNotIn("“old one”", written, "only the last three that ran are named")
+
+    def test_status_reads_the_line_a_peer_holds(self):
+        """The daemon that wins the interaction may not hold the channel.
+
+        `/vigo status` asks the peers for the session, the run and the line, so
+        the answer does not change with whichever daemon Discord picked.
+        """
+        session = self.device.new_session("Discord #general",
+                                          metadata={asking.CHANNEL_KEY: CHANNEL})
+        held = {
+            "session": {"device": "macbook", "session": session,
+                        "title": "Discord #general", "at": time.time()},
+            "run": {"device": "macbook", "session": session,
+                    "elapsed": 12.0, "prompt": "their task"},
+            "waiting": ["the next question"],
+            "finished": ["the one before"],
+        }
+        other = PeerServer("127.0.0.1", 0, "workstation", "pw",
+                           channel=lambda channel: held if channel == CHANNEL else {})
+        other.start()
+        self.addCleanup(other.stop)
+        peer_url = f"http://127.0.0.1:{other.server.server_address[1]}"
+        with TempDir() as directory:
+            app = self._two_devices(directory, peer_url)
+            self.use(app, commands.STATUS)
+            written = self.said()[-1]
+        self.assertIn("“Discord #general”", written)
+        self.assertIn("running for 12s", written)
+        self.assertIn("1. “the next question”", written)
+        self.assertIn("“the one before”", written)
+        self.assertNotIn("No question has been asked", written)
+
+    def test_status_finds_the_session_when_the_state_was_lost(self):
+        """The device's own session is the record both daemons share."""
+        self.device.new_session("Discord #general",
+                                metadata={asking.CHANNEL_KEY: CHANNEL})
+        with TempDir() as directory:
+            app = self.make(directory)
+            self.use(app, commands.STATUS)
+            written = self.said()[-1]
+        self.assertIn("“Discord #general”", written)
+        self.assertNotIn("No question has been asked", written)
+
+    def test_the_queue_names_each_device_and_reads_the_same_from_both_sides(self):
+        """No block moves with the daemon that answered: each is named."""
+        other = PeerServer("127.0.0.1", 0, "workstation", "pw", queue=lambda: [{
+            "channel": "other_chan", "device": "workstation",
+            "title": "Discord DM", "running": 12.0, "waiting": ["their task"],
+        }])
+        other.start()
+        self.addCleanup(other.stop)
+        peer_url = f"http://127.0.0.1:{other.server.server_address[1]}"
+        with TempDir() as directory:
+            app = self._two_devices(directory, peer_url)
+            app.state.remember_session(CHANNEL, "macbook", "ses_1", "Discord #general")
+            app.waiting[CHANNEL] = [self.worker(app, "our task")]
+            self.use(app, commands.QUEUE)
+            written = self.said()[-1]
+        self.assertIn("**macbook**", written)
+        self.assertIn("**workstation**", written)
+        self.assertNotIn("This daemon", written)
+        self.assertLess(written.index("**macbook**"), written.index("**workstation**"))
+
+    def test_the_queue_reads_the_same_from_either_daemon(self):
+        """Both daemons merge both lines, and group them by device, not by side."""
+        holders: dict[str, App] = {}
+        first = PeerServer("127.0.0.1", 0, "macbook", "pw",
+                           queue=lambda: holders["macbook"].queue_snapshot()).start()
+        second = PeerServer("127.0.0.1", 0, "workstation", "pw",
+                            queue=lambda: holders["workstation"].queue_snapshot()).start()
+        self.addCleanup(first.stop)
+        self.addCleanup(second.stop)
+        first_url = f"http://127.0.0.1:{first.server.server_address[1]}"
+        second_url = f"http://127.0.0.1:{second.server.server_address[1]}"
+        devices = [
+            {"name": "macbook", "url": self.device.url, "directory": "/tmp/project",
+             "peer": first_url},
+            {"name": "workstation", "url": self.device.url, "directory": "/tmp/other",
+             "peer": second_url},
+        ]
+        with TempDir() as one, TempDir() as two:
+            macbook = load_settings(one, device="macbook", password="pw", devices=devices)
+            workstation = load_settings(two, device="workstation", password="pw",
+                                        devices=devices)
+            holders["macbook"] = App(
+                macbook, api=Discord("token", macbook.app_id, base=self.discord.url),
+                state=State(one / "state.json"))
+            holders["workstation"] = App(
+                workstation, api=Discord("token", workstation.app_id, base=self.discord.url),
+                state=State(two / "state.json"))
+            self.app = holders["macbook"]
+            self.addCleanup(holders["workstation"].shutdown)
+            holders["macbook"].state.remember_session(
+                "chan_a", "macbook", "ses_a", "Discord #a")
+            holders["workstation"].state.remember_session(
+                "chan_b", "workstation", "ses_b", "Discord #b")
+            holders["macbook"].waiting["chan_a"] = [asking.Ask(
+                holders["macbook"], token="", channel_id="chan_a", user_id=OWNER,
+                device_name="macbook", prompt="the task on macbook", new=False, title="a")]
+            holders["workstation"].waiting["chan_b"] = [asking.Ask(
+                holders["workstation"], token="", channel_id="chan_b", user_id=OWNER,
+                device_name="workstation", prompt="the task on workstation", new=False,
+                title="b")]
+            from_macbook = holders["macbook"]._queue_text()
+            from_workstation = holders["workstation"]._queue_text()
+        self.assertIn("**macbook**", from_macbook)
+        self.assertIn("**workstation**", from_macbook)
+        self.assertIn("the task on macbook", from_macbook)
+        self.assertIn("the task on workstation", from_macbook)
+        self.assertEqual(from_macbook, from_workstation,
+                         "the queue does not depend on which daemon answered it")
+
+    def test_only_one_daemon_answers_one_status_command(self):
+        """Both receive it; Discord takes one acknowledgement, and the other stops."""
+        with TempDir() as directory:
+            first = self.make(directory)
+            with TempDir() as other:
+                api = Discord("token", first.config.app_id, base=self.discord.url)
+                second = App(first.config, api=api, state=State(other / "state.json"))
+                self.addCleanup(second.shutdown)
+                payload = {
+                    "id": self.discord.next_id("int"),
+                    "token": "tok",
+                    "type": 2,
+                    "channel_id": CHANNEL,
+                    "channel": {"name": "general"},
+                    "member": {"user": {"id": OWNER, "username": "someone"}},
+                    "data": {"name": "vigo", "options": [
+                        {"name": commands.STATUS, "type": 1, "options": []},
+                    ]},
+                }
+                first.handle_interaction(payload)
+                second.handle_interaction(payload)
+        answered = [content for content in self.said()
+                    if "No question has been asked" in content]
+        self.assertEqual(len(answered), 1,
+                         "the second daemon does not answer a claimed command")
 
     def test_queue_names_every_channel_that_runs_or_waits(self):
         with TempDir() as directory:
@@ -2679,6 +2827,37 @@ class AppTest(unittest.TestCase):
             gate.set()
             self.assertTrue(self.discord.wait_for(
                 lambda: any("finished" in content for content in self.said()), 10))
+
+    def test_an_approved_asker_is_busy_when_a_peer_holds_a_question(self):
+        """One question at a time belongs to the plan, not to one daemon."""
+        other = PeerServer("127.0.0.1", 0, "workstation", "pw",
+                           guests=lambda: [GUEST])
+        other.start()
+        self.addCleanup(other.stop)
+        peer_url = f"http://127.0.0.1:{other.server.server_address[1]}"
+        with TempDir() as directory:
+            app = self._two_devices(directory, peer_url)
+            app.allow.allow(GUEST, "Guest", None)
+            self.use(app, commands.ASK, who=GUEST, options=[
+                {"name": "prompt", "type": 3, "value": "what is a pointer"},
+            ])
+            said = " ".join(self.said())
+        self.assertIn("already have a question in flight", said)
+        self.assertEqual(self.device.prompts, [])
+
+    def test_an_approved_asker_is_busy_when_a_device_session_is_working(self):
+        """A turn started by either daemon is on the device, where both read it."""
+        with TempDir() as directory:
+            app = self.make(directory, users=[GUEST])
+            session = self.device.new_session(
+                "Discord #general", metadata={asking.GUEST_KEY: GUEST})
+            self.device.started_turn(session)
+            self.use(app, commands.ASK, who=GUEST, options=[
+                {"name": "prompt", "type": 3, "value": "what is a pointer"},
+            ])
+            said = " ".join(self.said())
+        self.assertIn("already have a question in flight", said)
+        self.assertEqual(self.device.prompts, [])
 
     def test_the_help_for_an_approved_asker_says_what_they_may_do(self):
         with TempDir() as directory:

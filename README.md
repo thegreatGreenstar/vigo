@@ -92,9 +92,12 @@ addition.
   conversation is not read into it and nothing about the machine lands in the
   channel. The agent still reads what the machine lets it read, and the answer
   goes to the person who asked: an allow is trust in that person, not only in
-  their questions. They may have one question in flight at a time, and they
-  cannot use `status`, `queue`, `devices`, `stop`, `upgrade`, `goal`, `allow`,
-  `deny` or `allowed`.
+  their questions. They may have one question in flight at a time on every
+  machine, because the limit belongs to the plan and not to one daemon: a turn
+  already working on a device is read from the device, and a question waiting
+  in the other daemon's line is read from that daemon. They cannot use
+  `status`, `queue`, `devices`, `stop`, `upgrade`, `goal`, `allow`, `deny` or
+  `allowed`.
 - **Allowed users can ask, but cannot approve.** Tool permissions go to the
   owner's DMs, and only a click there runs a tool. An approved person's card
   offers **Allow once** and **Deny**, never **Always allow**: one use of a tool
@@ -836,6 +839,15 @@ under a run. So `status` asks the device's own session, which is the record
 they share, and reports the device working when it is, even with no run in
 this process. A question asked then is refused with that reason instead of
 joining the agent's turn; `new:true` still starts a fresh session.
+
+The daemon that wins `status` also asks every peer what it holds for the
+channel, so the session, the run and the line come from both machines and the
+answer does not change with which one Discord picked. The peer says this on
+`/vigo/channel`, behind the peer password. `/vigo queue` merges the two lines
+by channel and groups them by the device that holds them, so both daemons
+print the same blocks in the same order instead of calling their own block
+"This daemon". When only one machine is awake, its peer port is silent and the
+answer is the one machine's, which is the true one.
 
 The question carries one line the device would not otherwise know: who asked
 and who reads the answer. A public answer is read by everyone in the channel,

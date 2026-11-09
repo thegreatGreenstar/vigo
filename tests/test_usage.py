@@ -226,6 +226,34 @@ class UsageTest(unittest.TestCase):
             found = usage.collect(settings, "macbook", now=self.now)
         self.assertEqual(found.guest_windows.get("monthly"), 2_500)
 
+    def test_the_guest_budget_counts_every_device(self):
+        """The plan is shared, so a guest's tokens on either machine count."""
+        second = FakeOpenCode("workstation")
+        self.addCleanup(second.close)
+        with TempDir() as directory:
+            settings = load_settings(
+                directory,
+                devices=[
+                    {"name": "macbook", "url": self.device.url, "directory": "/tmp/project"},
+                    {"name": "workstation", "url": second.url, "directory": "/tmp/other"},
+                ],
+                guests=NO_CAPS,
+            )
+            here = self.device.new_session(metadata={"vigoGuest": GUEST})
+            self.device.add_message(here, "assistant", tokens=tokens(400_000))
+            there = second.new_session(metadata={"vigoGuest": GUEST})
+            second.add_message(there, "assistant", tokens=tokens(400_000))
+            owner = second.new_session(metadata={"vigoChannel": "chan"})
+            second.add_message(owner, "assistant", tokens=tokens(1_200_000))
+            self.device.meters = {"monthly": 90.0}
+            found = usage.collect(settings, "macbook", now=self.now)
+            verdict = usage.judge(found, GUEST, settings.guests)
+        self.assertEqual(found.guest_windows.get("monthly"), 800_000)
+        self.assertEqual(found.all_windows.get("monthly"), 2_000_000)
+        self.assertFalse(verdict.allowed,
+                         "90 percent of the plan makes 40 percent the guest's, over a third")
+        self.assertEqual(verdict.reason, "share")
+
     def test_an_owner_session_never_counts_as_a_guest(self):
         with TempDir() as directory:
             settings = self.settings(directory)

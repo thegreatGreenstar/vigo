@@ -1,18 +1,24 @@
 """Asking the other daemons what build they run, and telling them to update.
 
 The daemons share no protocol and write nothing to Discord about themselves.
-Each one serves two answers on a port of its own, behind the same password as
+Each one serves these answers on a port of its own, behind the same password as
 its OpenCode server:
 
-    GET  /vigo/info     {"device": "macbook", "version": "1.0.0", "status": "idle"}
-    POST /vigo/update   git pull in this checkout; restart when a supervisor runs it
+    GET  /vigo/info                    {"device": "macbook", "version": "1.0.0"}
+    GET  /vigo/channel?channel=<id>    what this daemon holds for one channel
+    POST /vigo/update                  git pull in this checkout; restart when a supervisor runs it
 
 That port is off unless the settings name one (`peerPort`), because it must be
 reachable from the other machine to be worth anything.
 
 `status` is what this daemon shows of itself, before it merges what the others
 show: the merged value would carry the other daemon's answer back to it, and
-two daemons would then hold each other's status for good.
+two daemons would then hold each other's status for good.  `channel` is the
+same rule for `/vigo status`: the daemon that wins an interaction asks every
+peer what it holds for that channel, because the line, the session and the run
+may all belong to the peer.  `info` also carries `guests`, the approved people
+with a question running or waiting here, so the one-at-a-time capacity is
+shared by every daemon rather than counted twice on one machine.
 """
 
 from __future__ import annotations
@@ -28,6 +34,7 @@ import time
 from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import parse_qs, quote, urlsplit
 
 from . import __version__, httpc, log
 
@@ -66,6 +73,15 @@ class PeerClient:
     def info(self) -> dict:
         return self._call("GET", "/vigo/info")
 
+    def channel(self, channel_id: str) -> dict:
+        """What this daemon holds for one Discord channel.
+
+        This is how the daemon that wins `/vigo status` learns the line, the
+        session and the run that another daemon took.  A peer on older code
+        has no such route, and the caller treats its `OSError` as silence.
+        """
+        return self._call("GET", f"/vigo/channel?channel={quote(channel_id, safe='')}")
+
     def update(self) -> dict:
         return self._call("POST", "/vigo/update")
 
@@ -100,15 +116,25 @@ class _Handler(BaseHTTPRequestHandler):
         if not self._allowed():
             self._send(401, {"error": "password"})
             return
-        if self.path.split("?")[0] != "/vigo/info":
-            self._send(404, {"error": "no route"})
+        parsed = urlsplit(self.path)
+        if parsed.path == "/vigo/info":
+            self._send(200, {"device": self.server.device,
+                             "version": self.server.version or __version__,
+                             "build": self.server.build,
+                             "built": self.server.built,
+                             "status": self.server.status(),
+                             "queue": self.server.queue(),
+                             "guests": self.server.guests()})
             return
-        self._send(200, {"device": self.server.device,
-                         "version": self.server.version or __version__,
-                         "build": self.server.build,
-                         "built": self.server.built,
-                         "status": self.server.status(),
-                         "queue": self.server.queue()})
+        if parsed.path == "/vigo/channel":
+            channel = (parse_qs(parsed.query).get("channel") or [""])[0]
+            if not channel:
+                self._send(400, {"error": "no channel"})
+                return
+            self._send(200, {"device": self.server.device,
+                             **self.server.channel(channel)})
+            return
+        self._send(404, {"error": "no route"})
 
     def do_POST(self) -> None:
         if not self._allowed():
@@ -292,6 +318,8 @@ class PeerServer:
                  version: str = "", build: str = "", built: int = 0,
                  status: Callable[[], str] | None = None,
                  queue: Callable[[], list] | None = None,
+                 channel: Callable[[str], dict] | None = None,
+                 guests: Callable[[], list[str]] | None = None,
                  suspend: Callable[[], None] | None = None) -> None:
         self.server = ThreadingHTTPServer((host, port), _Handler)
         self.server.device = device  # type: ignore[attr-defined]
@@ -308,6 +336,13 @@ class PeerServer:
         # What this daemon runs and waits on, for `/vigo queue` on the other
         # one.  A daemon that holds nothing yet answers with an empty list.
         self.server.queue = queue or (lambda: [])  # type: ignore[attr-defined]
+        # What this daemon holds for one channel, for `/vigo status` on the
+        # other one: the line, the session and the run may all be here.
+        self.server.channel = channel or (lambda _channel: {})  # type: ignore[attr-defined]
+        # The approved people with work in flight here.  `/vigo ask` on the
+        # other daemon reads it so one person has one question at a time on
+        # every machine, not one on each.
+        self.server.guests = guests or (lambda: [])  # type: ignore[attr-defined]
         # What this daemon's runs are, written down before an upgrade takes the
         # process down.  The other daemon asks for the update, so the record is
         # made here, by the daemon that owns the runs.
