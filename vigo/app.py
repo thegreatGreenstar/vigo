@@ -619,11 +619,12 @@ class App:
     def _refresh_presence(self) -> None:
         """Look at the daemon, the servers and the other daemons; show the one status.
 
-        A busy server can only lower the status to do not disturb, so the
-        listing of sessions is skipped when this daemon already says online.
-        The status this daemon sees is kept in `presence.own`: that is what a
-        peer is told, and it is never the merged one, which would feed two
-        daemons each other's answer and hold the account green for good.
+        A busy server decides whether the light is green or red when nothing
+        was answered recently, so the listing of sessions is skipped when this
+        daemon already says online.  The status this daemon sees is kept in
+        `presence.own`: that is what a peer is told, and it is never the merged
+        one, which would feed two daemons each other's answer and hold the
+        account green for good.
         """
         states = self.router.states()
         up = sum(1 for state in states.values() if state.up)

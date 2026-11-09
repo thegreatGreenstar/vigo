@@ -956,10 +956,11 @@ fails when no device is up. That is the honest answer, not a queue.
 
 The bot's Discord status says what it is doing instead of staying green:
 
-- **Online** (green) while it answers a question or a quick command, and for
-  five minutes after it last answered anything.
-- **Idle** when nothing was answered in those five minutes, and a server can
-  take a question now.
+- **Online** (green) while any server is at work on a turn, while it answers a
+  question or a quick command, and for five minutes after it last answered
+  anything.
+- **Idle** when nothing was answered in those five minutes, no server is at
+  work, and a server can take a question now.
 - **Do not disturb** (red) when every server that answers is at work on a turn
   and nothing was answered recently, so a question would wait behind that work.
   A turn at work is what the server is doing, not a session list that is full.

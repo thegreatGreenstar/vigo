@@ -4,9 +4,11 @@ Discord takes a status over the gateway: online, idle, do not disturb, or
 invisible.  The bot shows what it is doing rather than a light that is always
 green:
 
-- `online` (green): this daemon answers something, or answered anything within
-  the last five minutes.
-- `idle`: no answer within those five minutes, and a server can take a
+- `online` (green): any server is at work on a turn, this daemon answers
+  something, or anything was answered within the last five minutes.  A turn at
+  work on one of two servers is still the bot doing something, so the light is
+  green, not idle.
+- `idle`: no answer within those five minutes, and every server can take a
   question.
 - `dnd` (red): every server that answers is at work on a turn, and nothing was
   answered recently, so a question would wait behind that work.  A turn at
@@ -60,7 +62,9 @@ def status_for(*, working: bool, up: int, busy: int, last: float | None,
     The order is the one the daemons agree on.  Work of this daemon is green,
     not red, because the account shows the work being done: a question waits
     behind it, but a light that turns red each time the bot thinks says the
-    bot is unavailable while it runs.
+    bot is unavailable while it runs.  A turn at work on one of two servers is
+    green as well: the bot is doing something, and a question can still go to
+    the one that is free.
 
     A daemon whose servers are all down shows do not disturb, never invisible:
     it is still connected to Discord, and another daemon may be able to answer.
@@ -71,6 +75,8 @@ def status_for(*, working: bool, up: int, busy: int, last: float | None,
         return "online"
     if busy >= up:
         return "dnd"
+    if busy:
+        return "online"
     return "idle"
 
 

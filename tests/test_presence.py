@@ -42,9 +42,11 @@ class StatusTest(unittest.TestCase):
         self.assertEqual(
             status_for(working=False, up=2, busy=2, last=None, now=100.0), "dnd")
 
-    def test_a_server_that_can_take_a_question_is_not_to_disturb(self):
+    def test_a_turn_on_one_of_two_servers_is_online(self):
         self.assertEqual(
-            status_for(working=False, up=2, busy=1, last=None, now=100.0), "idle")
+            status_for(working=False, up=2, busy=1, last=None, now=100.0), "online",
+            "the bot is at work; a question can still go to the free server",
+        )
 
     def test_work_while_every_server_is_busy_is_online(self):
         self.assertEqual(
@@ -161,6 +163,20 @@ class AppPresenceTest(unittest.TestCase):
             self.device.started_turn(session)
             app._refresh_presence()
         self.assertEqual(app.gateway.statuses[-1], "dnd")
+
+    def test_a_turn_on_one_of_two_servers_is_online(self):
+        """The bot is at work, and the other server can still take a question."""
+        second = FakeOpenCode("pc")
+        self.addCleanup(second.close)
+        with TempDir() as directory:
+            app = self.make(directory, devices=[
+                {"name": "macbook", "url": self.device.url, "directory": "/tmp/project"},
+                {"name": "pc", "url": second.url, "directory": "/tmp/other"},
+            ])
+            session = self.device.new_session()
+            self.device.started_turn(session)
+            app._refresh_presence()
+        self.assertEqual(app.gateway.statuses[-1], "online")
 
     def test_a_stale_busy_session_is_not_do_not_disturb(self):
         """A restart leaves the stamp; the device's list says no turn runs."""
