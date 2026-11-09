@@ -15,8 +15,24 @@ DENY = "deny"
 ALLOWED = "allowed"
 HELP = "help"
 
-TIMES = [("2h", "2 hours"), ("1d", "1 day"), ("7d", "7 days"), ("perm", "permanent")]
-SECONDS = {"2h": 7200, "1d": 86400, "7d": 604800, "perm": None}
+TIMES = [
+    ("2h", "2 hours"),
+    ("1d", "1 day"),
+    ("7d", "7 days"),
+    ("30d", "1 month"),
+    ("180d", "6 months"),
+    ("365d", "1 year"),
+    ("perm", "permanent"),
+]
+SECONDS = {
+    "2h": 7200,
+    "1d": 86400,
+    "7d": 604800,
+    "30d": 30 * 86400,
+    "180d": 180 * 86400,
+    "365d": 365 * 86400,
+    "perm": None,
+}
 
 # Where a command may appear, by how the app is installed.  A user install
 # (your own profile) is visible in every server, DM and group DM that person
@@ -228,17 +244,19 @@ def relevant(commands: list[dict]) -> list[dict]:
 def flatten(data: dict) -> tuple[str, dict]:
     """The subcommand's name and its options, as Discord sends them.
 
-    A file arrives as the id of an attachment, and its name, size and link are
-    in the payload's `resolved` part.  The id alone names nothing anyone can
-    read, so the attachment is resolved here and the option carries what a
-    reader of the question needs.
+    A file arrives as the id of an attachment, and a person arrives as the id
+    of a user, and their names, size and link are in the payload's `resolved`
+    part.  The id alone names nothing anyone can read, so both are resolved
+    here and the option carries what a reader needs.
     """
     options = data.get("options") or []
     if not options:
         return "", {}
     chosen = options[0]
     name = chosen.get("name", "")
-    files = (data.get("resolved") or {}).get("attachments") or {}
+    resolved = data.get("resolved") or {}
+    files = resolved.get("attachments") or {}
+    users = resolved.get("users") or {}
     values: dict = {}
     for option in chosen.get("options") or []:
         value = option.get("value")
@@ -251,6 +269,11 @@ def flatten(data: dict) -> tuple[str, dict]:
                 "size": found.get("size"),
                 "content_type": found.get("content_type"),
             }
+        elif option.get("type") == 6 and isinstance(value, str):
+            # Discord sends the id for a user option, not the user object: the
+            # object is under `resolved.users`.  Replacing the id with what it
+            # names keeps the person's name in what the bot says.
+            value = users.get(value) or value
         values[option.get("name", "")] = value
     return name, values
 
@@ -258,6 +281,8 @@ def flatten(data: dict) -> tuple[str, dict]:
 def user_id(value: object) -> str:
     if isinstance(value, dict):
         return str(value.get("id") or "")
+    if isinstance(value, str) and value.isdigit():
+        return value
     return ""
 
 

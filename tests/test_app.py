@@ -128,8 +128,8 @@ class AppTest(unittest.TestCase):
         with TempDir() as directory:
             app = self.make(directory)
             interaction = self.use(app, commands.ALLOW, who=STRANGER,
-                                   options=[{"name": "user", "type": 6,
-                                             "value": {"id": "42", "username": "Alex"}}])
+                                   options=[{"name": "user", "type": 6, "value": "42"}],
+                                   resolved={"users": {"42": {"id": "42", "username": "Alex"}}})
         answer = self.discord.answer_for(interaction)
         self.assertIn("Only", answer["data"]["content"])
         self.assertFalse(app.allow.may_ask("42"))
@@ -139,8 +139,8 @@ class AppTest(unittest.TestCase):
         with TempDir() as directory:
             app = self.make(directory)
             self.use(app, commands.ALLOW, options=[
-                {"name": "user", "type": 6, "value": {"id": "42", "username": "Alex"}},
-            ])
+                {"name": "user", "type": 6, "value": "42"},
+            ], resolved={"users": {"42": {"id": "42", "username": "Alex"}}})
             self.assertTrue(app.allow.may_ask("42"))
             interaction = self.use(app, commands.UPGRADE, who="42")
         answer = self.discord.answer_for(interaction)
@@ -153,16 +153,74 @@ class AppTest(unittest.TestCase):
         with TempDir() as directory:
             app = self.make(directory)
             interaction = self.use(app, commands.ALLOW, options=[
-                {"name": "user", "type": 6, "value": {"id": "42", "username": "Alex"}},
+                {"name": "user", "type": 6, "value": "42"},
                 {"name": "for", "type": 3, "value": "2h"},
-            ])
+            ], resolved={"users": {"42": {"id": "42", "username": "Alex"}}})
             self.assertEqual(self.discord.answer_for(interaction)["data"]["flags"], 64,
                              "someone else's name is never public")
             self.assertTrue(self.discord.wait_for(lambda: app.allow.may_ask("42")))
             self.use(app, commands.DENY, options=[
-                {"name": "user", "type": 6, "value": {"id": "42", "username": "Alex"}},
-            ])
+                {"name": "user", "type": 6, "value": "42"},
+            ], resolved={"users": {"42": {"id": "42", "username": "Alex"}}})
             self.assertTrue(self.discord.wait_for(lambda: not app.allow.may_ask("42")))
+
+    def test_an_allow_reads_the_user_as_discord_sends_one(self):
+        """A user option carries the id; the name is beside it in `resolved`.
+
+        Discord never puts the user object in the option's value.  Reading the
+        value as an object named nobody, so an allow for a real person was
+        refused with "Name the person to allow."
+        """
+        with TempDir() as directory:
+            app = self.make(directory)
+            self.use(app, commands.ALLOW, options=[
+                {"name": "user", "type": 6, "value": "42"},
+                {"name": "for", "type": 3, "value": "1d"},
+            ], resolved={"users": {"42": {"id": "42", "username": "alex",
+                                          "global_name": "Alex"}}})
+            self.assertTrue(self.discord.wait_for(lambda: app.allow.may_ask("42")))
+            entries = app.allow.entries()
+        self.assertEqual([entry.name for entry in entries], ["Alex"])
+
+    def test_an_allow_without_a_resolved_user_still_names_the_id(self):
+        """A payload that lost the user object must not lose the allow too."""
+        with TempDir() as directory:
+            app = self.make(directory)
+            self.use(app, commands.ALLOW, options=[
+                {"name": "user", "type": 6, "value": "42"},
+            ])
+            self.assertTrue(self.discord.wait_for(lambda: app.allow.may_ask("42")))
+            self.assertIn("allowed", self.discord.edits[-1]["content"])
+
+    def test_the_allow_times_go_past_a_week_to_a_year_and_forever(self):
+        """A month, half a year and a year sit between a week and forever."""
+        allow = next(option for option in commands.spec()[0]["options"]
+                     if option["name"] == commands.ALLOW)
+        choice = next(inner for inner in allow["options"] if inner["name"] == "for")
+        self.assertEqual([(entry["value"], entry["name"]) for entry in choice["choices"]], [
+            ("2h", "2 hours"),
+            ("1d", "1 day"),
+            ("7d", "7 days"),
+            ("30d", "1 month"),
+            ("180d", "6 months"),
+            ("365d", "1 year"),
+            ("perm", "permanent"),
+        ])
+
+    def test_a_month_a_half_year_and_a_year_last_that_long(self):
+        cases = (("30d", 30), ("180d", 180), ("365d", 365))
+        with TempDir() as directory:
+            app = self.make(directory)
+            for value, days in cases:
+                before = int(time.time())
+                self.use(app, commands.ALLOW, options=[
+                    {"name": "user", "type": 6, "value": "42"},
+                    {"name": "for", "type": 3, "value": value},
+                ], resolved={"users": {"42": {"id": "42", "username": "Alex"}}})
+                entry = app.allow.entries()[0]
+                self.assertEqual(entry.id, "42")
+                self.assertGreaterEqual(entry.until, before + days * 86400, value)
+                self.assertLessEqual(entry.until, before + days * 86400 + 10, value)
 
     def test_allow_refuses_the_owner_and_the_bot(self):
         """The picker offers everyone; only someone else can be allowed."""
@@ -172,8 +230,8 @@ class AppTest(unittest.TestCase):
             for sub in (commands.ALLOW, commands.DENY):
                 for who, expected in cases:
                     self.use(app, sub, options=[
-                        {"name": "user", "type": 6, "value": {"id": who, "username": "x"}},
-                    ])
+                        {"name": "user", "type": 6, "value": who},
+                    ], resolved={"users": {who: {"id": who, "username": "x"}}})
                     self.assertIn(expected, self.discord.edits[-1]["content"])
         self.assertFalse(app.allow.may_ask(self.discord.bot_id))
         self.assertTrue(app.allow.may_ask(app.config.owner), "the owner needs no entry")
@@ -2636,8 +2694,8 @@ class AppTest(unittest.TestCase):
         with TempDir() as directory:
             app = self.make(directory)
             self.use(app, commands.ALLOW, options=[
-                {"name": "user", "type": 6, "value": {"id": GUEST, "username": "Guest"}},
-            ])
+                {"name": "user", "type": 6, "value": GUEST},
+            ], resolved={"users": {GUEST: {"id": GUEST, "username": "Guest"}}})
             self.assertTrue(self.discord.wait_for(lambda: app.allow.may_ask(GUEST)))
             self.use(app, commands.ASK, who=GUEST, options=[
                 {"name": "prompt", "type": 3, "value": "what is a heap"},
