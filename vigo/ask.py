@@ -642,13 +642,17 @@ class Ask:
         return ""
 
     def _record(self, message: object) -> None:
-        """Remember a message this run posted, so a reply to it is a question."""
+        """Remember a message this run posted, so a reply to it is a question.
+
+        The device goes with it: a reply carries the conversation on, and the
+        conversation is the session of the device that held it.
+        """
         if not isinstance(message, dict):
             return
         message_id = str(message.get("id") or "")
         if message_id:
             try:
-                self.app.state.remember_answer(message_id, self.channel_id)
+                self.app.state.remember_answer(message_id, self.channel_id, self.device_name)
             except OSError as error:
                 # The answer is already out.  Remembering where it landed is a
                 # convenience for a reply, not a reason to post it a second

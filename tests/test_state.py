@@ -59,7 +59,32 @@ class StateTest(unittest.TestCase):
             self.assertEqual(state.data["sessions"], {})
             self.assertIsNone(state.session_for("chan"))
 
+    def test_an_answer_keeps_the_device_that_answered_it(self):
+        """A reply continues there, so the device goes with the message."""
+        with TempDir() as directory:
+            state = State(directory / "state.json")
+            state.remember_answer("msg_1", "chan", "pc")
+            entry = state.answer_for("msg_1")
+            self.assertEqual(entry["channel"], "chan")
+            self.assertEqual(entry["device"], "pc")
+            state.remember_answer("msg_2", "chan")
+            self.assertEqual(state.answer_for("msg_2")["device"], "",
+                             "an answer with no device named still says its channel")
+
+    def test_an_answer_from_before_the_device_was_kept_reads_as_none(self):
+        """A state file written by an older daemon has no `device` key."""
+        with TempDir() as directory:
+            path = directory / "state.json"
+            path.write_text(json.dumps({
+                "answers": {"msg_1": {"channel": "chan", "at": time.time()}},
+            }), encoding="utf-8")
+            os.chmod(path, 0o600)
+            state = State(path)
+            self.assertEqual(state.answer_for("msg_1")["channel"], "chan")
+            self.assertEqual(str(state.answer_for("msg_1").get("device") or ""), "")
+
     # -- work carried over an upgrade ------------------------------------
+
 
     def test_carried_over_work_is_given_up_once(self):
         with TempDir() as directory:

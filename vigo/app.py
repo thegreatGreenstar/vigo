@@ -1393,11 +1393,24 @@ class App:
         answered = self.state.answer_for(reference)
         if answered is None or str(answered.get("channel") or "") != channel_id:
             return  # not a message this daemon posted here
-        pick = self.router.pick()
+        # The reply is the next turn of a conversation, and a conversation is
+        # one session on one device.  Asking the router again would send it to
+        # whichever device the person last used, where there is no such
+        # session: the answer would be given without the question it continues.
+        held = str(answered.get("device") or "")
+        pick = self.router.pick(explicit=held or None)
         if pick.name is None:
             log.info(f"reply: no device ({pick.reason})")
-            self._post(channel_id, "No device would take the question. Start OpenCode there "
-                                   "with `opencode serve --hostname 0.0.0.0 --port 4096`.")
+            if held:
+                self._post(channel_id, (
+                    "The device that answered last is not answering now, so this reply "
+                    "cannot continue that conversation. Start OpenCode there, or ask "
+                    "again with `/vigo ask`."
+                ))
+            else:
+                self._post(channel_id, "No device would take the question. Start OpenCode "
+                                       "there with `opencode serve --hostname 0.0.0.0 "
+                                       "--port 4096`.")
             return
         private = self._private_channel(channel_id)
         session_key = channel_id if who == self.config.owner else f"{channel_id}:{who}"
@@ -1450,17 +1463,19 @@ class App:
         # The line is the question's own: a note about the run past `timeout`
         # goes at its end, so the run edits this message rather than posting a
         # second one beside it.
-        worker.message_id = self._post(channel_id, line, record=True)
+        worker.message_id = self._post(channel_id, line, record=True, device=pick.name or "")
         worker.shown = line if worker.message_id else ""
         self.start_next(channel_id)
 
-    def _post(self, channel_id: str, content: str, record: bool = False) -> str:
+    def _post(self, channel_id: str, content: str, record: bool = False,
+              device: str = "") -> str:
         """Say something where there is no interaction to edit.
 
         With `record`, a reply to it is the next question, and the daemon that
-        posted it is the only one that will act on that reply.  The answer is
-        the message's id, or "" when Discord would not take it, so the caller
-        can edit that message later.
+        posted it is the only one that will act on that reply.  `device` goes
+        with it, so that reply continues the conversation where it was held.
+        The answer is the message's id, or "" when Discord would not take it,
+        so the caller can edit that message later.
         """
         try:
             posted = self.api.send(channel_id, {
@@ -1472,7 +1487,7 @@ class App:
             return ""
         message_id = str(posted.get("id") or "") if isinstance(posted, dict) else ""
         if record and message_id:
-            self.state.remember_answer(message_id, channel_id)
+            self.state.remember_answer(message_id, channel_id, device)
         return message_id
 
     def register_commands(self) -> None:
