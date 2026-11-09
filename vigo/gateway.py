@@ -291,15 +291,7 @@ class Gateway:
         if self.presence is None or self.ws is None:
             return
         try:
-            self.ws.send_json({
-                "op": OP_PRESENCE,
-                "d": {
-                    "since": None,
-                    "activities": [],
-                    "status": self.presence,
-                    "afk": False,
-                },
-            })
+            self.ws.send_json({"op": OP_PRESENCE, "d": self._presence_payload()})
         except (OSError, GatewayClosed) as error:  # the next reconnect sends it
             log.info(f"gateway: no presence ({error})")
 
@@ -446,6 +438,15 @@ class Gateway:
     def timeout_for_hello(self) -> float:
         return 30.0
 
+    def _presence_payload(self) -> dict:
+        """The status as Discord takes it, from the identify and from a change."""
+        return {
+            "since": None,
+            "activities": [],
+            "status": self.presence or "online",
+            "afk": False,
+        }
+
     def _identify_data(self) -> dict:
         import sys
 
@@ -458,6 +459,10 @@ class Gateway:
                 "browser": "vigo",
                 "device": "vigo",
             },
+            # The status travels with the identify too.  A separate presence
+            # after READY is correct, and an account that still showed offline
+            # in a DM takes this one as its first answer.
+            "presence": self._presence_payload(),
         }
 
     def _identify(self) -> None:
