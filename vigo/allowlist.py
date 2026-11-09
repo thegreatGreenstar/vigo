@@ -22,6 +22,9 @@ from .state import State
 
 MARKER = "VIGO-ALLOWLIST 1"
 MOST = 60  # allows at once; past this the message would not fit
+PAGE = 100  # the most messages one read of a history returns
+PAGES = 10  # the most pages a state channel is walked: it is made for the list
+DM_PAGES = 100  # the most pages the bot's own DM is walked: it holds every card
 
 
 class AllowError(Exception):
@@ -60,7 +63,7 @@ class AllowList:
         self.listed = set(config.users)
         self._channel: str | None = None
         self._bot: str | None = None  # this bot's own user id, asked once
-        self._saw_own = False  # whether the scan met a message this bot wrote
+        self._start = False  # whether the scan reached the channel's first message
         self.where = "not ready"
 
     # -- where the list lives ---------------------------------------------
@@ -109,11 +112,19 @@ class AllowList:
         author = message.get("author")
         who = str((author or {}).get("id") or "") if isinstance(author, dict) else ""
         if who and who == self._mine():
-            self._saw_own = True
             return True
         if (message.get("content") or "").startswith(MARKER):
             log.debug(f"allowlist: a list-shaped message from {who or 'an unknown author'} is ignored")
         return False
+
+    def _pages(self) -> int:
+        """How far the scan walks before it treats the list as missing.
+
+        The bot's DM with its owner holds an answer and a card for every turn,
+        so the list sinks under them.  A state channel is made for the list and
+        read on other people's asks too, so the walk there stays short.
+        """
+        return PAGES if self.config.state_channel else DM_PAGES
 
     def _own_message(self, channel: str) -> dict | None:
         """The bot's own list message, read once.
@@ -123,7 +134,7 @@ class AllowList:
         sends the search back to the channel's newest messages.
         """
         remembered = self.state.state_message(channel)
-        self._saw_own = False
+        self._start = False
         if remembered:
             reply = self.api._call("GET", f"/channels/{channel}/messages/{remembered}")
             if reply.ok and isinstance(reply.body, dict):
@@ -142,31 +153,32 @@ class AllowList:
             else:
                 self.state.remember_state_message(channel, "")
         try:
-            found = self.api.messages(channel, limit=100)
+            found = self.api.messages(channel, limit=PAGE)
         except DiscordError as error:
             raise AllowError(
                 f"cannot read {self.where} ({error.message}); "
                 "set 'stateChannel' to a private channel the bot can read"
             ) from error
         before = ""
-        # A busy channel can push the list out of the newest page.  Walk back
-        # a bounded way rather than call the list missing: treating a flood as
-        # no list would let the next allow write a new one and drop the rest.
-        for _page in range(10):
+        # The list is a message, and the channel's own traffic pushes it down,
+        # so the scan walks back.  It stops at the channel's first message,
+        # because only there is "no list" a fact: one it did not see may still
+        # be older than the walk.  A shorter read that called the list missing
+        # would let the next allow write a new one over the entries of the old.
+        # A walk that ends with a full page counts as cut, not as the start.
+        for _page in range(self._pages()):
             for message in found:
-                content = message.get("content") or ""
-                mine = self._own(message)
-                self._saw_own = self._saw_own or mine
-                if content.startswith(MARKER) and mine:
+                if (message.get("content") or "").startswith(MARKER) and self._own(message):
                     self.state.remember_state_message(channel, message["id"])
                     return message
-            if not found:
+            if len(found) < PAGE:
+                self._start = True
                 break
             before = str(found[-1].get("id") or "")
-            if not before or len(found) < 100:
+            if not before:
                 break
             try:
-                found = self.api.messages(channel, limit=100, before=before)
+                found = self.api.messages(channel, limit=PAGE, before=before)
             except DiscordError as error:
                 raise AllowError(
                     f"cannot read {self.where} ({error.message}); "
@@ -217,14 +229,17 @@ class AllowList:
         channel = self._home()
         found = self._own_message(channel)
         message_id = str((found or {}).get("id") or "")
-        if not message_id and self._saw_own:
-            # This bot wrote in the channel, but no list was in reach.  A new
-            # message would become the list and the old entries would be lost,
-            # so nothing changes until the old one can be read.
+        if not message_id and not self._start:
+            # The walk stopped before the channel's first message, so a list
+            # may be older than it.  A new message would become the list and
+            # the entries of that one would stop applying, so nothing changes
+            # until it is read: one that is not there at all is a case the
+            # walk reaches the start for.
             raise AllowError(
-                f"the allowlist in {self.where} cannot be found in the newest "
-                "messages; nothing was changed. Set 'stateChannel' to a private "
-                "channel that holds the list"
+                f"the allowlist in {self.where} is not in the newest "
+                f"{PAGE * self._pages():,} messages, so it may be older than that; "
+                "nothing was changed. Set 'stateChannel' to a private channel "
+                "that holds the list"
             )
         body = {"v": 1, "allowed": [entry.as_json() for entry in entries]}
         content = f"{MARKER}\n{json.dumps(body, separators=(',', ':'))}"

@@ -1,7 +1,7 @@
 import json
 import unittest
 
-from vigo.allowlist import MARKER, AllowError, AllowList
+from vigo.allowlist import MARKER, PAGE, PAGES, AllowError, AllowList
 from vigo.discord_api import Discord
 from vigo.state import State
 from tests.fake_discord import FakeDiscord
@@ -163,13 +163,57 @@ class AllowListTest(unittest.TestCase):
             self.assertTrue(pc.may_ask("42"), "the list is found past the newest page")
             self.assertEqual(pc.describe().count("Alex"), 1)
 
-    def test_a_list_that_cannot_be_found_is_not_replaced(self):
-        """If the bot wrote here but no list is in reach, nothing is overwritten."""
+    def test_a_list_older_than_the_walk_is_not_replaced(self):
+        """A channel too long to read to its start keeps its list, if it has one."""
+        with TempDir() as directory:
+            mac, _pc = self.lists(directory)  # a state channel: PAGES * PAGE
+            for _ in range(PAGES * PAGE + 1):
+                self.discord.add_message(CHANNEL, "not the list", bot=True)
+            with self.assertRaises(AllowError) as caught:
+                mac.allow("42", "Alex", None)
+            self.assertIn("may be older", str(caught.exception))
+            self.assertEqual(
+                [message for message in self.discord.messages[CHANNEL]
+                 if message["content"].startswith(MARKER)],
+                [], "nothing is written")
+
+    def test_a_bot_line_does_not_hide_the_absence_of_a_list(self):
+        """The walk reaches the first message, so no list is a fact, not a guess."""
         with TempDir() as directory:
             mac, _pc = self.lists(directory)
-            self.discord.add_message(CHANNEL, "not the list", bot=True)
-            with self.assertRaises(AllowError):
-                mac.allow("42", "Alex", None)
+            self.discord.add_message(CHANNEL, "the bot's first line", bot=True)
+            said = mac.allow("42", "Alex", None)
+            self.assertIn("allowed", said)
+            self.assertTrue(mac.may_ask("42"))
+
+    def test_a_dm_the_bot_wrote_in_still_gets_its_first_list(self):
+        """The bot answers and sends cards in the owner's DM, and none of those
+        is the list.  The first allow there must still create one."""
+        with TempDir() as directory:
+            settings = load_settings(directory)
+            api = Discord("token", settings.app_id, base=self.discord.url)
+            listing = AllowList(settings, api, State(directory / "state.json"))
+            channel = api.open_dm(listing.owner)
+            self.discord.add_message(channel, "an answer the bot posted", bot=True)
+            said = listing.allow("42", "Baja Blast", 30 * 86400)
+            self.assertIn("allowed", said)
+            self.assertTrue(listing.may_ask("42"))
+
+    def test_a_dm_is_read_past_the_walk_of_a_state_channel(self):
+        """The bot's DM holds a card and an answer for every turn, so its list
+        must be found deeper than a state channel's, not called missing."""
+        with TempDir() as directory:
+            settings = load_settings(directory)
+            api = Discord("token", settings.app_id, base=self.discord.url)
+            channel = api.open_dm(settings.owner)
+            stored = {"v": 1, "allowed": [
+                {"id": "42", "name": "Alex", "since": 1, "until": None}]}
+            self.discord.add_message(channel, f"{MARKER}\n{json.dumps(stored)}", bot=True)
+            for _ in range(PAGES * PAGE + 5):
+                self.discord.add_message(channel, "an answer the bot posted", bot=True)
+            fresh = AllowList(settings, api, State(directory / "fresh.json"))
+            self.assertTrue(fresh.may_ask("42"),
+                            "the DM is walked past a state channel's bound")
 
     def test_one_decision_reads_the_list_once(self):
         """Every command and every DM reads this list: one GET, not two."""
