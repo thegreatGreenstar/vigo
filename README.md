@@ -686,7 +686,7 @@ What the Developer Portal asks for, if it helps:
 | `/vigo devices` | owner | what is up, and which one a question would go to |
 | `/vigo stop` | owner | interrupts the channel's run, and drops the questions that wait behind it |
 | `/vigo upgrade [device]` | owner | pulls and restarts a daemon that runs a different commit; empty does every one of them, and the owner gets a DM naming each device and the commit it moved from and to. A turn already running on that daemon carries over the restart, and its answer still arrives |
-| `/vigo allow user:<who> [for:<2h｜1d｜7d｜perm>]` | owner | lets someone ask, for a time. One day when unnamed. The **Allow** buttons on a request card do the same |
+| `/vigo allow user:<who> [for:<2h｜1d｜7d｜30d｜180d｜365d｜perm>]` | owner | lets someone ask, for a time from 2 hours to a year or for good. One day when unnamed. The **Allow** buttons on a request card do the same |
 | `/vigo deny user:<who>` | owner | takes that allow back |
 | `/vigo allowed` | owner | who may ask, and until when |
 | `/vigo help` | anyone | what the bot does. A stranger also gets the **Ask for access** button |
