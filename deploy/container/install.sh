@@ -134,12 +134,21 @@ Darwin)
         podman secret create host-runner-token - < "$config/host-runner.token" >/dev/null \
             && say "host runner: made the podman secret host-runner-token"
     fi
-    # The agent's MCP entry, once.  A config that does not have it is no error.
-    "$python" - "$agent_home/.config/opencode/opencode.json" <<'PY'
+    # The agent's MCP entry for each program, once.  A config that is not
+    # readable, or a program table that is empty, is no error.
+    "$python" - "$config/host-runner.json" "$agent_home/.config/opencode/opencode.json" <<'PY'
 import json, sys
-path = sys.argv[1]
+
+config_path, agent_path = sys.argv[1], sys.argv[2]
 try:
-    with open(path, encoding="utf-8") as handle:
+    with open(config_path, encoding="utf-8") as handle:
+        config = json.load(handle)
+    programs = list(config["programs"])
+    port = config.get("port", 4099)
+except (OSError, ValueError, KeyError, TypeError):
+    raise SystemExit(0)
+try:
+    with open(agent_path, encoding="utf-8") as handle:
         data = json.load(handle)
 except (OSError, ValueError):
     raise SystemExit(0)
@@ -156,19 +165,23 @@ holder = servers if isinstance(servers, dict) else mcp
 old = holder.get("scarletnx")
 if isinstance(old, dict) and "host.containers.internal" in str(old.get("url", "")):
     holder.pop("scarletnx", None)
-entry = {
-    "type": "remote",
-    "url": "http://host.containers.internal:4099/mcp?program=scarletnx",
-    "enabled": True,
-    "oauth": False,
-    "headers": {"Authorization": "Bearer {env:VIGO_HOST_RUNNER_TOKEN}"},
-}
-if holder.get("scarletnx-host") != entry:
-    holder["scarletnx-host"] = entry
-    with open(path, "w", encoding="utf-8") as handle:
+changed = False
+for name in programs:
+    entry = {
+        "type": "remote",
+        "url": f"http://host.containers.internal:{port}/mcp?program={name}",
+        "enabled": True,
+        "oauth": False,
+        "headers": {"Authorization": "Bearer {env:VIGO_HOST_RUNNER_TOKEN}"},
+    }
+    if holder.get(f"{name}-host") != entry:
+        holder[f"{name}-host"] = entry
+        changed = True
+if changed:
+    with open(agent_path, "w", encoding="utf-8") as handle:
         json.dump(data, handle, indent=2)
         handle.write("\n")
-    print("host runner: the agent config carries the scarletnx-host MCP")
+    print("host runner: the agent config carries an MCP entry for each program")
 PY
 
     plist=$agents/dev.vigo.container.plist
