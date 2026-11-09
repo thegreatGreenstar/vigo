@@ -116,6 +116,25 @@ class GatewayTest(unittest.TestCase):
         self.assertEqual(self.fake.presences[-1]["status"], "online")
 
 
+class PresenceOrderTest(unittest.TestCase):
+    def test_a_status_does_not_go_out_before_the_identify_is_accepted(self) -> None:
+        """The presence thread can race the connection.
+
+        Discord closes a presence sent before the identify with 4003, and the
+        daemon treats that as a refused token and stops.  The status waits for
+        READY, where the gateway sends it.
+        """
+        sent: list[dict] = []
+        gateway = Gateway("wss://gateway.discord.gg/?v=10&encoding=json", "token", 1,
+                          lambda event, data: None)
+        gateway.ws = type("Stub", (), {"send_json": staticmethod(sent.append)})()
+        gateway.set_presence("idle")
+        self.assertEqual(sent, [], "a presence went out before the identify was accepted")
+        gateway.ready = True
+        gateway.set_presence("idle")
+        self.assertEqual([frame["op"] for frame in sent], [3])
+
+
 class FrameTest(unittest.TestCase):
     """A frame from the server: its length is eight bytes the server chooses."""
 

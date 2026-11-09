@@ -268,6 +268,11 @@ class Gateway:
         self.seq: int | None = None
         self.stopped = False
         self.ws: WebSocket | None = None
+        # Whether Discord accepted this connection's identify or resume.  A
+        # presence sent before that is a protocol violation, and Discord
+        # closes the connection with 4003, which this client reads as a
+        # refused token.  The status waits for READY.
+        self.ready = False
         # The status Discord shows, kept here because Discord forgets it when
         # the connection drops: a reconnect sends it again from this value.
         self.presence: str | None = None
@@ -288,7 +293,7 @@ class Gateway:
         self._send_presence()
 
     def _send_presence(self) -> None:
-        if self.presence is None or self.ws is None:
+        if self.presence is None or self.ws is None or not self.ready:
             return
         try:
             self.ws.send_json({"op": OP_PRESENCE, "d": self._presence_payload()})
@@ -324,6 +329,7 @@ class Gateway:
 
     def _session(self) -> bool:
         # A fresh connection each time: Discord keeps the old one open a moment.
+        self.ready = False
         self.ws = WebSocket(self.url)
         self.ws.connect()
         self.on_state("connecting")
@@ -417,6 +423,7 @@ class Gateway:
             elif op == 9:
                 self.session_id = None
                 self.seq = None
+                self.ready = False
                 self.ws.send_json({"op": 2, "d": self._identify_data()})
                 sent = "identify"
                 accepted = False
@@ -426,10 +433,12 @@ class Gateway:
                 if event == "READY":
                     self.session_id = (data or {}).get("session_id")
                     accepted = True
+                    self.ready = True
                     self.on_state("ready")
                     self._send_presence()
                 elif event == "RESUMED":
                     accepted = True
+                    self.ready = True
                     self._send_presence()
                 self.on_event(event, data or {})
 
