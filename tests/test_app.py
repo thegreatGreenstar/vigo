@@ -164,6 +164,20 @@ class AppTest(unittest.TestCase):
             ], resolved={"users": {"42": {"id": "42", "username": "Alex"}}})
             self.assertTrue(self.discord.wait_for(lambda: not app.allow.may_ask("42")))
 
+    def test_an_allow_works_when_the_dm_holds_other_messages(self):
+        """The bot's DM carries a card and an answer, and the allowlist is not
+        among them: the first allow there must create the list, not refuse."""
+        with TempDir() as directory:
+            app = self.make(directory)
+            channel = app.api.open_dm(OWNER)
+            self.discord.add_message(channel, "an answer the bot posted", bot=True)
+            self.use(app, commands.ALLOW, options=[
+                {"name": "user", "type": 6, "value": "42"},
+                {"name": "for", "type": 3, "value": "30d"},
+            ], resolved={"users": {"42": {"id": "42", "username": "Alex"}}})
+            self.assertIn("allowed", self.discord.edits[-1]["content"])
+            self.assertTrue(self.discord.wait_for(lambda: app.allow.may_ask("42")))
+
     def test_an_allow_reads_the_user_as_discord_sends_one(self):
         """A user option carries the id; the name is beside it in `resolved`.
 

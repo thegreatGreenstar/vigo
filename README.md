@@ -850,7 +850,14 @@ survives restarts. The message holds the ids and the display names of the
 people you allowed, so `stateChannel` must be a private channel the bot and you
 can read, and nothing else. If that message cannot be read, because a channel
 the bot cannot see, or a message edited into something it cannot parse, changes
-stop with an error naming the problem, and nothing is overwritten. Prefer
+stop with an error naming the problem, and nothing is overwritten.
+
+The bot finds the list by its id, and reads back through the channel when that
+id is gone, so a second device or a lost state file still sees it. It reads to
+the channel's first message before it calls the list missing, and a DM is read
+further than a state channel, because a card and an answer land there for every
+turn. A list it could not reach that way is named, not replaced: a new message
+would take over and the entries of the old one would stop applying. Prefer
 `stateChannel`: a DM works only when you and the bot share a server that lets
 you receive DMs from its members.
 
@@ -1310,7 +1317,7 @@ the trade a codespace makes, and it costs one manual step.
 | `python3 -m vigo --invite` says `Public Bot off` | Discord only gives a shareable install link to a public app: turn it on at the Bot page the check prints, and set Install Link to Discord Provided Link on the Installation page |
 | `--invite` says the commands are registered for a context the app does not offer | the `install` key names more than the portal enables: set `"install": "user"` for a user-install-only app, or turn the other context on |
 | a stranger sees no **Ask for access** button | `"requests"` is false, or the daemon answering is older code. Set it true and restart the daemon |
-| a request says it cannot reach the owner's list | the allowlist lives in the owner's DM and the bot found another of its own messages with no list in reach. Set `stateChannel` to a private channel the bot can read |
+| a command says the allowlist may be older than the walk | the list message is buried under more messages than the bot reads (10,000 in its DM with you, 1,000 in `stateChannel`), so a new one would take over from it. Set `stateChannel` to a small private channel the bot can read, and allow those people there again |
 | a request reached the bot but no card arrived | the owner and the bot do not share a DM that accepts messages. Open a DM with the bot, or set `stateChannel` |
 | `/vigo` does not appear for somebody who installed it | they have not finished Settings → Apps, or the app's Installation page does not offer User Install. Discord can take up to an hour to show a changed command |
 | the log says the file's owner is not the application's owner | remove `owner` from the settings, or set it to the id the application belongs to; the daemon will not trust a typed id |
