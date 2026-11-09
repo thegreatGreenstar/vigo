@@ -139,8 +139,9 @@ checkout's `LOCAL_SPEC.md`, in order:
 
 1. `configure`, `build`, `test` - cmake and ctest on `build/macos`.
 2. `package` - cpack writes `ScarletNX-macos-arm64.zip` to `~/Library/Caches/vigo-host-build`.
-3. `clean`, `install` - `ditto` unpacks it into `~/.local/share/vigo-built`, which is outside the
-   folder the agent's container mounts, so the agent cannot replace the binary the runner starts.
+3. `install` - `ditto` unpacks it into `~/.local/share/vigo-built`, replacing the copy already
+   there. The folder is outside the tree the agent's container mounts, so the agent cannot replace
+   the binary the runner starts.
 
 `scarletnx-built` runs that copy; `scarletnx` keeps running the installed `/Applications` app. A
 build compiles the checkout the agent can edit, so a build step runs with the Mac user's rights.

@@ -53,7 +53,6 @@
           "-B",
           "~/Library/Caches/vigo-host-build"
         ],
-        "clean": ["rm", "-rf", "~/.local/share/vigo-built/ScarletNX.app"],
         "install": [
           "ditto",
           "-x",
