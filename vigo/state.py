@@ -341,15 +341,21 @@ class State:
 
     # -- the messages this daemon posted --------------------------------
 
-    def remember_answer(self, message_id: str, channel: str) -> None:
+    def remember_answer(self, message_id: str, channel: str, device: str = "") -> None:
         """Remember one message this daemon posted, so a reply to it is a question.
 
         It is also how the daemons elect one answerer: only the daemon that
         posted the message has it, so only that daemon acts on a reply.
+
+        `device` is the device the question behind the message ran on, so a
+        reply continues that conversation where it was held.  `answers` is
+        written before that device is known only by an older daemon, and then
+        it is empty.
         """
         with self.lock:
             self.data["answers"][message_id] = {
                 "channel": channel,
+                "device": device,
                 "at": int(time.time()),
             }
             cutoff = time.time() - ANSWER_AGE
@@ -360,7 +366,7 @@ class State:
             self._write()
 
     def answer_for(self, message_id: str) -> dict | None:
-        """The message, if this daemon posted it, and the channel it is in."""
+        """The message, if this daemon posted it, the channel, and the device."""
         with self.lock:
             entry = self.data["answers"].get(message_id)
             return dict(entry) if isinstance(entry, dict) else None

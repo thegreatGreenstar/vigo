@@ -213,10 +213,13 @@ edit anything here.
 | `vigo/presence.py` | the status Discord shows (online, idle, do not disturb, invisible) from what the daemon and the servers do, and the one status the daemons agree on when they disagree |
 
 A direct message that replies to a message vigo posted is an ask in that DM's session. Only the daemon that posted
-the referenced message acts on the reply, which is how the two daemons agree on one answerer. It runs through the same
-queue and lease as any other ask, is acknowledged once, and its answer is posted as a message, not an edit. The bot
-asks for `DIRECT_MESSAGES` only: no privileged intent, and no guild message is read. A plain DM and a reply to
-somebody else's message are ignored, and a stranger is refused.
+the referenced message acts on the reply, which is how the two daemons agree on one answerer. The message names the
+device that answered it. The reply runs on that device, because the device holds the session. A reply on another
+device would be answered without the question it continues. The answer of a reply names its own device, so a reply to
+it stays there too. A device that does not answer is said to be down, and the reply is not moved to another one.
+It runs through the same queue and lease as any other ask, is acknowledged once, and its answer is posted as a message,
+not an edit. The bot asks for `DIRECT_MESSAGES` only: no privileged intent, and no guild message is read. A plain DM and
+a reply to somebody else's message are ignored, and a stranger is refused.
 
 `deploy/` holds the service units and the launchers that unseal the password (Keychain on macOS, systemd-creds on
 Linux). `deploy/container/` holds the rootless container: the images, the launcher, the SSH client configuration, the

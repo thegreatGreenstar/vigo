@@ -7,6 +7,7 @@ import unittest
 from vigo import commands
 from vigo.app import INTENTS, App
 from vigo.discord_api import Discord
+from vigo.router import Router
 from vigo.state import State
 from tests.fake_discord import FakeDiscord
 from tests.fake_opencode import FakeOpenCode
@@ -261,6 +262,141 @@ class ReplyTest(unittest.TestCase):
         self.assertTrue(self.discord.wait_for(
             lambda: any("may use it" in said for said in self.said()), 5))
         self.assertEqual(len(self.device.prompts), 1, "the stranger's question did not run")
+
+
+class TwoDevicesReplyTest(unittest.TestCase):
+    """A reply continues the conversation on the device that answered it.
+
+    The device is the session, and the session is the context: a reply asked
+    on another device reaches a conversation that never heard the question.
+    The router picks by what the person last used, which is not that device
+    once they work somewhere else.  A question named for a device proves it
+    without touching the router's cache.
+    """
+
+    def setUp(self) -> None:
+        self.mac = FakeOpenCode("macbook")
+        self.pc = FakeOpenCode("pc")
+        self.discord = FakeDiscord()
+        self.directory = TempDir()
+        self.app: App | None = None
+
+    def tearDown(self) -> None:
+        if self.app is not None:
+            self.discord.wait_for(lambda: not self.app.runs, 5)
+            self.app.shutdown()
+        self.directory.__exit__(None, None, None)
+        self.mac.close()
+        self.pc.close()
+        self.discord.close()
+
+    def make(self) -> App:
+        settings = load_settings(
+            self.directory.path,
+            devices=[
+                {"name": "macbook", "url": self.mac.url, "directory": "/tmp/project"},
+                {"name": "pc", "url": self.pc.url, "directory": "/tmp/project"},
+            ],
+        )
+        api = Discord("token", settings.app_id, base=self.discord.url)
+        self.app = App(settings, api=api, state=State(self.directory.path / "state.json"))
+        return self.app
+
+    def used(self, device: FakeOpenCode) -> None:
+        """Make a device the one the router picks: a person typed there."""
+        session = device.new_session()
+        device.add_message(session, "user", text="hello")
+
+    def ask(self, app: App, text: str = "why is CI red?") -> None:
+        app.handle_interaction({
+            "id": self.discord.next_id("int"),
+            "token": "tok",
+            "type": 2,
+            "channel_id": DM,
+            "member": {"user": {"id": OWNER}},
+            "data": {"name": "vigo", "options": [
+                {"name": commands.ASK, "type": 1, "options": [
+                    {"name": "prompt", "type": 3, "value": text},
+                    {"name": "device", "type": 3, "value": "macbook"},
+                ]},
+            ]},
+        })
+
+    def reply(self, app: App, to: str, text: str = "and then?") -> None:
+        app.handle_message({
+            "id": self.discord.next_id("msg"),
+            "channel_id": DM,
+            "content": text,
+            "author": {"id": OWNER, "bot": False},
+            "message_reference": {"message_id": to},
+        })
+
+    def said(self) -> list[str]:
+        posted = [message["content"] for message in self.discord.messages.get(DM, [])]
+        posted += [entry["content"] or "" for entry in self.discord.followups]
+        return posted
+
+    def wait_for(self, text: str) -> bool:
+        return self.discord.wait_for(
+            lambda: any(text in said for said in self.said()), 10)
+
+    def settle(self, app: App) -> None:
+        self.assertTrue(self.discord.wait_for(lambda: not app.runs, 10),
+                        "the run ended")
+
+    def last_answer(self, app: App) -> str:
+        return next(reversed(app.state.data["answers"]))
+
+    def test_a_reply_runs_on_the_device_that_answered(self):
+        self.used(self.pc)  # the router would send a new question to the PC
+        self.mac.script = [("idle", "the first answer")]
+        app = self.make()
+        self.ask(app)
+        self.assertTrue(self.wait_for("the first answer"))
+        self.settle(app)
+        self.mac.script = [("idle", "the second answer")]
+        self.reply(app, self.last_answer(app))
+        self.assertTrue(self.wait_for("the second answer"))
+        self.assertEqual(self.pc.prompts, [], "the reply did not leave for the PC")
+        first, second = self.mac.prompts
+        self.assertEqual(first[0], second[0], "the reply continued the same session")
+        self.assertEqual(question_of(second[1]), "and then?")
+
+    def test_a_reply_to_the_answer_of_a_reply_stays_there(self):
+        """Every reply ask keeps the device of the ask it continues."""
+        self.used(self.pc)  # the router would send a new question to the PC
+        self.mac.script = [("idle", "the first answer")]
+        app = self.make()
+        self.ask(app)
+        self.assertTrue(self.wait_for("the first answer"))
+        self.settle(app)
+        self.mac.script = [("idle", "the second answer")]
+        self.reply(app, self.last_answer(app))
+        self.assertTrue(self.wait_for("the second answer"))
+        self.settle(app)
+        self.mac.script = [("idle", "the third answer")]
+        self.reply(app, self.last_answer(app), text="and the third?")
+        self.assertTrue(self.wait_for("the third answer"))
+        self.assertEqual(self.pc.prompts, [], "no reply left for the PC")
+        self.assertEqual(len({session for session, _prompt in self.mac.prompts}), 1,
+                         "all three questions ran in one session on the Mac")
+
+    def test_a_reply_says_so_when_that_device_is_down(self):
+        """It waits for the conversation, and does not start one elsewhere."""
+        self.mac.script = [("idle", "the first answer")]
+        app = self.make()
+        # A pick after the router's few seconds of cache, as a reply comes.
+        app.router = Router(app.config, cache=0.0)
+        self.ask(app)
+        self.assertTrue(self.wait_for("the first answer"))
+        self.settle(app)
+        self.mac.close()
+        self.pc.script = [("idle", "the second answer")]
+        self.reply(app, self.last_answer(app))
+        self.assertTrue(self.discord.wait_for(
+            lambda: any("not answering now" in said for said in self.said()), 10))
+        self.assertEqual(self.pc.prompts, [], "the PC was not asked without the context")
+        self.assertNotIn("macbook", "\n".join(self.said()), "no device name in the DM")
 
 
 class TwoDaemonsReplyTest(unittest.TestCase):

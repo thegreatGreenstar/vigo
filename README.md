@@ -783,8 +783,13 @@ count when more than one agent runs.
 
 In a direct message, reply to a message the bot posted and the reply is the
 next question in the same session. Its answer is posted in the DM as a message.
-A plain message is not a question. A reply to somebody else's message is
-ignored, and somebody who may not ask is told so.
+The reply runs on the device that answered the message it replies to, not on
+whichever device a new question would reach, so the conversation keeps the
+context it was held in. A reply to the answer of a reply goes there too. When
+that device does not answer, the bot says so and does not carry the
+conversation on somewhere it never was. A plain message is not a question. A
+reply to somebody else's message is ignored, and somebody who may not ask is
+told so.
 
 An ask that is a task gives the device a **goal**, and it works toward that
 until it is met instead of answering once. No option says which it is: the
