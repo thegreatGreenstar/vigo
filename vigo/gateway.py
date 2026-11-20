@@ -100,6 +100,19 @@ def _frame(opcode: int, payload: bytes) -> bytes:
     return bytes(header) + masked
 
 
+def tls_context() -> ssl.SSLContext:
+    """A client context for the gateway that asks for TLS 1.3 or newer.
+
+    The websocket carries the bot's token, so the connection keeps the
+    strongest version the runtime offers rather than letting an older one be
+    negotiated.  A later version is still accepted when the runtime and the
+    server both have one.
+    """
+    context = ssl.create_default_context()
+    context.minimum_version = ssl.TLSVersion.TLSv1_3
+    return context
+
+
 class WebSocket:
     def __init__(self, url: str, timeout: float = 20.0) -> None:
         parsed = urllib.parse.urlsplit(url)
@@ -121,8 +134,7 @@ class WebSocket:
     def connect(self) -> None:
         raw = socket.create_connection((self.host, self.port), timeout=self.timeout)
         if self.secure:
-            context = ssl.create_default_context()
-            raw = context.wrap_socket(raw, server_hostname=self.host)
+            raw = tls_context().wrap_socket(raw, server_hostname=self.host)
         self.sock = raw
         try:
             self._handshake()

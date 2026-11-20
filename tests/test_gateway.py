@@ -1,9 +1,11 @@
 import socket
+import ssl
 import struct
 import threading
 import unittest
 
-from vigo.gateway import FatalGatewayError, Gateway, GatewayClosed, WebSocket, gateway_url_ok
+from vigo.gateway import (FatalGatewayError, Gateway, GatewayClosed, WebSocket,
+                          gateway_url_ok, tls_context)
 from tests.fake_gateway import FakeGateway
 
 
@@ -211,6 +213,17 @@ class HandshakeTest(unittest.TestCase):
             self.assertIn("handshake head", str(caught.exception))
         finally:
             listener.close()
+
+
+class TlsTest(unittest.TestCase):
+    """The identify frame carries the token, so the connection is TLS 1.3+."""
+
+    def test_the_context_asks_for_tls_1_3_or_newer(self):
+        context = tls_context()
+        self.assertEqual(context.minimum_version, ssl.TLSVersion.TLSv1_3)
+        self.assertEqual(context.maximum_version, ssl.TLSVersion.MAXIMUM_SUPPORTED)
+        self.assertTrue(context.check_hostname)
+        self.assertEqual(context.verify_mode, ssl.CERT_REQUIRED)
 
 
 class GatewayAddressTest(unittest.TestCase):
