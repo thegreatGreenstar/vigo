@@ -53,12 +53,13 @@ def _supports(application: dict, kind: str) -> bool:
     return isinstance(config, dict) and kind in config
 
 
-def _scopes(application: dict, kind: str) -> list[str]:
+def _has_scope(application: dict, kind: str, wanted: str) -> bool:
+    """Whether Discord lists `wanted` in this install context's scopes."""
     config = application.get("integration_types_config")
     entry = config.get(kind) if isinstance(config, dict) else None
-    params = entry.get("oauth2_install_params") if isinstance(entry, dict) else None
-    scopes = params.get("scopes") if isinstance(params, dict) else None
-    return [str(scope) for scope in scopes] if isinstance(scopes, list) else []
+    install = entry.get("oauth2_install_params") if isinstance(entry, dict) else None
+    scopes = install.get("scopes") if isinstance(install, dict) else None
+    return isinstance(scopes, list) and wanted in scopes
 
 
 def report(settings: Config, application: dict) -> tuple[str, bool]:
@@ -74,8 +75,7 @@ def report(settings: Config, application: dict) -> tuple[str, bool]:
     user = _supports(application, "1")
     guild = _supports(application, "0")
     public = bool(application.get("bot_public"))
-    scopes = _scopes(application, "1")
-    scope_ok = "applications.commands" in scopes
+    scope_ok = _has_scope(application, "1", "applications.commands")
     owner = application.get("owner") if isinstance(application.get("owner"), dict) else {}
     owner_id = str(owner.get("id") or "")
     owner_name = str(owner.get("username") or "the application's owner")
@@ -89,7 +89,7 @@ def report(settings: Config, application: dict) -> tuple[str, bool]:
         f"  User Install        {'on' if user else 'off'}",
         f"  Guild Install       {'on' if guild else 'off'}",
         f"  Public Bot          {'on' if public else 'off'}",
-        f"  User install scope  {', '.join(scopes) if scopes else 'none'}",
+        f"  User install scope  {'applications.commands' if scope_ok else 'not granted'}",
         "",
         "Developer Portal:",
         f"  Installation   {where['installation']}",

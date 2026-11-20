@@ -64,6 +64,13 @@ class PortalTest(unittest.TestCase):
         self.assertFalse(ready)
         self.assertIn("applications.commands scope", text)
 
+    def test_the_report_names_only_the_scope_it_checks(self):
+        text, ready = self.report(scopes=["bot", "identify"])
+        self.assertFalse(ready)
+        self.assertIn("User install scope  not granted", text)
+        self.assertNotIn("bot, identify", text)
+        self.assertNotIn("identify", text)
+
     def test_the_settings_must_match_the_contexts_the_app_offers(self):
         text, ready = self.report(install="both")
         self.assertFalse(ready)

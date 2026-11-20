@@ -1044,6 +1044,8 @@ that project may do in its own `opencode.json`.
   its own reaches no device. Keep `requests` off if you do not want the card.
 - The bot stores nothing about what was said: no message text in the log, no
   database. Sessions live in OpenCode; the Discord channel holds the answers.
+- The gateway connection is made over TLS 1.3 or newer, so the bot's token
+  never travels on an older version.
 - An allow is a read grant. An approved person's question runs the agent under
   your account, so it can read what that agent can read on that device. The
   share cap limits the plan's spend, not what the agent may see. Allow only
